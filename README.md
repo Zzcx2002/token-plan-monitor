@@ -1,6 +1,84 @@
 # 火山方舟 Token Plan 用量监控
 
-一个独立的 Windows 托盘工具，用于查看火山方舟 **Agent Plan / Coding Plan** 的 5 小时、每周和每月订阅容量。协议实现参考 CC Switch，但不依赖 CC Switch，也不读取或修改其配置和数据库。
+一个独立的 Windows 托盘 / macOS 菜单栏工具，用于查看火山方舟 **Agent Plan / Coding Plan** 的 5 小时、每周和每月订阅容量。协议实现参考 CC Switch，但不依赖 CC Switch，也不读取或修改其配置和数据库。
+
+## macOS 版
+
+目标系统为 **macOS 14 及以上、Apple Silicon（arm64）**。使用 AppKit 原生菜单栏、详情窗口、设置和桌面卡片，与 Windows 版共用查询及用量规则；默认浅色，不设置开机自启，不显示 Dock 图标。
+
+### 安装和使用
+
+打开 `dist/TokenPlanMonitor-0.1.0-arm64.dmg`，将 `TokenPlanMonitor.app` 拖到 Applications 后双击启动。应用包含 Python 运行时，不需要另外安装依赖。
+
+首版只有本地 ad-hoc 签名，没有 Developer ID 签名和 Apple 公证。对于从网络下载的副本，首次打开可能被 Gatekeeper 阻止；确认来源后，可在系统设置“隐私与安全性”中使用“仍要打开”。不要关闭系统安全保护。
+
+- 首次启动填写账号 AK/SK、Region 和刷新间隔；Secret 留空保留已保存值，输入框不会显示原 Secret。
+- 菜单栏图标左键打开详情，右键或 Control-单击打开三周期用量及操作菜单，悬停显示摘要。
+- 卡片单击打开详情、拖动移动、右键显示菜单；默认可见且置顶，可隐藏和恢复，重启恢复偏好。
+- 卡片使用显示器可用区域定位，支持负坐标布局和屏幕断开后的自动校正；不覆盖其他应用的全屏空间。
+- 详情的数字和进度条统一表示剩余容量；已用百分比与 AFP 为辅助说明。顶部展示状态、最近成功更新及错误，底部操作栏固定可见，中间容量信息可滚动；后台更新保持滚动位置和键盘焦点。
+- 桌面卡片以三列展示 5 小时、每周、每月剩余量，标记最低项并显示更新时间；剩余低于 10% 时显示“额度偏低”。常显菜单和“查看详情”支持 Tab 与回车，空白区域保留拖动操作。
+- 首次配置与已保存 Secret 使用不同说明，设置提供可展开的凭据帮助；校验失败保留输入并聚焦对应字段。鉴权或配置错误优先“检查凭据”，网络错误优先“重试”。断网保留上次成功数据并标记过期；从睡眠唤醒后到期则合并刷新一次。
+- 关闭窗口只隐藏窗口，通过菜单栏“退出”关闭进程。设置支持 Tab、回车保存、Escape 取消以及 Command-C/V 等原生文本编辑快捷键。
+- 卡片使用原生圆角、阴影和背景材质，遵循系统“辅助功能 → 显示 → 降低透明度”设置。
+
+### macOS 文件和凭据
+
+```text
+~/Library/Application Support/TokenPlanMonitor/
+  config.json         Region 和刷新间隔
+  snapshot.json       最近成功的用量缓存
+  widget.json         卡片位置、可见性和置顶状态（Cocoa 点坐标）
+  instance-*.lock     单实例锁文件；退出后保留文件，由系统释放锁
+~/Library/Logs/TokenPlanMonitor/app.log
+```
+
+AK/SK 只存入 macOS 登录钥匙串，service 为 `TokenPlanMonitor`，account 分别为 `volcengine_access_key_id` 和 `volcengine_secret_access_key`。拒绝钥匙串访问会显示错误，不降级到明文文件。更换凭据后清除旧快照，不自动迁移 Windows 配置。移除应用时，如需清除凭据，请在“钥匙串访问”中仅删除上述两项，再删除上述数据和日志目录。
+
+### 源码运行和构建
+
+在 Apple Silicon Mac 安装 **python.org 官方 Python 3.13 framework 版本**及 Xcode Command Line Tools。py2app 不支持此项目使用 uv 的便携解释器打包；源码运行可使用兼容的 Python 3.11 及以上版本。
+
+```sh
+python3.13 -m venv .venv
+.venv/bin/python -m pip install -r requirements-macos-build.txt
+.venv/bin/python -m pip install --no-build-isolation --no-deps -e .
+.venv/bin/python -m token_plan_monitor
+```
+
+一键构建：
+
+```sh
+.venv/bin/python scripts/build_macos.py
+```
+
+脚本替换生成的 `build/`、`dist/TokenPlanMonitor.app` 和 DMG 暂存目录，生成独立应用及 DMG。构建检查所有 Mach-O 文件为 arm64、最低系统版本不高于 14，且动态链接不依赖开发机路径；同时验证本地签名。Bundle ID 固定为 `com.zzcx2002.tokenplanmonitor`，应用数据不写入 `.app` 内。
+
+### macOS 离线验证
+
+```sh
+.venv/bin/python -m pytest
+.venv/bin/python -m compileall -q src scripts
+.venv/bin/python -m token_plan_monitor.macos.preview --smoke-test
+.venv/bin/python -m token_plan_monitor.macos.preview --state stale
+```
+
+预览和界面检查使用临时数据目录、内存凭据和假监控，不读取真实钥匙串、不访问云端。状态包括 `agent`、`coding`、`refreshing`、`stale`、`unconfigured`、`error`、长文本 `long`，以及边界值 `limits`、周期缺失 `missing`、最低值并列 `tied`。检查覆盖默认/最小窗口、进度条与无障碍标签、焦点和滚动保持、设置校验与帮助、卡片按钮命中和偏好。检查输出在 `artifacts/macos/`，包括原生视图截图和通过记录；视图截图不包含桌面合成后的完整背景模糊及外部阴影。打包应用检查请为 `--artifacts` 指定绝对路径，避免 py2app 改变工作目录后将截图写入应用资源目录。
+
+打包后也可使用隔离假数据验证：
+
+```sh
+dist/TokenPlanMonitor.app/Contents/MacOS/TokenPlanMonitor --smoke-test --artifacts /tmp/token-monitor-bundle-smoke
+open dist/TokenPlanMonitor.app --args --preview --state agent
+```
+
+实时查询继续要求显式启用：保存真实凭据后，运行 `TOKEN_PLAN_MONITOR_LIVE=1 .venv/bin/python -m pytest -m live -s`。
+
+验收记录与尚需实机复核的场景见 [macOS 验收记录](docs/macos-validation.md)。macOS 14 最低版本声明和二进制检查不能替代 macOS 14 实机运行测试。
+
+## Windows 版
+
+以下启动、快捷方式、原生特效和文件位置说明适用于 Windows；已有 Windows 数据路径及凭据条目保持兼容。
 
 ## 功能
 

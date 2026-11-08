@@ -5,18 +5,22 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "token-plan-monitor"
 version = "0.1.0"
-description = "A lightweight Windows tray monitor for Volcengine Ark plan quotas"
+description = "A lightweight Windows and macOS menu bar monitor for Volcengine Ark plan quotas"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "requests>=2.31,<3",
-    "pystray>=0.19,<1",
+    "pystray>=0.19,<1; sys_platform == 'win32'",
+    "pyobjc-framework-Cocoa>=11,<13; sys_platform == 'darwin'",
+    "pyobjc-core>=11,<13; sys_platform == 'darwin'",
+    "pyobjc-framework-Quartz>=11,<13; sys_platform == 'darwin'",
     "Pillow>=10,<13",
     "keyring>=24,<26",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10"]
+macos-build = ["py2app==0.28.10", "setuptools<81"]
 
 [project.scripts]
 token-plan-monitor = "token_plan_monitor.__main__:main"

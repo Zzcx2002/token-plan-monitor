@@ -1,4 +1,10 @@
 """Native effects fail closed: no transparent holes or faded foreground."""
+import sys
+import pytest
+
+if sys.platform != "win32":
+    pytest.skip("Windows native effects", allow_module_level=True)
+
 import ctypes
 import tkinter as tk
 from types import SimpleNamespace

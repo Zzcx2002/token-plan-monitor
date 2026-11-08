@@ -66,6 +66,7 @@ class UsageMonitor:
                 status=status,
                 snapshot=snapshot,
                 error=error,
+                error_category="configuration" if error else None,
                 revision=0,
             )
             self._pending = self._credentials is not None
@@ -86,6 +87,16 @@ class UsageMonitor:
             self._pending = True
             self._wake.set()
 
+    def refresh_if_due(self) -> None:
+        """Recheck a wall-clock deadline after macOS wakes from sleep."""
+        with self._lock:
+            last = self._state.last_attempt_at
+            if last is None and self._state.snapshot is not None:
+                last = self._state.snapshot.queried_at
+            due = last is None or (self.clock() - last).total_seconds() >= self._settings.refresh_minutes * 60
+            if due and not self._in_flight and not self._pending:
+                self.request_refresh()
+
     def update_configuration(
         self, settings: Settings, credentials: Credentials
     ) -> None:
@@ -99,6 +110,7 @@ class UsageMonitor:
                 status="empty" if account_changed else self._state.status,
                 snapshot=None if account_changed else self._state.snapshot,
                 error=None,
+                error_category=None,
                 revision=self._state.revision + 1,
             )
             self._pending = True
@@ -193,6 +205,7 @@ class UsageMonitor:
                         snapshot=previous,
                         is_refreshing=False,
                         error=error.message,
+                        error_category=error.category,
                         last_attempt_at=self.clock(),
                         revision=revision,
                     )

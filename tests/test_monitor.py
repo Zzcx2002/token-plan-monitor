@@ -1,10 +1,14 @@
 import threading
 import time
+import pytest
 from datetime import UTC, datetime
 
 from token_plan_monitor.models import (
     Credentials,
+    AuthenticationError,
+    ConfigurationError,
     NetworkError,
+    TransientProviderError,
     QuotaWindow,
     Settings,
     UsageSnapshot,
@@ -90,6 +94,7 @@ def test_failure_retains_last_good_snapshot(tmp_path):
         state = monitor.get_state()
         assert state.snapshot.plan_name == "Agent Plan Large"
         assert state.error == "offline"
+        assert state.error_category == "network"
     finally:
         monitor.stop()
 
@@ -194,3 +199,27 @@ class StaticClient:
 
     def query(self):
         return self.result
+
+
+@pytest.mark.parametrize("failure", [AuthenticationError, ConfigurationError, NetworkError, TransientProviderError])
+def test_error_category_propagates_and_clears_on_recovery(tmp_path, failure):
+    storage = configured_storage(tmp_path)
+    class RecoveringClient:
+        failed = False
+        def query(self):
+            if not self.failed:
+                self.failed = True
+                raise failure("safe message")
+            return snapshot()
+    client = RecoveringClient()
+    monitor = UsageMonitor(storage, client_factory=lambda *_: client)
+    try:
+        monitor.start()
+        wait_for(lambda: monitor.get_state().status == "error")
+        assert monitor.get_state().error_category == failure.category
+        monitor.request_refresh()
+        wait_for(lambda: monitor.get_state().status == "ok")
+        assert monitor.get_state().error_category is None
+        assert monitor.get_state().error is None
+    finally:
+        monitor.stop()

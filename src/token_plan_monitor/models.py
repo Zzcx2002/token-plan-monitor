@@ -234,6 +234,7 @@ class MonitorViewState:
     error: str | None = None
     last_attempt_at: datetime | None = None
     revision: int = 0
+    error_category: str | None = None
 
 
 def datetime_to_iso(value: datetime | None) -> str | None:
