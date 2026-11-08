@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import queue
 import tkinter as tk
+import tkinter.font as tkfont
 from pathlib import Path
+from datetime import datetime, UTC
 from tkinter import messagebox, ttk
 from typing import Any
 
 import pystray
-from PIL import ImageTk
 
-from .assets import make_brand_icon, make_tray_icon
+from .assets import make_tray_icon
+from .appearance import (AppearancePreferences, LIGHT, THEME_LABELS, resolve_theme,
+                         installed_fonts, OUTER_PADDING, SECTION_GAP, ROW_PADDING)
 from .desktop_widget import DesktopWidget
-from .ui_graphics import RoundedPanel, RoundedProgress, install_window_effects, configure_rounded_buttons
+from .ui_graphics import (RoundedPanel, RoundedProgress, ScrollableBody, Tooltip, dpi_scale, window_work_area,
+                          install_window_effects, apply_window_effects, configure_rounded_buttons)
 from .models import (
     ConfigurationError,
     Credentials,
@@ -33,25 +37,12 @@ from .presentation import (
     tray_tooltip,
 )
 from .storage import Storage
+from .window_geometry import WindowGeometry
+from .window_chrome import WindowChrome
 
 APP_ICON_PATH = Path(__file__).resolve().parents[2] / "assets" / "app.ico"
-FONT_FAMILY = "Microsoft YaHei UI"
-POPUP_WIDTH = 520
-COLORS = {
-    "surface": "#F2F3F6",
-    "card": "#FFFFFF",
-    "border": "#E3E5EB",
-    "text": "#1D1D1F",
-    "muted": "#636875",
-    "accent": "#007AFF",
-    "accent_active": "#0062CC",
-    "success": "#248A3D",
-    "warning": "#B25000",
-    "warning_surface": "#FFF7E8",
-    "error": "#D70015",
-    "info_surface": "#EDF5FF",
-    "trough": "#E9E9EE",
-}
+POPUP_WIDTH = 440
+COLORS = LIGHT.colors
 
 
 class MonitorUI:
@@ -65,8 +56,17 @@ class MonitorUI:
         self._layout_key: tuple[Any, ...] | None = None
         self._menu_key: tuple[Any, ...] | None = None
         self._popup_positioned = False
+        self.theme_mode = storage.load_appearance().theme
+        self.theme = resolve_theme(self.theme_mode)
+        self.colors = dict(self.theme.colors)
+        self._details_expanded = False
+        self._settings_original_mode = None
+        self._theme_poll_after = None
+        self._tooltips = []
 
         self.root = tk.Tk()
+        self.font_family, self.latin_font = installed_fonts(tkfont.families(self.root))
+        self.root.option_add("*Font", (self.font_family, 10))
         self.root.withdraw()
         self.root.title("火山方舟用量监控")
         self._apply_icon(self.root, default=True)
@@ -88,6 +88,7 @@ class MonitorUI:
         self.settings_window: tk.Toplevel | None = None
         self.desktop_widget: DesktopWidget | None = None
         self.icon: pystray.Icon | None = None
+        self._theme_poll_after = self.root.after(2000, self._poll_theme)
 
     @staticmethod
     def _apply_icon(window: tk.Tk | tk.Toplevel, default: bool = False) -> None:
@@ -101,109 +102,206 @@ class MonitorUI:
         except tk.TclError:
             pass
 
+    def px(self,value:int) -> int:
+        return round(value*dpi_scale(self.root))
+
     def _configure_style(self) -> None:
         style = ttk.Style(self.root)
         if "clam" in style.theme_names():
             style.theme_use("clam")
         style.configure(
             ".",
-            font=(FONT_FAMILY, 9),
-            background=COLORS["surface"],
-            foreground=COLORS["text"],
+            font=(self.font_family, 10),
+            background=self.colors["surface"],
+            foreground=self.colors["text"],
         )
-        style.configure("TFrame", background=COLORS["surface"])
+        style.configure("TFrame", background=self.colors["surface"])
         style.configure(
             "Card.TFrame",
-            background=COLORS["card"],
-            bordercolor=COLORS["border"],
+            background=self.colors["card"],
+            bordercolor=self.colors["border"],
             borderwidth=0,
             relief="flat",
         )
-        style.configure("TLabel", background=COLORS["surface"], foreground=COLORS["text"])
+        style.configure("TLabel", background=self.colors["surface"], foreground=self.colors["text"])
         style.configure(
-            "Card.TLabel", background=COLORS["card"], foreground=COLORS["text"]
+            "Card.TLabel", background=self.colors["card"], foreground=self.colors["text"]
         )
         style.configure(
-            "Title.TLabel", font=(FONT_FAMILY, 17, "bold"), foreground=COLORS["text"]
+            "Title.TLabel", font=(self.font_family, 15, "bold"), foreground=self.colors["text"]
         )
         style.configure(
             "Section.TLabel",
-            font=(FONT_FAMILY, 10, "bold"),
-            background=COLORS["card"],
-            foreground=COLORS["text"],
+            font=(self.font_family, 10, "bold"),
+            background=self.colors["card"],
+            foreground=self.colors["text"],
         )
-        style.configure("Muted.TLabel", foreground=COLORS["muted"])
+        style.configure("Muted.TLabel", foreground=self.colors["muted"])
+        style.configure("Plan.TLabel", font=(self.latin_font, 10), foreground=self.colors["muted"])
         style.configure(
-            "CardMuted.TLabel", background=COLORS["card"], foreground=COLORS["muted"]
+            "CardMuted.TLabel", background=self.colors["card"], foreground=self.colors["muted"]
         )
-        style.configure("Success.TLabel", foreground=COLORS["success"])
-        style.configure("Error.TLabel", foreground=COLORS["error"])
-        style.configure("Warning.TLabel", foreground=COLORS["warning"])
+        style.configure("Success.TLabel", foreground=self.colors["success"])
+        style.configure("Error.TLabel", foreground=self.colors["error"])
+        style.configure("Warning.TLabel", foreground=self.colors["warning"])
         style.configure(
             "Remaining.TLabel",
-            font=(FONT_FAMILY, 16, "bold"),
-            background=COLORS["card"],
-            foreground=COLORS["text"],
+            font=(self.latin_font, 18, "bold"),
+            background=self.colors["card"],
+            foreground=self.colors["text"],
         )
         style.configure(
             "WarningRemaining.TLabel",
-            font=(FONT_FAMILY, 16, "bold"),
-            background=COLORS["card"],
-            foreground=COLORS["warning"],
+            font=(self.latin_font, 18, "bold"),
+            background=self.colors["card"],
+            foreground=self.colors["warning"],
         )
         style.configure(
             "EmptyTitle.TLabel",
-            font=(FONT_FAMILY, 12, "bold"),
-            background=COLORS["card"],
-            foreground=COLORS["text"],
+            font=(self.font_family, 12, "bold"),
+            background=self.colors["card"],
+            foreground=self.colors["text"],
         )
         style.configure(
             "WarningBanner.TLabel",
-            background=COLORS["warning_surface"],
-            foreground=COLORS["warning"],
+            background=self.colors["warning_surface"],
+            foreground=self.colors["warning"],
             padding=(12, 8),
         )
         style.configure(
             "InfoBanner.TLabel",
-            background=COLORS["info_surface"],
-            foreground=COLORS["accent_active"],
+            background=self.colors["info_surface"],
+            foreground=self.colors["accent_active"],
             padding=(12, 8),
         )
-        style.configure("TButton", padding=(16, 9), borderwidth=0, focusthickness=2)
+        style.configure("TButton", padding=(self.px(14), self.px(7)), borderwidth=0, focusthickness=2)
+        style.configure("Toolbar.TButton",padding=(self.px(6),self.px(4)),font=("Segoe UI Symbol",12),
+                        background=self.colors["surface"],foreground=self.colors["text"])
         style.configure(
             "Primary.TButton",
-            font=(FONT_FAMILY, 9, "bold"),
-            foreground="#FFFFFF",
-            background=COLORS["accent"],
-            focuscolor=COLORS["accent"],
+            font=(self.font_family, 9, "bold"),
+            foreground=self.colors["button_text"],
+            background=self.colors["accent"],
+            focuscolor=self.colors["accent"],
         )
         style.map(
             "Primary.TButton",
             background=[
-                ("disabled", "#A9C7F5"),
-                ("pressed", COLORS["accent_active"]),
-                ("active", COLORS["accent_active"]),
+                ("disabled", self.colors["button_disabled"]),
+                ("pressed", self.colors["accent_active"]),
+                ("active", self.colors["accent_active"]),
             ],
-            foreground=[("disabled", "#F8FAFC")],
+            foreground=[("disabled", self.colors["muted"])],
         )
         style.configure(
             "Secondary.TButton",
-            background=COLORS["card"],
-            foreground=COLORS["text"],
-            bordercolor=COLORS["border"],
-            borderwidth=1,
+            background=self.colors["card"],
+            foreground=self.colors["text"],
+            bordercolor=self.colors["border"],
+            borderwidth=0,
         )
         style.map(
             "Secondary.TButton",
-            background=[("pressed", "#E8EDF4"), ("active", "#F0F3F8")],
+            background=[("pressed", self.colors["pressed"]), ("active", self.colors["hover"])],
         )
-        configure_rounded_buttons(style)
-        style.configure("TEntry", fieldbackground=COLORS["card"], padding=9,
-                        bordercolor=COLORS["border"], lightcolor=COLORS["border"],
-                        darkcolor=COLORS["border"])
-        style.map("TEntry", bordercolor=[("focus", COLORS["accent"])],
-                  lightcolor=[("focus", COLORS["accent"])],
-                  darkcolor=[("focus", COLORS["accent"])])
+        configure_rounded_buttons(style, self.theme)
+        style.configure("TEntry", fieldbackground=self.colors["card"], padding=self.px(9),
+                        bordercolor=self.colors["border"], lightcolor=self.colors["border"],
+                        darkcolor=self.colors["border"], foreground=self.colors["text"],
+                        insertcolor=self.colors["text"])
+        style.map("TEntry", bordercolor=[("focus", self.colors["accent"])],
+                  lightcolor=[("focus", self.colors["accent"])],
+                  darkcolor=[("focus", self.colors["accent"])])
+
+        style.configure("FieldError.TLabel",background=self.colors["card"],foreground=self.colors["error"])
+        style.configure("Theme.TRadiobutton",background=self.colors["card"],foreground=self.colors["text"],
+                        padding=(self.px(10),self.px(8)),indicatorcolor=self.colors["card"],focuscolor=self.colors["focus"])
+        style.map("Theme.TRadiobutton",background=[("selected",self.colors["info_surface"]),
+                                                    ("active",self.colors["hover"])],
+                  foreground=[("selected",self.colors["accent"])])
+
+    def _set_theme(self, mode: str, *, persist: bool = False) -> None:
+        preferences=AppearancePreferences(mode)
+        if persist:
+            self.storage.save_appearance(preferences)
+            if self.settings_window is not None:
+                self._settings_original_mode=mode
+        old=self.colors
+        selected=resolve_theme(mode)
+        self.theme_mode=mode
+        if hasattr(self,"_settings_theme_var") and self.settings_window is not None:
+            self._settings_theme_var.set(mode)
+        if selected.name==self.theme.name:
+            return
+        self.theme=selected
+        self.colors=dict(selected.colors)
+        self._configure_style()
+        # ttk uses semantic styles; classic Tk surfaces require explicit updates.
+        remap={value:self.colors[key] for key,value in old.items()}
+        for key in ("highlight","trough","border","muted","text","surface","card"):
+            remap[old[key]]=self.colors[key]
+        def visit(widget: tk.Misc) -> None:
+            for child in widget.winfo_children():
+                visit(child)
+            if not isinstance(widget,ttk.Widget):
+                for option in ("background","foreground","highlightbackground","insertbackground"):
+                    try:
+                        value=str(widget.cget(option))
+                        if value in remap:
+                            widget.configure(**{option:remap[value]})
+                    except tk.TclError:
+                        pass
+            if isinstance(widget,RoundedPanel):
+                widget.set_theme(self.colors)
+            elif isinstance(widget,RoundedProgress):
+                widget.trough=self.colors["trough"]
+                widget._key=None
+                widget._redraw()
+        visit(self.root)
+        for tip in self._tooltips:
+            tip.hide()
+        for window in (self.popup,self.settings_window):
+            if window is not None and window.winfo_exists():
+                window._shadow_opacity=self.theme.shadow_opacity
+                apply_window_effects(window,self.colors["surface"])
+                window._chrome.set_theme(self.colors)
+        if self.desktop_widget is not None:
+            self.desktop_widget.set_theme(self.colors,self.theme.shadow_opacity)
+        self._render_state(self._state)
+
+    def _poll_theme(self) -> None:
+        self._theme_poll_after=None
+        if self._closing:
+            return
+        if self.theme_mode=="system":
+            self._set_theme("system")
+        if self.updated_label is not None and self._state.snapshot is not None:
+            self.updated_label.configure(text=self._updated_text(self._state.snapshot.queried_at))
+        self._theme_poll_after=self.root.after(2000,self._poll_theme)
+
+    def _show_theme_menu(self) -> None:
+        menu=tk.Menu(self.popup,tearoff=False)
+        self._theme_menu=menu
+        self._theme_var=tk.StringVar(self.root,self.theme_mode)
+        def choose(mode: str) -> None:
+            try:
+                self._set_theme(mode,persist=True)
+            except QueryError as exc:
+                messagebox.showerror("无法保存外观",exc.message,parent=self.popup)
+        for mode,label in THEME_LABELS.items():
+            menu.add_radiobutton(label=label,value=mode,variable=self._theme_var,
+                                 command=lambda value=mode:choose(value))
+        try:
+            menu.tk_popup(self.theme_button.winfo_rootx(),
+                          self.theme_button.winfo_rooty()+self.theme_button.winfo_height())
+        finally:
+            menu.grab_release()
+
+    def _toggle_details(self) -> None:
+        self._details_expanded=not self._details_expanded
+        self.details_button.configure(text="▾ 收起详情" if self._details_expanded else "▸ 展开详情")
+        self._render_state(self._state)
+        self._fit_popup()
 
     def run(self) -> None:
         self.monitor.start()
@@ -236,8 +334,9 @@ class MonitorUI:
             on_settings=self.open_settings,
             on_exit=self.shutdown,
             on_preferences_changed=self._on_widget_preferences_changed,
-            colors=COLORS,
-            font_family=FONT_FAMILY,
+            colors=self.colors,
+            font_family=self.font_family,
+            shadow_opacity=self.theme.shadow_opacity,
         )
 
     def _create_tray_menu(self) -> pystray.Menu:
@@ -348,125 +447,87 @@ class MonitorUI:
         self.root.after(100, self._process_events)
 
     def _create_popup(self) -> None:
-        popup = tk.Toplevel(self.root)
-        popup.title("火山方舟订阅容量")
-        popup.configure(background=COLORS["surface"])
-        popup.resizable(False, False)
-        popup.geometry(f"{POPUP_WIDTH}x320")
-        popup.protocol("WM_DELETE_WINDOW", popup.withdraw)
-        popup.bind("<Escape>", lambda event: popup.withdraw())
-        popup.bind("<F5>", lambda event: self._request_refresh())
-        self._apply_icon(popup)
-        install_window_effects(popup, COLORS["surface"])
+        popup=tk.Toplevel(self.root)
         popup.withdraw()
-        self.popup = popup
-
-        container = ttk.Frame(popup, padding=24)
-        container.pack(fill="both", expand=True)
-        header = ttk.Frame(container)
-        header.pack(fill="x")
-        header.columnconfigure(1, weight=1)
-        self._brand_image = ImageTk.PhotoImage(make_brand_icon(32))
-        ttk.Label(header, image=self._brand_image).grid(
-            row=0, column=0, rowspan=2, sticky="nw", padx=(0, 11)
-        )
-        ttk.Label(header, text="订阅容量", style="Title.TLabel").grid(
-            row=0, column=1, sticky="w"
-        )
-        self.header_status_label = ttk.Label(header, text="待配置", style="Muted.TLabel")
-        self.header_status_label.grid(row=0, column=2, sticky="e", pady=(3, 0))
-        self.plan_label = ttk.Label(
-            header,
-            text="火山方舟 Agent Plan / Coding Plan",
-            style="Muted.TLabel",
-            wraplength=POPUP_WIDTH - 100,
-        )
-        self.plan_label.grid(row=1, column=1, columnspan=2, sticky="w", pady=(3, 0))
-
-        self.status_label = ttk.Label(
-            container,
-            text="",
-            wraplength=POPUP_WIDTH - 42,
-            justify="left",
-        )
-        self.content_frame = ttk.Frame(container)
-        self.content_frame.pack(fill="both", expand=True, pady=(15, 0))
-        self.quota_frame = ttk.Frame(self.content_frame)
+        popup.title("火山方舟订阅容量")
+        popup.configure(background=self.colors["surface"])
+        popup.resizable(True,True)
+        popup.protocol("WM_DELETE_WINDOW",popup.withdraw)
+        popup.bind("<Escape>",lambda event:popup.withdraw())
+        popup.bind("<F5>",lambda event:self._request_refresh())
+        self._apply_icon(popup)
+        install_window_effects(popup,self.colors["surface"])
+        self.popup=popup
+        self.popup_geometry=WindowGeometry(popup,self.storage,"popup",(360,220))
+        popup._geometry=self.popup_geometry
+        popup._chrome=WindowChrome(popup,"订阅用量",self.colors,self.font_family,popup.withdraw)
+        self.popup_body=ScrollableBody(popup,self.colors)
+        self.popup_body.pack(fill="both",expand=True)
+        container=self.popup_body.content
+        header=popup._chrome.actions
+        self.theme_button=ttk.Button(header,text="◐",style="Toolbar.TButton",width=2,command=self._show_theme_menu)
+        self.theme_button.pack(side="left")
+        settings_button=ttk.Button(header,text="⚙",style="Toolbar.TButton",width=2,command=self.open_settings)
+        settings_button.pack(side="left")
+        for widget,text in ((self.theme_button,"切换外观：浅色、深色或跟随系统"),(settings_button,"打开设置")):
+            self._tooltips.append(Tooltip(widget,text,lambda:self.colors))
+        self.plan_label=ttk.Label(container,text="Agent Plan / Coding Plan",style="Plan.TLabel",
+                                  wraplength=round(240*dpi_scale(popup)))
+        self.plan_label.pack(anchor="w")
+        self.header_status_label=ttk.Label(container,text="",style="Muted.TLabel")
+        self.header_status_label.pack(anchor="w",pady=(8,0))
+        self.status_label=ttk.Label(container,text="",wraplength=round(360*dpi_scale(popup)),justify="left")
+        self.content_frame=ttk.Frame(container)
+        self.content_frame.pack(fill="both",expand=True,pady=(SECTION_GAP,0))
+        self.quota_frame=ttk.Frame(self.content_frame)
         self._create_quota_cards(self.quota_frame)
         self._create_empty_panel(self.content_frame)
+        self.popup_footer=ttk.Frame(popup,padding=(self.px(OUTER_PADDING),0,self.px(OUTER_PADDING),self.px(12)))
+        self.popup_footer.pack(fill="x")
+        self.updated_label=ttk.Label(self.popup_footer,text="尚未更新",style="Muted.TLabel")
+        self.updated_label.pack(side="left")
+        self.refresh_button=ttk.Button(self.popup_footer,text="刷新",style="Primary.TButton",command=self._request_refresh)
+        self.refresh_button.pack(side="right")
 
-        footer = ttk.Frame(container)
-        footer.pack(fill="x", pady=(12, 0))
-        self.updated_label = ttk.Label(footer, text="尚未更新", style="Muted.TLabel")
-        self.updated_label.pack(anchor="w", pady=(0, 8))
-        actions = ttk.Frame(footer)
-        actions.pack(fill="x")
-        ttk.Button(
-            actions,
-            text="设置",
-            style="Secondary.TButton",
-            command=self.open_settings,
-        ).pack(side="right")
-        self.refresh_button = ttk.Button(
-            actions,
-            text="立即刷新",
-            style="Primary.TButton",
-            command=self._request_refresh,
-        )
-        self.refresh_button.pack(side="right", padx=(0, 8))
-
-    def _create_quota_cards(self, parent: ttk.Frame) -> None:
-        for kind in ("five_hour", "weekly", "monthly"):
-            panel = RoundedPanel(
-                parent,
-                radius=14,
-                fill=COLORS["card"],
-                outline=COLORS["border"],
-                background=COLORS["surface"],
-                padding=(17, 12),
-            )
-            frame = panel.content
-            frame.columnconfigure(0, weight=1)
-            ttk.Label(frame, text=WINDOW_LABELS[kind], style="Section.TLabel").grid(
-                row=0, column=0, sticky="w"
-            )
-            remaining = ttk.Label(frame, text="剩余 —", style="Remaining.TLabel")
-            remaining.grid(row=0, column=1, rowspan=2, sticky="e")
-            used = ttk.Label(frame, text="已用 —", style="CardMuted.TLabel")
-            used.grid(row=1, column=0, sticky="w", pady=(3, 0))
-            progress = RoundedProgress(
-                frame,
-                background=COLORS["card"],
-                trough=COLORS["trough"],
-            )
-            progress.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 8))
-            absolute = ttk.Label(
-                frame,
-                text="",
-                style="CardMuted.TLabel",
-                wraplength=POPUP_WIDTH - 100,
-                justify="left",
-            )
-            absolute.grid(row=3, column=0, columnspan=2, sticky="w")
-            reset = ttk.Label(frame, text="重置时间：暂无", style="CardMuted.TLabel")
-            reset.grid(row=4, column=0, columnspan=2, sticky="w", pady=(3, 0))
-            self.rows[kind] = {
-                "frame": panel,
-                "remaining": remaining,
-                "used": used,
-                "progress": progress,
-                "absolute": absolute,
-                "reset": reset,
-            }
+    def _create_quota_cards(self,parent:ttk.Frame) -> None:
+        self.quota_panel=RoundedPanel(parent,radius=14,fill=self.colors["card"],
+            outline=self.colors["border"],background=self.colors["surface"],padding=(9,3))
+        self.quota_panel.pack(fill="x")
+        for kind in ("five_hour","weekly","monthly"):
+            frame=ttk.Frame(self.quota_panel.content,style="Card.TFrame",padding=(self.px(8),self.px(ROW_PADDING)))
+            frame.columnconfigure(0,weight=1)
+            ttk.Label(frame,text=WINDOW_LABELS[kind],style="Section.TLabel").grid(row=0,column=0,sticky="w")
+            remaining=ttk.Label(frame,text="—",style="Remaining.TLabel")
+            remaining.grid(row=0,column=1,sticky="e")
+            progress=RoundedProgress(frame,background=self.colors["card"],trough=self.colors["trough"],
+                                     height=max(4,round(5*dpi_scale(parent))))
+            progress.grid(row=1,column=0,columnspan=2,sticky="ew",pady=(self.px(5),self.px(6)))
+            reset=ttk.Label(frame,text="重置时间暂无",style="CardMuted.TLabel",
+                            wraplength=round(320*dpi_scale(parent)))
+            reset.grid(row=2,column=0,columnspan=2,sticky="w")
+            details=ttk.Frame(frame,style="Card.TFrame")
+            used=ttk.Label(details,text="",style="CardMuted.TLabel")
+            used.pack(anchor="w")
+            absolute=ttk.Label(details,text="",style="CardMuted.TLabel",
+                               wraplength=round(320*dpi_scale(parent)),justify="left")
+            absolute.pack(anchor="w",pady=(4,0))
+            full_reset=ttk.Label(details,text="",style="CardMuted.TLabel")
+            full_reset.pack(anchor="w",pady=(4,0))
+            separator=tk.Frame(self.quota_panel.content,bg=self.colors["border"],height=1)
+            self.rows[kind]={"frame":frame,"remaining":remaining,"used":used,"progress":progress,
+                              "absolute":absolute,"reset":reset,"full_reset":full_reset,
+                              "details":details,"separator":separator}
+        self.details_button=ttk.Button(parent,text="▸ 展开详情",style="Secondary.TButton",command=self._toggle_details)
+        self.details_button.pack(anchor="w",pady=(SECTION_GAP,0))
 
     def _create_empty_panel(self, parent: ttk.Frame) -> None:
         panel = RoundedPanel(
             parent,
             radius=14,
-            fill=COLORS["card"],
-            outline=COLORS["border"],
-            background=COLORS["surface"],
-            padding=(18, 14),
+            fill=self.colors["card"],
+            outline=self.colors["border"],
+            background=self.colors["surface"],
+            padding=(12, 8),
         )
         self.empty_frame = panel
         frame = panel.content
@@ -480,7 +541,7 @@ class MonitorUI:
             frame,
             text="",
             style="CardMuted.TLabel",
-            wraplength=POPUP_WIDTH - 112,
+            wraplength=self.px(POPUP_WIDTH - 112),
             justify="left",
         )
         self.empty_text_label.pack(anchor="w", fill="x", pady=(7, 14))
@@ -500,12 +561,13 @@ class MonitorUI:
         if self.popup is None:
             return
         self._fit_popup()
+        self.popup.deiconify()
         if not self._popup_positioned:
             self.popup.update_idletasks()
-            width = POPUP_WIDTH
-            height = max(240, self.popup.winfo_reqheight())
-            x = max(0, (self.popup.winfo_screenwidth() - width) // 2)
-            y = max(0, (self.popup.winfo_screenheight() - height) // 2)
+            width, height = self.popup.winfo_width(), self.popup.winfo_height()
+            left,top,right,bottom=window_work_area(self.popup)
+            x=left+max(0,(right-left-width)//2)
+            y=top+max(0,(bottom-top-height)//2)
             self.popup.geometry(f"{width}x{height}+{x}+{y}")
             self._popup_positioned = True
         self.popup.deiconify()
@@ -515,10 +577,18 @@ class MonitorUI:
     def _fit_popup(self) -> None:
         if self.popup is None:
             return
+        if self.popup_geometry.initialized:
+            return
         self.popup.update_idletasks()
-        height = max(240, self.popup.winfo_reqheight())
-        if self.popup.winfo_width() != POPUP_WIDTH or self.popup.winfo_height() != height:
-            self.popup.geometry(f"{POPUP_WIDTH}x{height}")
+        scale=dpi_scale(self.popup)
+        width=max(round(POPUP_WIDTH*scale),self.popup_body.content.winfo_reqwidth())
+        left,top,right,bottom=window_work_area(self.popup)
+        width=min(width,right-left-40)
+        footer=self.popup_footer.winfo_reqheight()+self.popup._chrome.header.winfo_reqheight()+self.px(8)
+        available=max(180,bottom-top-70-footer)
+        height=self.popup_body.fit(available)+footer
+        self._popup_size=(width,height)
+        self.popup_geometry.fit((width,height))
 
     def _render_state(self, state: MonitorViewState) -> None:
         if self.desktop_widget is not None:
@@ -546,7 +616,11 @@ class MonitorUI:
             if state.status == "ok" and not state.is_refreshing
             else "Muted.TLabel"
         )
-        self.header_status_label.config(text=status_text, style=status_style)
+        self.header_status_label.config(text="" if state.status=="ok" and not state.is_refreshing else status_text, style=status_style)
+        if state.status=="ok" and not state.is_refreshing:
+            self.header_status_label.pack_forget()
+        else:
+            self.header_status_label.pack(before=self.content_frame,anchor="w",pady=(8,0))
 
         banner_text = ""
         banner_style = "WarningBanner.TLabel"
@@ -564,7 +638,7 @@ class MonitorUI:
             self.status_label.pack_forget()
         self.updated_label.config(
             text=(
-                f"更新于 {_format_datetime(snapshot.queried_at)}"
+                self._updated_text(snapshot.queried_at)
                 if snapshot
                 else "尚未更新"
             )
@@ -588,26 +662,25 @@ class MonitorUI:
             banner_text,
             empty_key,
         )
-        if layout_key != self._layout_key:
-            self._layout_key = layout_key
-            self._fit_popup()
+        self._layout_key = layout_key
+        self._fit_popup()
 
         refresh_disabled = state.status == "unconfigured" or state.is_refreshing
         self.refresh_button.config(
-            text="刷新中…" if state.is_refreshing else "立即刷新",
+            text="刷新中…" if state.is_refreshing else "刷新",
             state="disabled" if refresh_disabled else "!disabled",
         )
 
-    def _set_popup_layout(self, has_quota: bool, visible_kinds: tuple[str, ...]) -> None:
+    def _set_popup_layout(self,has_quota:bool,visible_kinds:tuple[str,...]) -> None:
         if has_quota:
             self.empty_frame.pack_forget()
             self.quota_frame.pack(fill="x")
             for kind in WINDOW_LABELS:
-                row = self.rows[kind]
+                row=self.rows[kind]
+                row["frame"].pack_forget()
+                row["separator"].pack_forget()
                 if kind in visible_kinds:
-                    row["frame"].pack(fill="x", pady=(0, 10))
-                else:
-                    row["frame"].pack_forget()
+                    row["frame"].pack(fill="x")
         else:
             self.quota_frame.pack_forget()
             self.empty_frame.pack(fill="x")
@@ -643,29 +716,44 @@ class MonitorUI:
         return title, text, action
 
     @staticmethod
-    def _render_window(row: dict[str, Any], window: QuotaWindow) -> None:
-        warning = window.remaining_percent < 10
-        row["remaining"].config(
-            text=f"剩余 {window.remaining_percent:.1f}%",
-            style="WarningRemaining.TLabel" if warning else "Remaining.TLabel",
-        )
-        row["used"].config(text=f"已用 {window.used_percent:.1f}%")
-        row["progress"].set(
-            window.used_percent,
-            COLORS["warning"] if warning else COLORS["accent"],
-        )
-        if window.quota is not None and window.used is not None:
-            row["absolute"].config(
-                text=(
-                    f"AFP 剩余 {_format_number(window.remaining_absolute)} · "
-                    f"已用 {_format_number(window.used)} / "
-                    f"总额 {_format_number(window.quota)}"
-                )
-            )
+    def _updated_text(value:datetime) -> str:
+        age=max(0,(datetime.now(UTC)-value).total_seconds())
+        if age<60:
+            return "刚刚更新"
+        if age<3600:
+            return f"{int(age//60)} 分钟前更新"
+        return f"更新于 {value.astimezone():%m-%d %H:%M}"
+
+    def _render_window(self,row:dict[str,Any],window:QuotaWindow) -> None:
+        warning=window.remaining_percent<10
+        row["remaining"].configure(text=f"{window.remaining_percent:.1f}%",
+            style="WarningRemaining.TLabel" if warning else "Remaining.TLabel")
+        row["used"].configure(text=f"已用 {window.used_percent:.1f}%")
+        row["progress"].set(window.remaining_percent,self.colors["warning"] if warning else self.colors["accent"],
+                              self.colors["warning_start"] if warning else self.colors["accent_start"])
+        has_absolute=window.quota is not None and window.used is not None
+        if has_absolute:
+            row["absolute"].configure(text=f"AFP 剩余 {_format_number(window.remaining_absolute)} · "
+                f"已用 {_format_number(window.used)} / 总额 {_format_number(window.quota)}")
+            row["absolute"].pack(anchor="w",pady=(4,0),before=row["full_reset"])
         else:
-            row["absolute"].config(text="该套餐仅提供百分比")
-        reset = _format_datetime(window.reset_at) if window.reset_at else "暂无"
-        row["reset"].config(text=f"重置时间：{reset}")
+            row["absolute"].pack_forget()
+        if window.reset_at:
+            local=window.reset_at.astimezone()
+            delta=(window.reset_at-datetime.now(UTC)).total_seconds()
+            if 0<delta<86400:
+                summary=f"约 {max(1,round(delta/3600))} 小时后重置" if delta>=3600 else f"约 {max(1,round(delta/60))} 分钟后重置"
+            else:
+                summary=f"{local.month} 月 {local.day} 日 {local:%H:%M} 重置"
+            full=_format_datetime(window.reset_at)
+        else:
+            summary,full="重置时间暂无","暂无"
+        row["reset"].configure(text=("剩余偏低 · " if warning else "")+summary)
+        row["full_reset"].configure(text=f"完整重置时间：{full}")
+        if self._details_expanded:
+            row["details"].grid(row=3,column=0,columnspan=2,sticky="ew",pady=(10,0))
+        else:
+            row["details"].grid_remove()
 
     def open_settings(self) -> None:
         if self.settings_window is not None and self.settings_window.winfo_exists():
@@ -673,163 +761,153 @@ class MonitorUI:
             self.settings_window.lift()
             self.settings_window.focus_force()
             return
-
-        settings = self.storage.load_settings()
+        settings=self.storage.load_settings()
         try:
-            existing = self.storage.load_credentials()
+            existing=self.storage.load_credentials()
         except ConfigurationError:
-            existing = None
-
-        # Keep this independent: transient windows can stay hidden with a withdrawn owner.
-        window = tk.Toplevel(self.root)
+            existing=None
+        self._settings_original_mode=self.theme_mode
+        window=tk.Toplevel(self.root)
         window.title("火山方舟用量查询设置")
-        window.configure(background=COLORS["surface"], padx=22, pady=22)
-        window.resizable(False, False)
+        window.configure(background=self.colors["surface"])
+        window.resizable(True,True)
         self._apply_icon(window)
-        install_window_effects(window, COLORS["surface"])
-        self.settings_window = window
-        window.protocol("WM_DELETE_WINDOW", lambda: self._close_settings(window))
-
-        ttk.Label(window, text="用量查询设置", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(
-            window,
-            text="使用账号 AK/SK 查询控制面配额，不是推理 API Key。",
-            style="Muted.TLabel",
-            wraplength=420,
-        ).pack(anchor="w", pady=(5, 16))
-
-        credentials_panel = RoundedPanel(
-            window,
-            radius=14,
-            fill=COLORS["card"],
-            outline=COLORS["border"],
-            background=COLORS["surface"],
-            padding=(14, 12),
-        )
-        credentials_panel.pack(fill="x")
-        credentials_frame = credentials_panel.content
-        credentials_frame.columnconfigure(0, weight=1)
-        ttk.Label(credentials_frame, text="账号凭据", style="Section.TLabel").grid(
-            row=0, column=0, sticky="w", pady=(0, 4)
-        )
-        ttk.Label(
-            credentials_frame,
-            text="仅保存到 Windows 凭据管理器，建议使用最小权限子账号。",
-            style="CardMuted.TLabel",
-            wraplength=390,
-        ).grid(row=1, column=0, sticky="w", pady=(0, 10))
-
-        entries: dict[str, ttk.Entry] = {}
-        credential_fields = (
-            ("access_key", "AccessKey ID", existing.access_key_id if existing else "", False),
-            ("secret_key", "Secret AccessKey（留空保持不变）", "", True),
-        )
-        for index, (key, label, value, secret) in enumerate(credential_fields):
-            row = 2 + index * 2
-            ttk.Label(credentials_frame, text=label, style="Card.TLabel").grid(
-                row=row, column=0, sticky="w", pady=(5, 4)
-            )
-            entry = ttk.Entry(credentials_frame, width=46, show="•" if secret else "")
-            entry.insert(0, value)
-            entry.grid(row=row + 1, column=0, sticky="ew")
-            entries[key] = entry
-
-        preferences_panel = RoundedPanel(
-            window,
-            radius=14,
-            fill=COLORS["card"],
-            outline=COLORS["border"],
-            background=COLORS["surface"],
-            padding=(14, 12),
-        )
-        preferences_panel.pack(fill="x", pady=(12, 0))
-        preferences_frame = preferences_panel.content
-        preferences_frame.columnconfigure(0, weight=3)
-        preferences_frame.columnconfigure(1, weight=1)
-        ttk.Label(preferences_frame, text="查询偏好", style="Section.TLabel").grid(
-            row=0, column=0, columnspan=2, sticky="w", pady=(0, 8)
-        )
-        ttk.Label(preferences_frame, text="Region", style="Card.TLabel").grid(
-            row=1, column=0, sticky="w", pady=(0, 4)
-        )
-        ttk.Label(
-            preferences_frame,
-            text="刷新间隔（分钟，5–1440）",
-            style="Card.TLabel",
-        ).grid(row=1, column=1, sticky="w", padx=(12, 0), pady=(0, 4))
-        region_entry = ttk.Entry(preferences_frame, width=28)
-        region_entry.insert(0, settings.region)
-        region_entry.grid(row=2, column=0, sticky="ew")
-        entries["region"] = region_entry
-        refresh_entry = ttk.Entry(preferences_frame, width=16)
-        refresh_entry.insert(0, str(settings.refresh_minutes))
-        refresh_entry.grid(row=2, column=1, sticky="ew", padx=(12, 0))
-        entries["refresh"] = refresh_entry
-
-        def show_validation_error(message: str, field: str | None = None) -> None:
-            messagebox.showerror("设置无效", message, parent=window)
-            if field is not None:
-                entries[field].focus_set()
-                entries[field].selection_range(0, "end")
-
+        install_window_effects(window,self.colors["surface"])
+        self.settings_window=window
+        window._geometry=WindowGeometry(window,self.storage,"settings",(400,260))
+        window._chrome=WindowChrome(window,"设置",self.colors,self.font_family,lambda:self._close_settings(window))
+        window.protocol("WM_DELETE_WINDOW",lambda:self._close_settings(window))
+        body=ScrollableBody(window,self.colors)
+        body.pack(fill="both",expand=True)
+        content=body.content
+        def panel(title:str) -> tk.Frame:
+            outer=RoundedPanel(content,radius=14,fill=self.colors["card"],outline=self.colors["border"],
+                               background=self.colors["surface"],padding=(12,10))
+            outer.pack(fill="x",pady=(0,SECTION_GAP))
+            frame=outer.content
+            frame.columnconfigure(0,weight=1)
+            ttk.Label(frame,text=title,style="Section.TLabel").grid(row=0,column=0,columnspan=2,sticky="w",pady=(0,10))
+            return frame
+        appearance=panel("外观")
+        self._settings_theme_var=tk.StringVar(window,self.theme_mode)
+        selector=ttk.Frame(appearance,style="Card.TFrame")
+        selector.grid(row=1,column=0,columnspan=2,sticky="ew")
+        for column,(mode,label) in enumerate(THEME_LABELS.items()):
+            selector.columnconfigure(column,weight=1)
+            ttk.Radiobutton(selector,text=label,value=mode,variable=self._settings_theme_var,
+                style="Theme.TRadiobutton",command=lambda:self._set_theme(self._settings_theme_var.get())).grid(
+                    row=0,column=column,sticky="ew",padx=2)
+        ttk.Label(appearance,text="即时预览，保存后记住选择。",style="CardMuted.TLabel").grid(
+            row=2,column=0,columnspan=2,sticky="w",pady=(10,0))
+        credentials=panel("账号凭据")
+        ttk.Label(credentials,text="AK/SK 仅保存到 Windows 凭据管理器。",style="CardMuted.TLabel",
+                  wraplength=round(340*dpi_scale(window))).grid(row=1,column=0,sticky="w",pady=(0,8))
+        self._settings_entries={}
+        self._settings_errors={}
+        def entry(frame:tk.Frame,key:str,label:str,value:str,row:int,secret:bool=False,
+                  column:int=0) -> ttk.Entry:
+            ttk.Label(frame,text=label,style="Card.TLabel").grid(row=row,column=column,sticky="w",pady=(6,5))
+            field=ttk.Entry(frame,width=28,show="•" if secret else "")
+            field.insert(0,value)
+            field.grid(row=row+1,column=column,sticky="ew",padx=(0,8) if column==0 and key=="region" else 0)
+            error=ttk.Label(frame,text="",style="FieldError.TLabel",wraplength=round(315*dpi_scale(window)))
+            self._settings_entries[key]=field
+            self._settings_errors[key]=error
+            return field
+        entry(credentials,"access_key","AccessKey ID",existing.access_key_id if existing else "",2)
+        entry(credentials,"secret_key","Secret AccessKey · 留空保持不变","",5,True)
+        preferences=panel("查询偏好")
+        preferences.columnconfigure(0,weight=1)
+        preferences.columnconfigure(1,weight=1)
+        entry(preferences,"region","Region",settings.region,1)
+        entry(preferences,"refresh","刷新间隔 · 分钟",str(settings.refresh_minutes),1,column=1)
+        # Equal columns keep the settings width stable across long values.
+        self._settings_entries["region"].configure(width=16)
+        self._settings_entries["refresh"].configure(width=12)
+        entries=self._settings_entries
+        footer=ttk.Frame(window,padding=(self.px(OUTER_PADDING),0,self.px(OUTER_PADDING),self.px(12)))
+        footer.pack(fill="x")
+        general_error=ttk.Label(content,text="",style="Error.TLabel",wraplength=round(360*dpi_scale(window)))
+        general_error.pack(anchor="w")
+        def fit() -> None:
+            if not window.winfo_exists():
+                return
+            if window._geometry.initialized:
+                return
+            window.update_idletasks()
+            width=max(round(460*dpi_scale(window)),content.winfo_reqwidth())
+            left,top,right,bottom=window_work_area(window)
+            width=min(width,right-left-40)
+            fixed=footer.winfo_reqheight()+window._chrome.header.winfo_reqheight()+self.px(8)
+            height=body.fit(max(200,bottom-top-70-fixed))
+            window._geometry.fit((width,height+fixed))
+        def show_validation_error(message:str,field:str|None=None) -> None:
+            if field is None:
+                general_error.configure(text=message)
+            else:
+                widget=entries[field]
+                widget.state(["invalid"])
+                label=self._settings_errors[field]
+                label.configure(text=message)
+                info=widget.grid_info()
+                label.grid(row=int(info["row"])+1,column=int(info["column"]),sticky="w",pady=(4,0))
+                widget.focus_set()
+                widget.selection_range(0,"end")
+            fit()
+            if field:
+                window.update_idletasks()
+                target=entries[field].winfo_rooty()-content.winfo_rooty()
+                body.canvas.yview_moveto(max(0,(target-80)/max(1,content.winfo_height())))
         def save() -> None:
+            for key,field in entries.items():
+                field.state(["!invalid"])
+                self._settings_errors[key].grid_remove()
+            general_error.configure(text="")
             try:
-                new_settings = Settings(
-                    region=entries["region"].get(),
-                    refresh_minutes=int(entries["refresh"].get().strip()),
-                )
-            except (ValueError, QueryError) as exc:
-                message = exc.message if isinstance(exc, QueryError) else "刷新间隔必须是整数"
-                field = (
-                    "region"
-                    if isinstance(exc, QueryError) and exc.message.startswith("Region")
-                    else "refresh"
-                )
-                show_validation_error(message, field)
+                new_settings=Settings(region=entries["region"].get(),refresh_minutes=int(entries["refresh"].get().strip()))
+            except (ValueError,QueryError) as exc:
+                message=exc.message if isinstance(exc,QueryError) else "刷新间隔必须是整数"
+                show_validation_error(message,"region" if isinstance(exc,QueryError) and message.startswith("Region") else "refresh")
                 return
-
-            ak = entries["access_key"].get().strip()
-            sk = entries["secret_key"].get().strip()
+            ak,sk=entries["access_key"].get().strip(),entries["secret_key"].get().strip()
             if not sk and existing is not None:
-                sk = existing.secret_access_key
+                sk=existing.secret_access_key
             try:
-                credentials = Credentials(ak, sk)
+                new_credentials=Credentials(ak,sk)
             except QueryError as exc:
-                show_validation_error(exc.message, "access_key" if not ak else "secret_key")
+                show_validation_error(exc.message,"access_key" if not ak else "secret_key")
                 return
             try:
-                self.storage.save_credentials(credentials)
-                self.storage.save_settings(new_settings)
+                if new_credentials!=existing:
+                    self.storage.save_credentials(new_credentials)
+                if new_settings!=settings:
+                    self.storage.save_settings(new_settings)
+                self.storage.save_appearance(AppearancePreferences(self.theme_mode))
             except QueryError as exc:
                 show_validation_error(exc.message)
                 return
-            self.monitor.update_configuration(new_settings, credentials)
-            self._close_settings(window)
+            if new_settings!=settings or new_credentials!=existing:
+                self.monitor.update_configuration(new_settings,new_credentials)
+            self._close_settings(window,commit=True)
             self.show_popup()
+        ttk.Button(footer,text="保存设置",style="Primary.TButton",command=save).pack(side="right")
+        ttk.Button(footer,text="取消",style="Secondary.TButton",command=lambda:self._close_settings(window)).pack(
+            side="right",padx=(0,8))
+        window.bind("<Return>",lambda event:save())
+        window.bind("<Escape>",lambda event:self._close_settings(window))
+        window.after_idle(fit)
+        window.after_idle(entries["secret_key" if existing is not None else "access_key"].focus_set)
+        self.settings_body=body
 
-        buttons = ttk.Frame(window)
-        buttons.pack(fill="x", pady=(16, 0))
-        ttk.Button(
-            buttons,
-            text="取消",
-            style="Secondary.TButton",
-            command=lambda: self._close_settings(window),
-        ).pack(side="right")
-        ttk.Button(
-            buttons,
-            text="保存设置",
-            style="Primary.TButton",
-            command=save,
-        ).pack(side="right", padx=(0, 8))
-        window.bind("<Return>", lambda event: save())
-        window.bind("<Escape>", lambda event: self._close_settings(window))
-        initial_field = "secret_key" if existing is not None else "access_key"
-        window.after_idle(entries[initial_field].focus_set)
-
-    def _close_settings(self, window: tk.Toplevel) -> None:
+    def _close_settings(self,window:tk.Toplevel,*,commit:bool=False) -> None:
+        original=self._settings_original_mode
+        self._settings_original_mode=None
+        self.settings_window=None
         if window.winfo_exists():
+            window._geometry.flush()
             window.destroy()
-        self.settings_window = None
+        if not commit and original is not None:
+            self._set_theme(original)
         if self.popup is not None and self.popup.winfo_viewable():
             self.popup.focus_set()
 
@@ -837,6 +915,14 @@ class MonitorUI:
         if self._closing:
             return
         self._closing = True
+        if self._theme_poll_after is not None:
+            self.root.after_cancel(self._theme_poll_after)
+            self._theme_poll_after=None
+        for window in (self.popup,self.settings_window):
+            if window is not None and window.winfo_exists():
+                controller=getattr(window,"_geometry",None) or getattr(self,"popup_geometry",None)
+                if controller:
+                    controller.flush()
         self.monitor.stop()
         if self.desktop_widget is not None:
             self.desktop_widget.close()

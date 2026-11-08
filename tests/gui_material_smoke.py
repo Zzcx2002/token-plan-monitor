@@ -2,31 +2,43 @@
 import ctypes
 import tempfile
 from pathlib import Path
+from dataclasses import replace
 from tkinter import ttk
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from gui_preview import ARTIFACTS, FakeMonitor, snapshot
 from token_plan_monitor.models import MonitorViewState
 from token_plan_monitor.storage import Storage
 from token_plan_monitor.ui import MonitorUI
-from token_plan_monitor import ui as ui_module
-from token_plan_monitor.ui_graphics import _ensure_shadow, native_handle
+from token_plan_monitor.ui_graphics import native_handle
 
 
 class MemoryKeyring:
     def __init__(self):
         self.values = {}
+        self.writes = 0
 
     def get_password(self, service, username):
         return self.values.get((service, username))
 
     def set_password(self, service, username, value):
         self.values[service, username] = value
+        self.writes += 1
 
 
 class Monitor(FakeMonitor):
+    def __init__(self):
+        super().__init__()
+        self.configuration_updates=0
+        self.refreshes=0
+
+    def request_refresh(self):
+        self.refreshes+=1
+
     def update_configuration(self, settings, credentials):
         self.saved = (settings, credentials)
+        self.configuration_updates += 1
 
 
 def descendants(widget):
@@ -48,6 +60,46 @@ def main():
             card = app.desktop_widget
             app.root.after(80, app.root.quit)
             app.root.mainloop()
+            app.storage.save_snapshot(state.snapshot)
+            cache_before=app.storage.snapshot_path.read_bytes()
+            initial_card=card.window
+            initial_popup=app.popup
+            initial_position=(card.window.winfo_x(),card.window.winfo_y())
+            app._toggle_details()
+            app._render_state(replace(state,is_refreshing=True))
+            app._render_state(state)
+            assert app._details_expanded
+            app._set_theme("dark",persist=True)
+            app.root.after(80,app.root.quit)
+            app.root.mainloop()
+            assert app.theme.name=="dark" and app._details_expanded
+            assert app.popup is initial_popup and card.window is initial_card
+            assert (card.window.winfo_x(),card.window.winfo_y())==initial_position
+            assert app._state.snapshot is state.snapshot
+            assert app.storage.snapshot_path.read_bytes()==cache_before
+            assert monitor.refreshes==0 and monitor.configuration_updates==0
+            app.open_settings()
+            app.root.after(80,app.root.quit)
+            app.root.mainloop()
+            light=next(w for w in descendants(app.settings_window)
+                       if isinstance(w,ttk.Radiobutton) and w.cget("text")=="浅色")
+            light.invoke()
+            assert app.theme.name=="light"
+            assert app.storage.load_appearance().theme=="dark"
+            cancel=next(w for w in descendants(app.settings_window)
+                        if isinstance(w,ttk.Button) and w.cget("text")=="取消")
+            cancel.invoke()
+            assert app.theme_mode=="dark" and app.theme.name=="dark"
+            assert app._details_expanded
+            with patch("token_plan_monitor.appearance.system_theme",return_value="light"):
+                app._set_theme("system",persist=True)
+                assert app.theme.name=="light"
+                with patch("token_plan_monitor.appearance.system_theme",return_value="dark"):
+                    app.root.after_cancel(app._theme_poll_after)
+                    app._poll_theme()
+                    assert app.theme.name=="dark" and app.theme_mode=="system"
+            assert monitor.refreshes==0 and monitor.configuration_updates==0
+            app._set_theme("light",persist=True)
             opened = []
             card.on_open = lambda: opened.append(True)
             x, y = card.window.winfo_x(), card.window.winfo_y()
@@ -81,21 +133,8 @@ def main():
             app.root.mainloop()
             assert card.window.winfo_viewable()
 
-            _ensure_shadow(card.window)  # Force the fallback even on DWM-capable hosts.
-            app.root.after(80, app.root.quit)
-            app.root.mainloop()
-            shadow = card.window._material_shadow
-            assert shadow.window.winfo_viewable()
-            style = get_style(native_handle(shadow.window), -20)
-            assert style & 0x20 and style & 0x08000000, 'Shadow must not accept mouse/focus'
-            card.set_visible(False)
-            app.root.after(80, app.root.quit)
-            app.root.mainloop()
-            assert not shadow.window.winfo_viewable()
-            card.set_visible(True)
-            app.root.after(80, app.root.quit)
-            app.root.mainloop()
-            assert shadow.window.winfo_viewable()
+            assert not hasattr(card.window,"_material_shadow")
+            assert not card.window._window_effects.shadow
 
             app.show_popup()
             app.root.after(80, app.root.quit)
@@ -109,14 +148,11 @@ def main():
             app.root.mainloop()
             buttons = [w for w in descendants(app.settings_window) if isinstance(w, ttk.Button)]
             save = next(w for w in buttons if w.cget('text') == '保存设置')
-            errors = []
-            original = ui_module.messagebox.showerror
-            ui_module.messagebox.showerror = lambda *args, **kwargs: errors.append(args)
-            try:
-                save.invoke()
-            finally:
-                ui_module.messagebox.showerror = original
-            assert errors and app.settings_window.winfo_exists()
+            save.invoke()
+            app.root.after(80,app.root.quit)
+            app.root.mainloop()
+            assert app._settings_entries["access_key"].instate(["invalid"])
+            assert app._settings_errors["access_key"].cget("text")
             entries = [w for w in descendants(app.settings_window) if isinstance(w, ttk.Entry)]
             entries[0].insert(0, 'offline-test-access-key')
             entries[1].insert(0, 'offline-test-secret')
@@ -133,13 +169,33 @@ def main():
                           if isinstance(w, ttk.Button) and w.cget('text') == '取消')
             cancel.invoke()
             assert app.settings_window is None
+            updates=monitor.configuration_updates
+            writes=app.storage._keyring.writes
+            app.open_settings()
+            app.root.after(80,app.root.quit)
+            app.root.mainloop()
+            dark=next(w for w in descendants(app.settings_window)
+                      if isinstance(w,ttk.Radiobutton) and w.cget("text")=="深色")
+            dark.invoke()
+            save=next(w for w in descendants(app.settings_window)
+                      if isinstance(w,ttk.Button) and w.cget("text")=="保存设置")
+            save.invoke()
+            assert app.settings_window is None
+            assert app.storage.load_appearance().theme=="dark"
+            assert monitor.configuration_updates==updates and monitor.refreshes==0
+            assert app.storage._keyring.writes==writes
+            assert app._details_expanded
             card.close()
             app.root.after(80, app.root.quit)
             app.root.mainloop()
-            assert shadow._closed
-            print('PASS: click, drag, persistence, topmost, hover, hide/restore, shadow lifecycle, Escape, validation, save, cancel')
+            print('PASS: theme switching, system changes, persistence, rollback, no quota/keyring writes, details retention, click, drag, topmost, hover, no outer shadow, Escape, validation, save, cancel')
         finally:
             app.shutdown()
+        restarted=MonitorUI(Monitor(),Storage(Path(temporary),MemoryKeyring()))
+        try:
+            assert restarted.theme_mode=="dark" and restarted.theme.name=="dark"
+        finally:
+            restarted.shutdown()
 
 
 if __name__ == '__main__':

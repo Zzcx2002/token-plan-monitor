@@ -62,6 +62,19 @@ def test_disabled_transparency_restores_solid_background(monkeypatch):
     assert not user.SetWindowCompositionAttribute.calls
 
 
+def test_native_effects_disable_outer_shadow(monkeypatch):
+    user, dwm = native(monkeypatch)
+    user.GetClassLongPtrW.result = 0x00020000
+    monkeypatch.setattr(graphics, "transparency_enabled", lambda: False)
+    result = graphics.apply_window_effects(Window(), "#18191D")
+    assert not result.shadow
+    assert user.SetClassLongPtrW.calls[-1][2] & 0x00020000 == 0
+    policy_call = next(call for call in dwm.DwmSetWindowAttribute.calls if call[1] == 2)
+    assert policy_call[2]._obj.value == 1
+    margins = dwm.DwmExtendFrameIntoClientArea.calls[0][1]._obj
+    assert (margins.left, margins.right, margins.top, margins.bottom) == (0, 0, 0, 0)
+
+
 def test_rejected_composition_keeps_solid_background(monkeypatch):
     native(monkeypatch, composition=0)
     monkeypatch.setattr(graphics, "transparency_enabled", lambda: True)

@@ -4,6 +4,7 @@ import ctypes
 import ctypes.wintypes as wintypes
 import logging
 import tkinter as tk
+import tkinter.font as tkfont
 from dataclasses import replace
 from typing import Any, Callable, Mapping
 
@@ -13,10 +14,11 @@ from .presentation import (
     hover_summary,
     menu_lines,
     state_tone,
-    status_text,
 )
 from .storage import Storage
-from .ui_graphics import RoundedPanel, RoundedProgress, set_rounded_region, apply_window_effects, install_window_effects
+from .window_geometry import WindowGeometry
+from .appearance import installed_fonts
+from .ui_graphics import RoundedPanel, set_rounded_region, apply_window_effects, install_window_effects, rounded_photo, dpi_scale, gradient_image
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +55,87 @@ _user32.SystemParametersInfoW.argtypes = [
 _user32.SystemParametersInfoW.restype = wintypes.BOOL
 
 
+class QuotaCard(tk.Canvas):
+    """Draw labels on the gradient itself, without opaque label rectangles."""
+    def __init__(self, master: tk.Misc, colors: Mapping[str,str], font_family: str):
+        self.scale=dpi_scale(master)
+        self.colors,self.font_family=colors,font_family
+        self.title_font=tkfont.Font(family=font_family,size=9,weight="bold")
+        self.label_font=tkfont.Font(family=font_family,size=9)
+        self.value_font=tkfont.Font(family=installed_fonts(tkfont.families(master))[1],size=18,weight="bold")
+        width=max(round(264*self.scale),self.value_font.measure("100.0%")*2+round(54*self.scale))
+        super().__init__(master,width=width,height=round(124*self.scale),bg=colors["surface"],
+                         highlightthickness=0,borderwidth=0)
+        self.state=MonitorViewState(status="unconfigured")
+        self.phase=0
+        self._surface_key=None
+        self._surface=None
+        self._progress_images=[]
+        self.bind("<Configure>",lambda event:self.draw())
+
+    def render(self,state:MonitorViewState) -> None:
+        self.state=state
+        self.draw()
+
+    def draw(self) -> None:
+        from PIL import Image, ImageDraw, ImageTk
+        c,s=self.colors,self.scale
+        width,height=self.winfo_width(),self.winfo_height()
+        if min(width,height)<=1:
+            return
+        self.configure(background=c["surface"])
+        key=width,height,c["card_top"],c["card_bottom"]
+        if key!=self._surface_key:
+            self._surface=rounded_photo(width,height,radius=round(20*s),fill=c["card_top"],
+                                        end_fill=c["card_bottom"])
+            self._surface_key=key
+        self.delete("all")
+        self.create_image(0,0,image=self._surface,anchor="nw")
+        extra=max(0,height-124*s)
+        state=self.state
+        title=("Agent Plan" if state.snapshot.plan_type=="agent_plan" else "Coding Plan") if state.snapshot else "火山方舟"
+        self.create_text(18*s,20*s,text=title,font=self.title_font,fill=c["text"],anchor="w")
+        tone=state_tone(state)
+        colour=c[{"ok":"success","warning":"warning","error":"error","unconfigured":"muted"}[tone]]
+        dot_x=width-21*s
+        if state.is_refreshing:
+            self.create_arc(dot_x-4*s,16*s,dot_x+4*s,24*s,start=self.phase,extent=270,
+                            style="arc",outline=c["accent"],width=max(1,round(2*s)))
+        else:
+            self.create_oval(dot_x-3*s,17*s,dot_x+3*s,23*s,fill=colour,outline="")
+            if tone!="ok":
+                message={"warning":"数据过期" if state.status=="stale" else "剩余偏低",
+                         "error":"连接异常","unconfigured":"待配置"}[tone]
+                self.create_text(dot_x-10*s,20*s,text=message,font=self.label_font,fill=colour,anchor="e")
+        windows={w.kind:w for w in state.snapshot.windows} if state.snapshot else {}
+        self._progress_images=[]
+        column_width=(width-48*s)/2
+        for index,(kind,label) in enumerate((("five_hour","5 小时剩余"),("weekly","每周剩余"))):
+            x=18*s+index*(column_width+12*s)
+            self.create_text(x,49*s+extra*.35,text=label,font=self.label_font,fill=c["muted"],anchor="w")
+            window=windows.get(kind)
+            warning=window is not None and window.remaining_percent<10
+            self.create_text(x,76*s+extra*.65,text=compact_remaining(state,kind),font=self.value_font,
+                             fill=c["warning"] if warning else c["text"],anchor="w")
+            bar_width,bar_height=max(1,round(column_width)),max(3,round(4*s))
+            bar=Image.new("RGBA",(bar_width*3,bar_height*3))
+            mask=Image.new("L",bar.size)
+            ImageDraw.Draw(mask).rounded_rectangle((0,0,bar.width-1,bar.height-1),radius=bar.height//2,fill=255)
+            bar.paste(c["trough"],(0,0,bar.width,bar.height))
+            if window:
+                fill=round(bar.width*window.remaining_percent/100)
+                if fill:
+                    gradient=gradient_image(fill,bar.height,c["warning_start"] if warning else c["accent_start"],
+                                            c["warning"] if warning else c["accent"],True)
+                    bar.paste(gradient,(0,0))
+            bar.putalpha(mask)
+            image=ImageTk.PhotoImage(bar.resize((bar_width,bar_height),Image.Resampling.LANCZOS))
+            self._progress_images.append(image)
+            self.create_image(x,101*s+extra,image=image,anchor="nw")
+
+
 class DesktopWidget:
-    MIN_WIDTH = 272
+    MIN_WIDTH = 280
     DRAG_THRESHOLD = 5
 
     def __init__(
@@ -69,6 +150,7 @@ class DesktopWidget:
         on_preferences_changed: Callable[[], None],
         colors: Mapping[str, str],
         font_family: str,
+        shadow_opacity: float = 0.14,
     ):
         self.root = root
         self.storage = storage
@@ -79,6 +161,9 @@ class DesktopWidget:
         self.on_preferences_changed = on_preferences_changed
         self.colors = colors
         self.font_family = font_family
+        self._padding = 0
+        self.MIN_WIDTH = round(280*dpi_scale(root))
+        self._spinner_after = None
         self._state = MonitorViewState(status="unconfigured")
         self._preferences = storage.load_widget_preferences()
         self._hover: tk.Toplevel | None = None
@@ -93,12 +178,16 @@ class DesktopWidget:
         self.window = tk.Toplevel(root)
         self.window.withdraw()
         self.window.title("火山方舟桌面容量")
+        self.window._shadow_opacity = shadow_opacity
         self.window.overrideredirect(True)
         self.window.resizable(False, False)
         self.window.configure(background=colors["surface"])
         self.window.attributes("-topmost", self._preferences.topmost)
-        install_window_effects(self.window, self.colors["surface"], 20)
+        install_window_effects(self.window, self.colors["surface"], round(20*dpi_scale(self.window)))
+        self.geometry=WindowGeometry(self.window,storage,"widget",(280,124))
+        self._resize_press=None
         self._create_card()
+        self.window.bind("<Configure>",self._on_size,add=True)
         self._bind_recursive(self.window)
         self.render(self._state)
         if self._preferences.visible:
@@ -115,79 +204,24 @@ class DesktopWidget:
         return self._preferences.topmost
 
     def _create_card(self) -> None:
-        self.card = RoundedPanel(
-            self.window,
-            radius=20,
-            fill=self.colors["card"],
-            outline=self.colors["border"],
-            background=self.colors["surface"],
-            padding=(14, 11),
-        )
-        self.card.pack(fill="both", expand=True, padx=8, pady=8)
-        card = self.card.content
-        header = tk.Frame(card, background=self.colors["card"])
-        header.pack(fill="x")
-        self.status_dot = tk.Canvas(
-            header,
-            width=10,
-            height=10,
-            background=self.colors["card"],
-            highlightthickness=0,
-        )
-        self.status_dot.pack(side="left", pady=(4, 0))
-        self._dot = self.status_dot.create_oval(1, 1, 9, 9, outline="")
-        self.plan_label = tk.Label(
-            header,
-            text="火山方舟",
-            background=self.colors["card"],
-            foreground=self.colors["text"],
-            font=(self.font_family, 9, "bold"),
-        )
-        self.plan_label.pack(side="left", padx=(5, 0))
-        self.status_label = tk.Label(
-            header,
-            text="待配置",
-            background=self.colors["card"],
-            foreground=self.colors["muted"],
-            font=(self.font_family, 8),
-        )
-        self.status_label.pack(side="right")
+        self.card=QuotaCard(self.window,self.colors,self.font_family)
+        self.card.pack(fill="both",expand=True,padx=self._padding,pady=self._padding)
 
-        quotas = tk.Frame(card, background=self.colors["card"])
-        quotas.pack(fill="x", pady=(9, 0))
-        quotas.columnconfigure(0, weight=1, uniform="quota")
-        quotas.columnconfigure(1, weight=1, uniform="quota")
-        self.quota_labels: dict[str, tk.Label] = {}
-        self.quota_progress: dict[str, RoundedProgress] = {}
-        for column, (kind, title) in enumerate((("five_hour", "5 小时"), ("weekly", "每周"))):
-            cell = tk.Frame(quotas, background=self.colors["card"])
-            cell.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 10, 0))
-            tk.Label(
-                cell,
-                text=title,
-                background=self.colors["card"],
-                foreground=self.colors["muted"],
-                font=(self.font_family, 8),
-            ).pack(anchor="w")
-            value = tk.Label(
-                cell,
-                text="—",
-                background=self.colors["card"],
-                foreground=self.colors["text"],
-                font=(self.font_family, 18, "bold"),
-            )
-            value.pack(anchor="w", pady=(1, 3))
-            self.quota_labels[kind] = value
-            progress = RoundedProgress(
-                cell,
-                background=self.colors["card"],
-                trough=self.colors["trough"],
-                height=4,
-            )
-            progress.pack(fill="x", pady=(0, 1))
-            self.quota_progress[kind] = progress
+    def set_theme(self, colors: Mapping[str,str], shadow_opacity: float) -> None:
+        self.colors=colors
+        self.window.configure(background=colors["surface"])
+        self.window._shadow_opacity=shadow_opacity
+        self.card.colors=colors
+        self.card._surface_key=None
+        self.card.draw()
+        apply_window_effects(self.window,colors["surface"])
+        if self._hover is not None:
+            self._hover.destroy()
+            self._hover=None
+            self._hover_label=None
 
     def _bind_recursive(self, widget: tk.Misc) -> None:
+        widget.bind("<Motion>",self._resize_cursor,add=True)
         widget.bind("<Enter>", self._on_enter, add=True)
         widget.bind("<Leave>", self._on_leave, add=True)
         widget.bind("<ButtonPress-1>", self._on_press, add=True)
@@ -200,51 +234,30 @@ class DesktopWidget:
     def render(self, state: MonitorViewState) -> None:
         if self._closed:
             return
-        self._state = state
-        text = status_text(state)
-        tone = state_tone(state)
-        status_color = {
-            "ok": self.colors["success"],
-            "warning": self.colors["warning"],
-            "error": self.colors["error"],
-            "unconfigured": self.colors["muted"],
-        }[tone]
-        dot_color = self.colors["accent"] if state.is_refreshing else status_color
-        self.status_label.config(text=text, foreground=status_color)
-        self.plan_label.config(text=("Agent Plan" if state.snapshot.plan_type == "agent_plan" else "Coding Plan") if state.snapshot else "火山方舟")
-        self.status_dot.itemconfigure(self._dot, fill=dot_color)
-        windows = {window.kind: window for window in state.snapshot.windows} if state.snapshot else {}
-        for kind, label in self.quota_labels.items():
-            window = windows.get(kind)
-            warning = window is not None and window.remaining_percent < 10
-            color = self.colors["warning"] if warning else self.colors["text"]
-            label.config(text=compact_remaining(state, kind), foreground=color)
-            self.quota_progress[kind].set(
-                window.remaining_percent if window is not None else 0,
-                self.colors["warning"] if warning else self.colors["accent"],
-            )
+        self._state=state
+        self.card.render(state)
         self._fit_to_content()
+        if state.is_refreshing and self._spinner_after is None:
+            self._spin()
         if self._hover is not None and self._hover.winfo_viewable():
             self._show_hover()
 
+    def _spin(self) -> None:
+        self._spinner_after=None
+        if self._closed or not self._state.is_refreshing:
+            return
+        self.card.phase=(self.card.phase-30)%360
+        self.card.draw()
+        self._spinner_after=self.root.after(90,self._spin)
+
     def _fit_to_content(self) -> None:
-        if self._closed:
+        if self._closed or self.geometry.initialized:
             return
         self.window.update_idletasks()
-        width = max(self.MIN_WIDTH, self.card.winfo_reqwidth() + 16)
-        height = max(1, self.card.winfo_reqheight() + 16)
-        if (width, height) == self._size:
-            return
-        self._size = (width, height)
-        if self.window.winfo_viewable():
-            x, y = self._clamp_position(
-                self.window.winfo_x(), self.window.winfo_y(), width, height
-            )
-            self.window.geometry(f"{width}x{height}+{x}+{y}")
-            apply_window_effects(self.window, self.colors["surface"])
-            set_rounded_region(self.window, 20)
-        else:
-            self.window.geometry(f"{width}x{height}")
+        width=max(self.MIN_WIDTH,self.card.winfo_reqwidth())
+        height=max(1,self.card.winfo_reqheight())
+        self.geometry.fit((width,height))
+        self._size=self.geometry.pixel_size
 
     def show(self) -> None:
         if self._closed:
@@ -260,7 +273,7 @@ class DesktopWidget:
         self.window.deiconify()
         self.window.attributes("-topmost", self._preferences.topmost)
         apply_window_effects(self.window, self.colors["surface"])
-        set_rounded_region(self.window, 20)
+        set_rounded_region(self.window, round(20*dpi_scale(self.window)))
 
     def set_visible(self, visible: bool) -> None:
         self._save_preferences(replace(self._preferences, visible=visible))
@@ -323,7 +336,7 @@ class DesktopWidget:
             hover.overrideredirect(True)
             hover.attributes("-topmost", True)
             hover.configure(background=self.colors["surface"])
-            install_window_effects(hover, self.colors["surface"], 16)
+            install_window_effects(hover, self.colors["surface"], round(16*dpi_scale(hover)))
             panel = RoundedPanel(
                 hover,
                 radius=13,
@@ -342,7 +355,10 @@ class DesktopWidget:
             )
             self._hover_label.pack()
             self._hover = hover
-        self._hover_label.config(text=hover_summary(self._state))
+        summary=hover_summary(self._state)
+        if self._state.snapshot:
+            summary+=f"\n每月剩余 {compact_remaining(self._state,'monthly')} · 更新于 {self._state.snapshot.queried_at.astimezone():%H:%M}"
+        self._hover_label.config(text=summary)
         self._hover.update_idletasks()
         width = self._hover.winfo_reqwidth()
         height = self._hover.winfo_reqheight()
@@ -355,10 +371,32 @@ class DesktopWidget:
         self._hover.geometry(f"{width}x{height}+{x}+{y}")
         self._hover.deiconify()
         apply_window_effects(self._hover, self.colors["surface"])
-        set_rounded_region(self._hover, 16)
+        set_rounded_region(self._hover, round(16*dpi_scale(self._hover)))
+
+    def _on_size(self,event:tk.Event) -> None:
+        if event.widget==self.window and self._size!=(event.width,event.height):
+            self._size=(event.width,event.height)
+            set_rounded_region(self.window,round(20*dpi_scale(self.window)))
+
+    def _edge(self,event:tk.Event) -> str:
+        x,y=event.x_root-self.window.winfo_rootx(),event.y_root-self.window.winfo_rooty()
+        edge=round(7*dpi_scale(self.window))
+        return ("n" if y<edge else "s" if y>=self.window.winfo_height()-edge else "") + (
+            "w" if x<edge else "e" if x>=self.window.winfo_width()-edge else "")
+
+    def _resize_cursor(self,event:tk.Event) -> None:
+        edge=self._edge(event)
+        cursors={"n":"size_ns","s":"size_ns","e":"size_we","w":"size_we",
+                 "ne":"size_ne_sw","sw":"size_ne_sw","nw":"size_nw_se","se":"size_nw_se"}
+        event.widget.configure(cursor=cursors.get(edge,""))
 
     def _on_press(self, event: tk.Event) -> None:
         self._cancel_hover()
+        edge=self._edge(event)
+        if edge:
+            self._resize_press=(edge,event.x_root,event.y_root,self.window.winfo_x(),
+                                self.window.winfo_y(),self.window.winfo_width(),self.window.winfo_height())
+            return
         self._press = (
             event.x_root,
             event.y_root,
@@ -368,6 +406,18 @@ class DesktopWidget:
         self._dragged = False
 
     def _on_drag(self, event: tk.Event) -> None:
+        if self._resize_press is not None:
+            edge,sx,sy,x,y,w,h=self._resize_press
+            dx,dy=event.x_root-sx,event.y_root-sy
+            left,top,right,bottom=self._work_area(x,y,w,h)
+            minw,minh=(round(n*dpi_scale(self.window)) for n in (280,124))
+            nw=min(max(minw,w+dx if "e" in edge else w-dx if "w" in edge else w),right-left)
+            nh=min(max(minh,h+dy if "s" in edge else h-dy if "n" in edge else h),bottom-top)
+            nx=x+w-nw if "w" in edge else x
+            ny=y+h-nh if "n" in edge else y
+            nx,ny=self._clamp_position(nx,ny,nw,nh)
+            self.window.geometry(f"{nw}x{nh}+{nx}+{ny}")
+            return
         if self._press is None:
             return
         start_x, start_y, window_x, window_y = self._press
@@ -379,6 +429,11 @@ class DesktopWidget:
         self.window.geometry(f"+{window_x + dx}+{window_y + dy}")
 
     def _on_release(self, event: tk.Event) -> None:
+        if self._resize_press is not None:
+            self._resize_press=None
+            self.geometry.flush()
+            self._save_preferences(replace(self._preferences,x=self.window.winfo_x(),y=self.window.winfo_y()))
+            return
         if self._press is None:
             return
         dragged = self._dragged
@@ -459,7 +514,11 @@ class DesktopWidget:
     def close(self) -> None:
         if self._closed:
             return
+        self.geometry.flush()
         self._closed = True
+        if self._spinner_after is not None:
+            self.root.after_cancel(self._spinner_after)
+            self._spinner_after = None
         self._cancel_hover()
         for window in (self._hover, self.window):
             if window is not None:

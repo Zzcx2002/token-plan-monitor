@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import math
 from pathlib import Path
 from typing import Any
 
 import keyring
+
+from .appearance import AppearancePreferences
 
 from .models import (
     SCHEMA_VERSION,
@@ -30,7 +33,28 @@ class Storage:
         self.config_path = self.data_dir / "config.json"
         self.snapshot_path = self.data_dir / "snapshot.json"
         self.widget_path = self.data_dir / "widget.json"
+        self.geometry_path = self.data_dir / "window_geometry.json"
+        self.appearance_path = self.data_dir / "appearance.json"
         self._keyring = keyring_backend or keyring
+
+    def load_window_size(self, name: str) -> tuple[float, float] | None:
+        value = (self._read_json(self.geometry_path) or {}).get(name)
+        if not isinstance(value, list) or len(value) != 2:
+            return None
+        if any(type(n) not in (int, float) or not math.isfinite(n) or n <= 0 for n in value):
+            return None
+        return float(value[0]), float(value[1])
+
+    def save_window_size(self, name: str, size: tuple[float, float]) -> None:
+        values = self._read_json(self.geometry_path) or {}
+        values[name] = list(size)
+        self._write_json(self.geometry_path, values)
+
+    def load_appearance(self) -> AppearancePreferences:
+        return AppearancePreferences.from_dict(self._read_json(self.appearance_path))
+
+    def save_appearance(self, preferences: AppearancePreferences) -> None:
+        self._write_json(self.appearance_path, preferences.to_dict())
 
     def load_settings(self) -> Settings:
         value = self._read_json(self.config_path)

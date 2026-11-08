@@ -1,4 +1,4 @@
-"""Optional Windows GUI smoke check; run while the desktop app is open."""
+"""Windows capture helpers; standalone execution uses isolated GUI checks."""
 
 from __future__ import annotations
 
@@ -160,34 +160,7 @@ def click_window_center(hwnd):
 
 
 if __name__ == "__main__":
-    user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
-    ARTIFACTS.mkdir(parents=True, exist_ok=True)
-    settings = find_window("火山方舟用量查询设置")
-    user32.SetWindowPos(settings, ctypes.c_void_p(-1), 0, 0, 0, 0, 0x0053)
-    time.sleep(0.3)
-    capture(settings, "settings.png")
-
-    # Tk widgets share one native window; locate Save by its rendered accent fill.
-    left, top, right, bottom = find_color_bounds("settings.png", (0, 122, 255))
-    click_window_offset(settings, (left + right) // 2, (top + bottom) // 2)
-    validation = find_window("设置无效")
-    user32.SetWindowPos(validation, ctypes.c_void_p(-1), 0, 0, 0, 0, 0x0053)
-    time.sleep(0.3)
-    capture(validation, "validation.png")
-
-    user32.FindWindowExW.argtypes = [
-        ctypes.wintypes.HWND,
-        ctypes.wintypes.HWND,
-        ctypes.wintypes.LPCWSTR,
-        ctypes.wintypes.LPCWSTR,
-    ]
-    user32.FindWindowExW.restype = ctypes.wintypes.HWND
-    ok_button = user32.FindWindowExW(validation, None, "Button", None)
-    if not ok_button:
-        raise RuntimeError("Validation OK button not found")
-    click_window_center(ok_button)
-    time.sleep(0.5)
-    if user32.FindWindowW(None, "设置无效"):
-        raise RuntimeError("Validation dialog did not close")
-    user32.PostMessageW(settings, WM_CLOSE, 0, 0)
-    print("GUI smoke check passed; screenshots saved under", ARTIFACTS)
+    # Validation is inline now; exercise a separate fake-data app instead of
+    # searching for or clicking the user's running settings window.
+    from gui_material_smoke import main
+    main()
