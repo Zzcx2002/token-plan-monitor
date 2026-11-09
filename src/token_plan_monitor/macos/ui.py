@@ -11,12 +11,20 @@ import Quartz  # registers CGColor / CALayer bridge metadata
 from objc import super
 
 from ..assets import make_tray_icon
-from ..models import QueryError, WINDOW_ORDER
+from ..models import CARD_MIN_HEIGHT, CARD_MIN_WIDTH, QueryError, WINDOW_ORDER
 from ..presentation import (
     WINDOW_LABELS, compact_remaining, format_datetime, format_number,
     hover_summary, menu_lines, state_tone, status_text,
 )
-from .layout import FieldValidationError, clamp_card, lowest_windows, primary_action, validate_configuration
+from .layout import (
+    FieldValidationError,
+    clamp_card,
+    fit_card_size,
+    lowest_windows,
+    primary_action,
+    resize_card_frame,
+    validate_configuration,
+)
 
 logger = logging.getLogger(__name__)
 TITLE = "火山方舟用量监控"
@@ -84,8 +92,8 @@ def label(parent, text, x, y, width, size=13, *, bold=False, color=None):
     return text_label(parent, text, x, y, width, size, bold=bold, color=color).frame().size.height
 
 
-def button(parent, title, x, y, width, target, command, *, key=None):
-    view = FocusButton.buttonWithTitle_target_action_(title, target, "menuAction:")
+def button(parent, title, x, y, width, target, command, *, key=None, view_type=None):
+    view = (view_type or FocusButton).buttonWithTitle_target_action_(title, target, "menuAction:")
     view.setFrame_(rect(x, y, width, 32))
     view.setBezelStyle_(A.NSBezelStyleRounded)
     view.setIdentifier_(command)
@@ -95,8 +103,8 @@ def button(parent, title, x, y, width, target, command, *, key=None):
     return view
 
 
-def quota_background(parent, y, height):
-    panel = A.NSView.alloc().initWithFrame_(rect(12, y, 432, height))
+def quota_background(parent, y, width, height):
+    panel = A.NSView.alloc().initWithFrame_(rect(12, y, width, height))
     panel.setWantsLayer_(True)
     panel.layer().setCornerRadius_(12)
     panel.layer().setBackgroundColor_(A.NSColor.whiteColor().CGColor())
@@ -124,6 +132,27 @@ class FocusButton(A.NSButton):
             super().keyDown_(event)
 
 
+class CardRefreshButton(FocusButton):
+    # The native rounded image-only bezel is about 20 points inside its 32-point frame.
+    hit_inset = 6
+
+    def hitFrame(self):
+        return F.NSInsetRect(self.frame(), self.hit_inset, self.hit_inset)
+
+    def toolTip(self):
+        return getattr(self, "_compact_tool_tip", None)
+
+    def setToolTip_(self, text):
+        self._compact_tool_tip = text
+        self.removeAllToolTips()
+        if text:
+            hit_bounds = F.NSInsetRect(self.bounds(), self.hit_inset, self.hit_inset)
+            self.addToolTipRect_owner_userData_(hit_bounds, self, None)
+
+    def view_stringForToolTip_point_userData_(self, view, tag, point, user_data):
+        return self._compact_tool_tip
+
+
 class CardPanel(A.NSPanel):
     def canBecomeKeyWindow(self):
         return True
@@ -134,32 +163,91 @@ class CardPanel(A.NSPanel):
 
 
 class CardView(FlippedView):
+    resize_margin = 8
+
     def hitTest_(self, point):
-        # Keep controls interactive; only the display-only background handles drags.
+        # Buttons stay interactive, including while disabled; labels remain draggable.
+        if not F.NSPointInRect(point, self.frame()):
+            return None
         for child in reversed(list(self.subviews())):
-            if isinstance(child, A.NSButton) and not child.isHidden() and F.NSPointInRect(point, child.frame()):
+            if not isinstance(child, A.NSButton) or child.isHidden():
+                continue
+            hit_frame = child.hitFrame() if isinstance(child, CardRefreshButton) else child.frame()
+            if F.NSPointInRect(point, hit_frame):
                 return child
-        return self if F.NSPointInRect(point, self.frame()) else None
+        return self
 
     def acceptsFirstMouse_(self, event):
         return True
+
+    def _mouse_location(self):
+        return A.NSEvent.mouseLocation()
+
+    def resizeSubviewsWithOldSize_(self, old_size):
+        super().resizeSubviewsWithOldSize_(old_size)
+        self.owner.layout_card()
+
+    def _edges_at(self, point):
+        size = self.bounds().size
+        edges = set()
+        if point.x <= self.resize_margin:
+            edges.add("left")
+        elif point.x >= size.width - self.resize_margin:
+            edges.add("right")
+        if point.y <= self.resize_margin:
+            edges.add("top")
+        elif point.y >= size.height - self.resize_margin:
+            edges.add("bottom")
+        return frozenset(edges)
+
+    def resetCursorRects(self):
+        super().resetCursorRects()
+        size = self.bounds().size
+        margin = self.resize_margin
+        horizontal_height = max(0, size.height - margin * 2)
+        vertical_width = max(0, size.width - margin * 2)
+        self.addCursorRect_cursor_(rect(0, margin, margin, horizontal_height), A.NSCursor.resizeLeftRightCursor())
+        self.addCursorRect_cursor_(rect(size.width - margin, margin, margin, horizontal_height), A.NSCursor.resizeLeftRightCursor())
+        self.addCursorRect_cursor_(rect(margin, 0, vertical_width, margin), A.NSCursor.resizeUpDownCursor())
+        self.addCursorRect_cursor_(rect(margin, size.height - margin, vertical_width, margin), A.NSCursor.resizeUpDownCursor())
+        for corner in (
+            rect(0, 0, margin, margin),
+            rect(size.width - margin, 0, margin, margin),
+            rect(0, size.height - margin, margin, margin),
+            rect(size.width - margin, size.height - margin, margin, margin),
+        ):
+            self.addCursorRect_cursor_(corner, A.NSCursor.crosshairCursor())
 
     def mouseDown_(self, event):
         self.context_click = bool(event.modifierFlags() & A.NSEventModifierFlagControl)
         if self.context_click:
             self.rightMouseDown_(event)
             return
-        self.press = A.NSEvent.mouseLocation()
-        self.origin = self.window().frame().origin
+        self.press = self._mouse_location()
+        frame = self.window().frame()
+        self.origin = frame.origin
+        self.initial_frame = (frame.origin.x, frame.origin.y, frame.size.width, frame.size.height)
+        point = self.convertPoint_fromView_(event.locationInWindow(), None)
+        self.resize_edges = self._edges_at(point)
         self.dragged = False
 
     def mouseDragged_(self, event):
         if getattr(self, "context_click", False):
             return
-        point = A.NSEvent.mouseLocation()
+        point = self._mouse_location()
         dx, dy = point.x - self.press.x, point.y - self.press.y
-        if self.dragged or dx * dx + dy * dy >= 16:
-            self.dragged = True
+        if not self.dragged and dx * dx + dy * dy < 16:
+            return
+        self.dragged = True
+        if self.resize_edges:
+            native_screen = self.window().screen()
+            screen = None
+            if native_screen is not None:
+                visible = native_screen.visibleFrame()
+                screen = (visible.origin.x, visible.origin.y, visible.size.width, visible.size.height)
+            frame = resize_card_frame(self.initial_frame, dx, dy, self.resize_edges, screen)
+            self.window().setFrame_display_(rect(*frame), True)
+        else:
             self.window().setFrameOrigin_(F.NSMakePoint(self.origin.x + dx, self.origin.y + dy))
 
     def mouseUp_(self, event):
@@ -167,11 +255,10 @@ class CardView(FlippedView):
             return
         if getattr(self, "dragged", False):
             self.owner.clamp_and_save_card()
-        else:
-            self.owner.show_details()
+        self.resize_edges = frozenset()
 
     def rightMouseDown_(self, event):
-        A.NSMenu.popUpContextMenu_withEvent_forView_(self.owner.make_menu(), event, self)
+        A.NSMenu.popUpContextMenu_withEvent_forView_(self.owner.make_menu(include_details=False), event, self)
 
     def otherMouseDown_(self, event):
         self.rightMouseDown_(event)
@@ -193,6 +280,7 @@ class Actions(F.NSObject):
     def windowDidResize_(self, notification):
         if notification.object() == self.owner.details:
             self.owner.layout_details()
+            self.owner.render_details_document()
 
     def tick_(self, timer):
         self.owner.drain_events()
@@ -301,30 +389,47 @@ class MonitorUI:
         self.app.activateIgnoringOtherApps_(True)
         window.makeKeyAndOrderFront_(None)
 
-    def make_menu(self):
+    def make_menu(self, include_details=True):
         menu = A.NSMenu.alloc().initWithTitle_(TITLE)
         menu.setAutoenablesItems_(False)
         for line in menu_lines(self.state):
             item = menu.addItemWithTitle_action_keyEquivalent_(line, None, "")
             item.setEnabled_(False)
         menu.addItem_(A.NSMenuItem.separatorItem())
-        entries = (("打开用量详情", "details"), ("立即刷新", "refresh"),
-                   ("桌面卡片", "card"), ("卡片置顶", "topmost"), ("设置…", "settings"), ("退出", "exit"))
+        entries = (("立即刷新", "refresh"), ("桌面卡片", "card"), ("显示模式", "display-mode"),
+                   ("卡片置顶", "topmost"), ("设置…", "settings"), ("退出", "exit"))
+        if include_details:
+            entries = (("打开用量详情", "details"),) + entries
         for title, command in entries:
             item = menu.addItemWithTitle_action_keyEquivalent_(title, "menuAction:", "q" if command == "exit" else "")
             item.setTarget_(self.actions)
             item.setRepresentedObject_(command)
+            if command == "display-mode":
+                modes = A.NSMenu.alloc().initWithTitle_(title)
+                modes.setAutoenablesItems_(False)
+                for mode_title, mode_command, desktop in (
+                    ("悬浮卡片", "floating-mode", False), ("桌面组件", "desktop-mode", True),
+                ):
+                    mode_item = modes.addItemWithTitle_action_keyEquivalent_(mode_title, "menuAction:", "")
+                    mode_item.setTarget_(self.actions)
+                    mode_item.setRepresentedObject_(mode_command)
+                    mode_item.setState_(A.NSControlStateValueOn if self.preferences.desktop_mode == desktop else A.NSControlStateValueOff)
+                item.setSubmenu_(modes)
             if command in ("card", "topmost"):
                 checked = self.preferences.visible if command == "card" else self.preferences.topmost
                 item.setState_(A.NSControlStateValueOn if checked else A.NSControlStateValueOff)
+            if command == "topmost":
+                item.setEnabled_(not self.preferences.desktop_mode)
         return menu
 
     def command(self, command):
         handlers = {"details": self.show_details, "refresh": self.monitor.request_refresh,
                     "card": self.toggle_card, "topmost": self.toggle_topmost,
+                    "floating-mode": lambda: self.set_desktop_mode(False),
+                    "desktop-mode": lambda: self.set_desktop_mode(True),
                     "settings": self.open_settings, "save": self.save_settings,
                     "check-credentials": self.check_credentials,
-                    "card-menu": self.show_card_menu, "credential-help": self.toggle_credential_help,
+                    "credential-help": self.toggle_credential_help,
                     "cancel": lambda: self.settings.orderOut_(None),
                     "close-details": lambda: self.details.orderOut_(None),
                     "exit": lambda: self.app.terminate_(None)}
@@ -334,10 +439,6 @@ class MonitorUI:
     def check_credentials(self):
         self.open_settings()
         self.settings.makeFirstResponder_(self.fields["ak"])
-
-    def show_card_menu(self):
-        menu = self.make_menu()
-        menu.popUpMenuPositioningItem_atLocation_inView_(None, F.NSMakePoint(342, 42), self.card_view)
 
     def drain_events(self):
         latest = None
@@ -442,9 +543,19 @@ class MonitorUI:
         self.settings_button.setTitle_("重试" if command == "check-credentials" and self.state.status != "unconfigured" else "设置…")
         self.settings_button.setIdentifier_("refresh" if command == "check-credentials" and self.state.status != "unconfigured" else "settings")
         self.settings_button.setEnabled_(not (self.state.is_refreshing and self.settings_button.identifier() == "refresh"))
+        self.render_details_document()
+
+    def render_details_document(self):
+        if not hasattr(self, "details_scroll"):
+            return
         origin = self.details_scroll.contentView().bounds().origin
-        content = FlippedView.alloc().initWithFrame_(rect(0, 0, 456, 438))
-        width, y = 408, 12
+        viewport_width = self.details_scroll.contentView().bounds().size.width
+        content_width = max(1, viewport_width - 24)
+        width = max(1, content_width - 48)
+        content = FlippedView.alloc().initWithFrame_(rect(0, 0, content_width, 438))
+        y = 12
+        snapshot = self.state.snapshot
+        reason = self.header_reason.stringValue()
         if snapshot:
             y += label(content, snapshot.plan_name or snapshot.plan_type, 24, y, width, 16, bold=True) + 12
             windows = {window.kind: window for window in snapshot.windows}
@@ -472,7 +583,7 @@ class MonitorUI:
                         text += f" · AFP {format_number(window.used)} / {format_number(window.quota)} · 剩余 {format_number(window.remaining_absolute)}"
                     y += label(content, text, 24, y, width, 12, color=SECONDARY)
                     y += label(content, "重置时间：" + (format_datetime(window.reset_at) if window.reset_at else "—"), 24, y, width, 11, color=SECONDARY) + 10
-                quota_background(content, start_y, y - start_y - 4)
+                quota_background(content, start_y, max(1, content_width - 24), y - start_y - 4)
                 y += 6
         else:
             text = "请先连接账号，填写 AK/SK 以查询套餐容量。" if self.state.status == "unconfigured" else "尚未获取套餐用量，请使用下方操作恢复查询。"
@@ -481,7 +592,7 @@ class MonitorUI:
         if len(reason) > 60 or "\n" in reason:
             y += label(content, "完整错误说明", 24, y, width, 13, bold=True) + 6
             y += label(content, reason, 24, y, width, 12, color=SECONDARY) + 12
-        content.setFrameSize_(F.NSMakeSize(456, y + 12))
+        content.setFrameSize_(F.NSMakeSize(content_width, y + 12))
         self.details_scroll.setDocumentView_(content)
         max_y = max(0, content.frame().size.height - self.details_scroll.contentView().bounds().size.height)
         self.details_scroll.contentView().scrollToPoint_(F.NSMakePoint(0, min(origin.y, max_y)))
@@ -489,7 +600,8 @@ class MonitorUI:
 
     def create_card(self):
         self.card = CardPanel.alloc().initWithContentRect_styleMask_backing_defer_(
-            rect(0, 0, 384, 160), A.NSWindowStyleMaskBorderless | A.NSWindowStyleMaskNonactivatingPanel,
+            rect(0, 0, self.preferences.width, self.preferences.height),
+            A.NSWindowStyleMaskBorderless | A.NSWindowStyleMaskNonactivatingPanel,
             A.NSBackingStoreBuffered, False)
         self.card.owner = self
         self.card.setReleasedWhenClosed_(False)
@@ -498,13 +610,30 @@ class MonitorUI:
         self.card.setHasShadow_(True)
         self.card.setHidesOnDeactivate_(False)
         self.card.setBecomesKeyOnlyIfNeeded_(False)
-        self.card.setCollectionBehavior_(A.NSWindowCollectionBehaviorMoveToActiveSpace)
+        self.card.setContentMinSize_(F.NSMakeSize(CARD_MIN_WIDTH, CARD_MIN_HEIGHT))
         self.card.setAppearance_(A.NSAppearance.appearanceNamed_(A.NSAppearanceNameAqua))
-        self.card_view = CardView.alloc().initWithFrame_(rect(0, 0, 384, 160))
+        self.card_view = CardView.alloc().initWithFrame_(rect(0, 0, self.preferences.width, self.preferences.height))
         self.card_view.owner = self
         self.card.setContentView_(self.card_view)
         self.position_card()
         self.sync_card_visibility()
+
+    def layout_card(self):
+        if not hasattr(self, "card_values"):
+            return
+        size = self.card_view.bounds().size
+        margin, gutter = 18, 8
+        column_width = max(1, (size.width - margin * 2 - gutter * 2) / 3)
+        self.card_title.setFrame_(rect(margin, 12, 92, self.card_title.frame().size.height))
+        self.card_status.setFrame_(rect(118, 14, max(1, size.width - 136), self.card_status.frame().size.height))
+        for index, kind in enumerate(WINDOW_ORDER):
+            x = margin + index * (column_width + gutter)
+            self.card_titles[kind].setFrame_(rect(x, 46, column_width, self.card_titles[kind].frame().size.height))
+            self.card_values[kind].setFrame_(rect(x, 67, column_width, self.card_values[kind].frame().size.height))
+        footer_width = max(1, size.width - margin * 2 - 44)
+        self.card_updated.setFrame_(rect(margin, size.height - 52, footer_width, self.card_updated.frame().size.height))
+        self.card_hint.setFrame_(rect(margin, size.height - 25, footer_width, self.card_hint.frame().size.height))
+        self.card_refresh_button.setFrame_(rect(size.width - 44, size.height - 44, 32, 32))
 
     def render_card(self):
         if self.card is None:
@@ -519,24 +648,25 @@ class MonitorUI:
             effect.layer().setMasksToBounds_(True)
             self.card_view.addSubview_(effect)
             self.materials = [effect]
-            text_label(self.card_view, "火山方舟", 18, 12, 120, 14, bold=True)
-            self.card_status = text_label(self.card_view, "", 142, 14, 196, 11)
-            self.card_menu_button = button(self.card_view, "", 340, 7, 32, self.actions, "card-menu")
-            self.card_menu_button.setImage_(A.NSImage.imageWithSystemSymbolName_accessibilityDescription_("ellipsis", "卡片菜单"))
-            self.card_menu_button.setAccessibilityLabel_("卡片菜单")
-            self.card_menu_button.setToolTip_("刷新、设置、隐藏与置顶")
+            self.card_title = text_label(self.card_view, "火山方舟", 18, 12, 92, 14, bold=True)
+            self.card_status = text_label(self.card_view, "", 118, 14, 248, 11)
             self.card_titles, self.card_values = {}, {}
             for i, kind in enumerate(WINDOW_ORDER):
                 x = 18 + i * 120
                 self.card_titles[kind] = text_label(self.card_view, "", x, 46, 112, 11, color=SECONDARY)
                 self.card_values[kind] = text_label(self.card_view, "—", x, 67, 112, 23, bold=True)
                 self.card_values[kind].setAccessibilityLabel_(f"{WINDOW_LABELS[kind]}剩余容量")
-            self.card_updated = text_label(self.card_view, "", 18, 108, 348, 11, color=SECONDARY)
-            self.card_hint = text_label(self.card_view, "空白处拖动移动", 18, 135, 180, 11, color=SECONDARY)
-            self.card_details_button = button(self.card_view, "查看详情", 266, 122, 104, self.actions, "details")
-            self.card_menu_button.setNextKeyView_(self.card_details_button)
-            self.card_details_button.setNextKeyView_(self.card_menu_button)
-            self.card.setInitialFirstResponder_(self.card_menu_button)
+            self.card_updated = text_label(self.card_view, "", 18, 108, 304, 11, color=SECONDARY)
+            self.card_hint = text_label(self.card_view, "拖动移动 · 边缘/角落调整大小", 18, 135, 240, 11, color=SECONDARY)
+            self.card_refresh_button = button(
+                self.card_view, "", 340, 116, 32, self.actions, "refresh",
+                key="\r", view_type=CardRefreshButton,
+            )
+            self.card_refresh_button.setImage_(A.NSImage.imageWithSystemSymbolName_accessibilityDescription_("arrow.clockwise", "立即刷新"))
+            self.card_refresh_button.setImagePosition_(A.NSImageOnly)
+            self.card_refresh_button.setAccessibilityLabel_("立即刷新")
+            self.card_refresh_button.setToolTip_("立即刷新")
+            self.card.setInitialFirstResponder_(self.card_refresh_button)
         text, color = status_presentation(self.state)
         self.card_status.setStringValue_(text)
         self.card_status.setTextColor_(color)
@@ -549,8 +679,13 @@ class MonitorUI:
         snapshot = self.state.snapshot
         updated = ("上次成功：" if self.state.status == "stale" else "更新于：") + format_datetime(snapshot.queried_at) if snapshot else "尚无成功查询记录"
         self.card_updated.setStringValue_(updated)
+        refreshing = self.state.is_refreshing
+        self.card_refresh_button.setEnabled_(not refreshing)
+        self.card_refresh_button.setAccessibilityLabel_("正在刷新" if refreshing else "立即刷新")
+        self.card_refresh_button.setToolTip_("正在刷新…" if refreshing else "立即刷新")
         summary = text + "\n" + " · ".join(f"{WINDOW_LABELS[k]}剩余 {compact_remaining(self.state, k)}" for k in WINDOW_ORDER)
-        self.card_view.setToolTip_(summary + "\n" + updated + "\n点击查看详情；空白处可拖动")
+        self.card_view.setToolTip_(summary + "\n" + updated + "\n拖动移动；边缘或角落调整大小")
+        self.layout_card()
         self.apply_materials()
 
     def apply_materials(self):
@@ -565,13 +700,22 @@ class MonitorUI:
         screens = [(s.visibleFrame().origin.x, s.visibleFrame().origin.y,
                     s.visibleFrame().size.width, s.visibleFrame().size.height) for s in A.NSScreen.screens()]
         size = self.card.frame().size
-        x, y = clamp_card(self.preferences.x, self.preferences.y, size.width, size.height, screens)
-        self.card.setFrameOrigin_(F.NSMakePoint(x, y))
-        self.preferences = replace(self.preferences, x=x, y=y)
+        width, height = fit_card_size(
+            self.preferences.x, self.preferences.y, size.width, size.height, screens,
+        )
+        x, y = clamp_card(self.preferences.x, self.preferences.y, width, height, screens)
+        self.card.setFrame_display_(rect(x, y, width, height), True)
+        self.preferences = replace(self.preferences, x=x, y=y, width=width, height=height)
 
     def clamp_and_save_card(self):
-        origin = self.card.frame().origin
-        self.preferences = replace(self.preferences, x=round(origin.x), y=round(origin.y))
+        frame = self.card.frame()
+        self.preferences = replace(
+            self.preferences,
+            x=round(frame.origin.x),
+            y=round(frame.origin.y),
+            width=round(frame.size.width),
+            height=round(frame.size.height),
+        )
         self.position_card()
         self.save_preferences()
 
@@ -582,7 +726,17 @@ class MonitorUI:
             alert(exc.message)
 
     def sync_card_visibility(self):
-        self.card.setLevel_(A.NSFloatingWindowLevel if self.preferences.topmost else A.NSNormalWindowLevel)
+        if self.preferences.desktop_mode:
+            level = Quartz.CGWindowLevelForKey(Quartz.kCGDesktopIconWindowLevelKey) + 1
+            behavior = (A.NSWindowCollectionBehaviorCanJoinAllSpaces
+                        | A.NSWindowCollectionBehaviorStationary
+                        | A.NSWindowCollectionBehaviorIgnoresCycle
+                        | A.NSWindowCollectionBehaviorFullScreenNone)
+        else:
+            level = A.NSFloatingWindowLevel if self.preferences.topmost else A.NSNormalWindowLevel
+            behavior = A.NSWindowCollectionBehaviorMoveToActiveSpace
+        self.card.setLevel_(level)
+        self.card.setCollectionBehavior_(behavior)
         if self.preferences.visible:
             self.card.orderFrontRegardless()
         else:
@@ -599,7 +753,14 @@ class MonitorUI:
         self.save_preferences()
 
     def toggle_topmost(self):
+        if self.preferences.desktop_mode:
+            return
         self.preferences = replace(self.preferences, topmost=not self.preferences.topmost)
+        self.sync_card_visibility()
+        self.save_preferences()
+
+    def set_desktop_mode(self, desktop_mode):
+        self.preferences = replace(self.preferences, desktop_mode=desktop_mode)
         self.sync_card_visibility()
         self.save_preferences()
 

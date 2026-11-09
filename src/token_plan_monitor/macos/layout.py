@@ -1,7 +1,15 @@
 """Pure helpers shared by the native shell and offline tests."""
 from __future__ import annotations
 
-from ..models import ConfigurationError, Credentials, MonitorViewState, Settings
+from ..models import (
+    CARD_MAX_DIMENSION,
+    CARD_MIN_HEIGHT,
+    CARD_MIN_WIDTH,
+    ConfigurationError,
+    Credentials,
+    MonitorViewState,
+    Settings,
+)
 
 
 class FieldValidationError(ConfigurationError):
@@ -48,17 +56,66 @@ def validate_configuration(ak: str, sk: str, region: str, interval: str,
     return settings, credentials
 
 
+ScreenRect = tuple[float, float, float, float]
+FrameRect = tuple[float, float, float, float]
+
+
+def _nearest_screen(x: float | None, y: float | None, width: float, height: float,
+                    screens: list[ScreenRect]) -> ScreenRect:
+    if x is None or y is None:
+        return screens[0]
+    cx, cy = x + width / 2, y + height / 2
+
+    def distance(screen: ScreenRect) -> float:
+        sx, sy, sw, sh = screen
+        return max(sx - cx, 0, cx - sx - sw) ** 2 + max(sy - cy, 0, cy - sy - sh) ** 2
+
+    return min(screens, key=distance)
+
+
+def fit_card_size(x: float | None, y: float | None, width: float, height: float,
+                  screens: list[ScreenRect]) -> tuple[int, int]:
+    """Restore the minimum size without letting a card exceed its nearest display."""
+    width = max(CARD_MIN_WIDTH, min(round(width), CARD_MAX_DIMENSION))
+    height = max(CARD_MIN_HEIGHT, min(round(height), CARD_MAX_DIMENSION))
+    if not screens:
+        return width, height
+    _, _, screen_width, screen_height = _nearest_screen(x, y, width, height, screens)
+    return (
+        min(width, max(CARD_MIN_WIDTH, round(screen_width))),
+        min(height, max(CARD_MIN_HEIGHT, round(screen_height))),
+    )
+
+
+def resize_card_frame(frame: FrameRect, dx: float, dy: float, edges: frozenset[str],
+                      screen: ScreenRect | None = None) -> tuple[int, int, int, int]:
+    """Resize a Cocoa frame while anchoring the edges opposite the dragged ones."""
+    x, y, width, height = frame
+    right, top = x + width, y + height
+    if "left" in edges:
+        maximum = right - screen[0] if screen else CARD_MAX_DIMENSION
+        width = min(max(CARD_MIN_WIDTH, width - dx), max(CARD_MIN_WIDTH, maximum))
+        x = right - width
+    elif "right" in edges:
+        maximum = screen[0] + screen[2] - x if screen else CARD_MAX_DIMENSION
+        width = min(max(CARD_MIN_WIDTH, width + dx), max(CARD_MIN_WIDTH, maximum))
+    if "bottom" in edges:
+        maximum = top - screen[1] if screen else CARD_MAX_DIMENSION
+        height = min(max(CARD_MIN_HEIGHT, height - dy), max(CARD_MIN_HEIGHT, maximum))
+        y = top - height
+    elif "top" in edges:
+        maximum = screen[1] + screen[3] - y if screen else CARD_MAX_DIMENSION
+        height = min(max(CARD_MIN_HEIGHT, height + dy), max(CARD_MIN_HEIGHT, maximum))
+    return round(x), round(y), round(width), round(height)
+
+
 def clamp_card(x: float | None, y: float | None, width: float, height: float,
-               screens: list[tuple[float, float, float, float]]) -> tuple[int, int]:
+               screens: list[ScreenRect]) -> tuple[int, int]:
     """Cocoa point coordinates, including displays left of/below the main display."""
     if not screens:
         return int(x or 0), int(y or 0)
     if x is None or y is None:
         sx, sy, sw, sh = screens[0]
         x, y = sx + sw - width - 24, sy + sh - height - 24
-    def distance(screen):
-        sx, sy, sw, sh = screen
-        cx, cy = x + width / 2, y + height / 2
-        return max(sx - cx, 0, cx - sx - sw) ** 2 + max(sy - cy, 0, cy - sy - sh) ** 2
-    sx, sy, sw, sh = min(screens, key=distance)
+    sx, sy, sw, sh = _nearest_screen(x, y, width, height, screens)
     return round(max(sx, min(x, sx + max(0, sw - width)))), round(max(sy, min(y, sy + max(0, sh - height))))

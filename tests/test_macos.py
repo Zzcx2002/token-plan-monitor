@@ -4,7 +4,15 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from token_plan_monitor.macos.layout import FieldValidationError, clamp_card, lowest_windows, primary_action, validate_configuration
+from token_plan_monitor.macos.layout import (
+    FieldValidationError,
+    clamp_card,
+    fit_card_size,
+    lowest_windows,
+    primary_action,
+    resize_card_frame,
+    validate_configuration,
+)
 from token_plan_monitor.models import ConfigurationError, Credentials, MonitorViewState, QuotaWindow, UsageSnapshot
 from token_plan_monitor.monitor import UsageMonitor
 from token_plan_monitor.paths import PROJECT_ROOT, data_directory, log_directory
@@ -78,6 +86,27 @@ def test_card_positions_on_negative_displays_and_removed_screens():
     assert clamp_card(-1800, -200, 292, 128, screens[:1]) == (0, 30)
     assert clamp_card(None, None, 292, 128, screens) == (1124, 748)
     assert clamp_card(10000, 10000, 292, 128, screens) == (1148, 772)
+
+
+def test_card_resize_anchors_opposite_edges():
+    frame = (100, 200, 384, 160)
+    assert resize_card_frame(frame, 40, 20, frozenset({"right", "top"})) == (100, 200, 424, 180)
+    assert resize_card_frame(frame, 40, -20, frozenset({"left", "bottom"})) == (140, 180, 344, 180)
+
+
+def test_card_resize_enforces_minimum_without_moving_anchored_edges():
+    frame = (100, 200, 384, 160)
+    assert resize_card_frame(frame, 1000, 1000, frozenset({"left", "bottom"})) == (164, 200, 320, 160)
+    assert resize_card_frame(frame, -1000, -1000, frozenset({"right", "top"})) == (100, 200, 320, 160)
+
+
+def test_card_resize_and_restore_respect_screen_bounds():
+    frame = (-300, -100, 384, 160)
+    screen = (-400, -200, 600, 500)
+    assert resize_card_frame(frame, 1000, 1000, frozenset({"right", "top"}), screen) == (-300, -100, 500, 400)
+    assert fit_card_size(-300, -100, 1000, 1000, [screen]) == (600, 500)
+    assert fit_card_size(-300, -100, 100, 100, [screen]) == (320, 160)
+    assert fit_card_size(0, 0, 100, 100, [(0, 0, 200, 100)]) == (320, 160)
 
 
 def test_keychain_denied_does_not_fall_back_to_files(tmp_path):

@@ -1,6 +1,8 @@
 import json
 from datetime import UTC, datetime
 
+import pytest
+
 from token_plan_monitor.models import (
     Credentials,
     QuotaWindow,
@@ -102,12 +104,48 @@ def test_credentials_use_only_authorized_entries_and_never_enter_json(tmp_path):
     assert "AKLT-test" not in serialized
 
 
-def test_widget_preferences_round_trip_with_negative_coordinates(tmp_path):
+@pytest.mark.parametrize("desktop_mode", [False, True])
+def test_widget_preferences_round_trip_with_negative_coordinates(tmp_path, desktop_mode):
     storage = Storage(tmp_path, FakeKeyring())
-    preferences = WidgetPreferences(x=-1920, y=-240, visible=False, topmost=False)
+    preferences = WidgetPreferences(
+        x=-1920, y=-240, visible=False, topmost=False, desktop_mode=desktop_mode,
+        width=520, height=240,
+    )
     storage.save_widget_preferences(preferences)
     restarted = Storage(tmp_path, FakeKeyring())
     assert restarted.load_widget_preferences() == preferences
+
+
+def test_legacy_widget_preferences_preserve_existing_flags_and_position(tmp_path):
+    storage = Storage(tmp_path, FakeKeyring())
+    storage.widget_path.write_text(json.dumps({
+        "schema_version": 1,
+        "widget": {"x": -1920, "y": -240, "visible": False, "topmost": False},
+    }), encoding="utf-8")
+    assert storage.load_widget_preferences() == WidgetPreferences(
+        x=-1920, y=-240, visible=False, topmost=False, desktop_mode=False,
+    )
+
+
+@pytest.mark.parametrize("invalid", [None, 0, 1, "true", [], {}])
+def test_invalid_desktop_mode_falls_back_to_defaults(tmp_path, invalid):
+    storage = Storage(tmp_path, FakeKeyring())
+    storage.widget_path.write_text(json.dumps({
+        "schema_version": 1, "widget": {"desktop_mode": invalid},
+    }), encoding="utf-8")
+    assert storage.load_widget_preferences() == WidgetPreferences()
+
+
+@pytest.mark.parametrize("field,invalid", [
+    ("width", None), ("width", True), ("width", 384.5), ("width", "384"),
+    ("width", 319), ("height", 159), ("height", -1), ("height", 10001),
+])
+def test_invalid_widget_dimensions_fall_back_to_defaults(tmp_path, field, invalid):
+    storage = Storage(tmp_path, FakeKeyring())
+    storage.widget_path.write_text(json.dumps({
+        "schema_version": 1, "widget": {field: invalid},
+    }), encoding="utf-8")
+    assert storage.load_widget_preferences() == WidgetPreferences()
 
 
 def test_corrupt_widget_preferences_fall_back_to_defaults(tmp_path):
