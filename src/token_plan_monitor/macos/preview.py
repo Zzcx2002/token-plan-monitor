@@ -166,6 +166,11 @@ def check_card_modes(ui, storage):
     assert storage.load_widget_preferences() == ui.preferences
 
 
+def card_hit_test(ui, point):
+    native_point = ui.card_view.convertPoint_toView_(point, ui.card_view.superview())
+    return ui.card_view.hitTest_(native_point)
+
+
 def card_refresh_probe_points(ui):
     button = ui.card_refresh_button
     frame = button.frame()
@@ -181,6 +186,9 @@ def card_refresh_probe_points(ui):
         F.NSMakePoint(x - 0.5, cy), F.NSMakePoint(x + width + 0.5, cy),
         F.NSMakePoint(cx, y - 0.5), F.NSMakePoint(cx, y + height + 0.5),
     ]
+    # The old implementation exposed this vertically mirrored area instead of the visible button.
+    card_height = ui.card_view.bounds().size.height
+    outside.append(F.NSMakePoint(cx, card_height - cy))
     # All four transparent corners remain inside the native frame but outside the bezel.
     for px in (frame.origin.x + 1, frame.origin.x + frame.size.width - 1):
         for py in (frame.origin.y + 1, frame.origin.y + frame.size.height - 1):
@@ -213,17 +221,20 @@ def assert_card_refresh_layout(ui):
     assert round(size.height - frame.origin.y - frame.size.height) == 12
     inside, outside = card_refresh_probe_points(ui)
     for point in inside:
-        assert ui.card_view.hitTest_(point) == button
+        assert card_hit_test(ui, point) == button
     for point in outside:
-        assert ui.card_view.hitTest_(point) == ui.card_view
+        assert card_hit_test(ui, point) == ui.card_view
+    native_center = ui.card_view.convertPoint_toView_(inside[0], ui.card_view.superview())
+    assert native_center.y != inside[0].y
+    assert ui.card_view.hitTest_(native_center) == button
     right_resize = F.NSMakePoint(size.width - 2, hit.origin.y + hit.size.height / 2)
     bottom_resize = F.NSMakePoint(hit.origin.x + hit.size.width / 2, size.height - 2)
-    assert ui.card_view.hitTest_(right_resize) == ui.card_view
+    assert card_hit_test(ui, right_resize) == ui.card_view
     assert ui.card_view._edges_at(right_resize) == frozenset({"right"})
-    assert ui.card_view.hitTest_(bottom_resize) == ui.card_view
+    assert card_hit_test(ui, bottom_resize) == ui.card_view
     assert ui.card_view._edges_at(bottom_resize) == frozenset({"bottom"})
     corner = F.NSMakePoint(size.width - 2, size.height - 2)
-    assert ui.card_view.hitTest_(corner) == ui.card_view
+    assert card_hit_test(ui, corner) == ui.card_view
     assert ui.card_view._edges_at(corner) == frozenset({"right", "bottom"})
     for label in (ui.card_updated, ui.card_hint):
         assert label.frame().origin.x + label.frame().size.width <= frame.origin.x
@@ -236,12 +247,12 @@ def assert_card_refresh_layout(ui):
 
 
 def click_card_at(ui, point):
-    target = ui.card_view.hitTest_(point)
+    target = card_hit_test(ui, point)
     if target == ui.card_refresh_button:
         target.performClick_(None)
     else:
         assert target == ui.card_view
-        event = FakeMouseEvent(point)
+        event = FakeMouseEvent(ui.card_view.convertPoint_toView_(point, None))
         target.mouseDown_(event)
         target.mouseUp_(event)
 
@@ -299,7 +310,7 @@ def check_card_interactions_and_resize(ui, storage):
     ui.card_view.mouseUp_(event)
     assert not ui.details.isVisible()
     for point in (F.NSMakePoint(350, 20), F.NSMakePoint(300, 140), F.NSMakePoint(30, 130)):
-        assert ui.card_view.hitTest_(point) == ui.card_view
+        assert card_hit_test(ui, point) == ui.card_view
     assert ui.card_view._edges_at(F.NSMakePoint(0, 0)) == frozenset({"left", "top"})
     assert ui.card_view._edges_at(F.NSMakePoint(383, 159)) == frozenset({"right", "bottom"})
     assert ui.card_view._edges_at(F.NSMakePoint(180, 80)) == frozenset()

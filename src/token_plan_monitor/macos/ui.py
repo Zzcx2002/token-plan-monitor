@@ -169,11 +169,12 @@ class CardView(FlippedView):
         # Buttons stay interactive, including while disabled; labels remain draggable.
         if not F.NSPointInRect(point, self.frame()):
             return None
+        local_point = self.convertPoint_fromView_(point, self.superview())
         for child in reversed(list(self.subviews())):
             if not isinstance(child, A.NSButton) or child.isHidden():
                 continue
             hit_frame = child.hitFrame() if isinstance(child, CardRefreshButton) else child.frame()
-            if F.NSPointInRect(point, hit_frame):
+            if F.NSPointInRect(local_point, hit_frame):
                 return child
         return self
 

@@ -62,6 +62,16 @@
 - 源码验证材料位于 `/tmp/token-monitor-refresh-hit-smoke/`，默认和最小卡片截图确认视觉样式未改变。真实系统鼠标分发和悬停提示显示仍需实机复核；上述结果属于原生视图命中与命令路由检查，不冒充硬件鼠标验收。
 - 已重新生成 `.app` 与 DMG；打包版同一组原生 smoke、内嵌运行时检查和 ad-hoc 签名校验通过，打包版材料位于 `/tmp/token-monitor-refresh-hit-bundle-smoke/`。
 
+## 刷新按钮原生点击坐标修复
+
+- 用户实机反馈可见按钮点击不刷新且没有刷新中过渡。进一步检查确认 AppKit 向 `CardView.hitTest_` 传入未翻转父视图坐标，而子按钮 frame 使用翻转后的卡片局部坐标；旧实现直接比较两者，真实可见按钮点击被退回给 `CardView`。
+- 原生对照中，按钮中心局部坐标 `(356,132)` 对应实际 hit-test 输入 `(356,28)`，旧实现返回卡片而非按钮。上一节测试直接把局部坐标传给 `hitTest_`，因此只证明手工坐标下的分流，不能证明真实鼠标入口；该覆盖缺口已修正。
+- `CardView.hitTest_` 现在先用 `convertPoint_fromView_(point, self.superview())` 转为局部坐标，再检查紧凑按钮 frame。预览测试统一使用反向 `convertPoint_toView_` 构造实际输入，并为模拟鼠标事件生成窗口坐标；新增上下镜像误触区回归。
+- 离线 pytest：77 项通过，实时接口及 Windows 原生特效测试共 2 项跳过；源码编译检查及 `git diff --check` 通过。隔离源码 smoke 验证可见按钮中心及四边、透明外圈、镜像区域、文字、外边距和缩放热区，启用时中心点击恰好刷新一次，所有外侧点击不刷新且 frame 不变。
+- 源码材料位于 `/tmp/token-monitor-refresh-native-hit-smoke/`，截图确认外观不变。真实硬件鼠标和刷新态过渡仍需用户在重建并重启后的应用上复核。
+- 已重新生成 `.app` 与 DMG；打包版同一组 smoke 和内嵌运行时检查通过，材料位于 `/tmp/token-monitor-refresh-native-hit-bundle-smoke/`；ad-hoc 签名校验通过。
+- 补充合成 `NSEvent` 检查时，修正后的 `mouseDown` 进入按钮原生跟踪并等待 `mouseUp`；顺序式注入器没有预先提供 up 事件而阻塞，因此该次检查不计为完整鼠标点击通过。
+
 ## 验证材料
 
 - `artifacts/macos/`：源码运行的七种状态截图及 `smoke-result.txt`。
