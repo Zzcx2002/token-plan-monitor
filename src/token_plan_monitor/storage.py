@@ -13,6 +13,7 @@ from .paths import PROJECT_ROOT, data_directory
 from .appearance import AppearancePreferences
 
 from .models import (
+    DEFAULT_PROVIDER,
     SCHEMA_VERSION,
     CacheError,
     ConfigurationError,
@@ -21,11 +22,15 @@ from .models import (
     UsageSnapshot,
     WidgetPreferences,
 )
+from .providers import get_provider
 
 DEFAULT_DATA_DIR = data_directory()
 KEYRING_SERVICE = "TokenPlanMonitor"
-AK_USERNAME = "volcengine_access_key_id"
-SK_USERNAME = "volcengine_secret_access_key"
+# Vault entry names of the default provider. Each provider owns its own pair, so
+# switching providers never exposes or overwrites the other one's secret.
+_DEFAULT_SPEC = get_provider(DEFAULT_PROVIDER)
+AK_USERNAME = _DEFAULT_SPEC.access_key_username
+SK_USERNAME = _DEFAULT_SPEC.secret_key_username
 
 
 class Storage:
@@ -119,27 +124,36 @@ class Storage:
         except OSError as exc:
             raise CacheError("无法清除旧用量缓存") from exc
 
-    def load_credentials(self) -> Credentials | None:
+    def load_credentials(self, provider: str = DEFAULT_PROVIDER) -> Credentials | None:
+        ak_name, sk_name = self._credential_entries(provider)
         try:
-            ak = self._keyring.get_password(KEYRING_SERVICE, AK_USERNAME)
-            sk = self._keyring.get_password(KEYRING_SERVICE, SK_USERNAME)
+            ak = self._keyring.get_password(KEYRING_SERVICE, ak_name)
+            sk = self._keyring.get_password(KEYRING_SERVICE, sk_name)
         except Exception as exc:
             raise ConfigurationError(f"无法读取{self.credential_store_name}") from exc
         if not ak or not sk:
             return None
         return Credentials(access_key_id=ak, secret_access_key=sk)
 
-    def save_credentials(self, credentials: Credentials) -> None:
-        """Save only the two application credential entries in the OS vault."""
+    def save_credentials(
+        self, credentials: Credentials, provider: str = DEFAULT_PROVIDER
+    ) -> None:
+        """Save only this provider's two credential entries in the OS vault."""
+        ak_name, sk_name = self._credential_entries(provider)
         try:
+            # Secret first: a partial write then leaves the pair unusable rather
+            # than pairing a new AccessKey ID with a stale secret.
             self._keyring.set_password(
-                KEYRING_SERVICE, SK_USERNAME, credentials.secret_access_key
+                KEYRING_SERVICE, sk_name, credentials.secret_access_key
             )
-            self._keyring.set_password(
-                KEYRING_SERVICE, AK_USERNAME, credentials.access_key_id
-            )
+            self._keyring.set_password(KEYRING_SERVICE, ak_name, credentials.access_key_id)
         except Exception as exc:
             raise ConfigurationError(f"无法保存到{self.credential_store_name}") from exc
+
+    @staticmethod
+    def _credential_entries(provider: str) -> tuple[str, str]:
+        spec = get_provider(provider)
+        return spec.access_key_username, spec.secret_key_username
 
     def _read_json(self, path: Path) -> dict[str, Any] | None:
         try:

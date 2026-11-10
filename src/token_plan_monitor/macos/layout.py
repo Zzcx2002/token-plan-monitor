@@ -10,6 +10,7 @@ from ..models import (
     MonitorViewState,
     Settings,
 )
+from ..providers import get_provider
 
 
 class FieldValidationError(ConfigurationError):
@@ -36,12 +37,24 @@ def lowest_windows(state: MonitorViewState) -> frozenset[str]:
     return frozenset(w.kind for w in windows if w.remaining_percent == lowest)
 
 
-def validate_configuration(ak: str, sk: str, region: str, interval: str,
+def _field_prompt(verb: str, field_label: str) -> str:
+    """Join a Chinese verb and a field label with typographically correct spacing.
+
+    Latin labels ("AccessKey ID") need a separating space; labels that already
+    start with Chinese ("阿里云 AccessKey ID") read better without one.
+    """
+    return f"{verb}{' ' if field_label[:1].isascii() else ''}{field_label}"
+
+
+def validate_configuration(provider: str, ak: str, sk: str, region: str, interval: str,
                            existing: Credentials | None) -> tuple[Settings, Credentials]:
+    spec = get_provider(provider)
     if not ak.strip():
-        raise FieldValidationError("ak", "请填写 AccessKey ID")
+        raise FieldValidationError("ak", _field_prompt("请填写", spec.access_key_label))
     if not sk.strip() and existing is None:
-        raise FieldValidationError("sk", "首次连接请填写 Secret AccessKey")
+        raise FieldValidationError(
+            "sk", _field_prompt("首次连接请填写", spec.secret_key_label)
+        )
     try:
         minutes = int(interval.strip())
     except ValueError as exc:
@@ -49,7 +62,9 @@ def validate_configuration(ak: str, sk: str, region: str, interval: str,
     if not 5 <= minutes <= 1440:
         raise FieldValidationError("interval", "刷新间隔必须在 5–1440 分钟之间")
     try:
-        settings = Settings(region=region, refresh_minutes=minutes)
+        # An empty region falls back to the provider default rather than failing.
+        settings = Settings(provider=provider, region=region.strip() or spec.default_region,
+                            refresh_minutes=minutes)
     except ConfigurationError as exc:
         raise FieldValidationError("region", exc.message) from exc
     credentials = Credentials(ak, sk.strip() or (existing.secret_access_key if existing else ""))

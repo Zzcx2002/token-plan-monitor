@@ -12,7 +12,11 @@ STATUS_LABELS = {
     "stale": "数据过期",
     "error": "查询失败",
 }
-PLAN_LABELS = {"agent_plan": "Agent Plan", "coding_plan": "Coding Plan"}
+PLAN_LABELS = {
+    "agent_plan": "Agent Plan",
+    "coding_plan": "Coding Plan",
+    "token_plan": "Token Plan",
+}
 
 
 def status_text(state: MonitorViewState) -> str:
@@ -47,7 +51,7 @@ def compact_remaining(state: MonitorViewState, kind: str) -> str:
 
 
 def hover_summary(state: MonitorViewState) -> str:
-    heading = f"火山方舟 · {status_text(state)}"
+    heading = f"{state.provider_label} · {status_text(state)}"
     if state.snapshot is not None:
         five_hour = compact_remaining(state, "five_hour")
         weekly = compact_remaining(state, "weekly")

@@ -34,8 +34,26 @@ def states():
         for kind, percent in (("five_hour", 28), ("weekly", 64), ("monthly", 81))
     ), "Agent Plan Large")
     ok = MonitorViewState(status="ok", snapshot=snapshot)
+    # Bailian Token Plan is metered monthly and reports usage ratios only, so
+    # there are no absolute quota numbers to render.
+    bailian_token = MonitorViewState(status="ok", provider="bailian", snapshot=UsageSnapshot(
+        "token_plan", now,
+        (QuotaWindow("monthly", 37.5, now + timedelta(days=12)),),
+        "Token Plan 个人版"))
+    # Bailian Coding Plan reports absolute Credits per window.
+    bailian_coding = MonitorViewState(status="ok", provider="bailian", snapshot=UsageSnapshot(
+        "coding_plan", now, tuple(
+            QuotaWindow(kind, percent, now + timedelta(hours=4), 1000, percent * 10)
+            for kind, percent in (("five_hour", 28), ("weekly", 64), ("monthly", 81))),
+        "Coding Plan Standard"))
     return {
         "agent": ok,
+        "bailian_token": bailian_token,
+        "bailian_coding": bailian_coding,
+        "bailian_unconfigured": MonitorViewState(status="unconfigured", provider="bailian"),
+        "bailian_error": MonitorViewState(
+            status="error", provider="bailian",
+            error="AK/SK 鉴权失败，请检查凭据、权限和系统时间。", error_category="authentication"),
         "coding": replace(ok, snapshot=UsageSnapshot("coding_plan", now, tuple(
             QuotaWindow(w.kind, w.used_percent, w.reset_at) for w in snapshot.windows), "Coding Plan")),
         "refreshing": replace(ok, is_refreshing=True),
@@ -484,6 +502,33 @@ def main(argv=None):
                 assert ui.setting_error.stringValue() == "首次连接请填写 Secret AccessKey"
                 assert ui.settings.firstResponder() == ui.fields["sk"].currentEditor()
                 capture(ui.settings, args.artifacts / "settings-first-use.png")
+                # Provider switching: rebuild is deferred, regions are revalidated
+                # and each provider owns its own vault entries.
+                ui.settings.orderOut_(None)
+                ui.open_settings()
+                assert [i.title() for i in ui.provider_popup.itemArray()] == ["火山方舟", "阿里云百炼"]
+                assert ui.settings_provider == "volcengine"
+                assert ui.fields["region"].stringValue() == "cn-beijing"
+                ui.fields["region"].setStringValue_("cn-shanghai")
+                ui.provider_popup.selectItemAtIndex_(1)
+                ui.provider_changed()
+                assert ui.settings_provider == "volcengine", "rebuild must not be synchronous"
+                ui.flush_settings_rebuild()
+                assert ui.settings_provider == "bailian"
+                assert ui.fields["region"].stringValue() == "cn-beijing"
+                assert ui.fields["ak"].accessibilityLabel() == "阿里云 AccessKey ID"
+                assert ui.existing is None and ui.fields["ak"].stringValue() == ""
+                capture(ui.settings, args.artifacts / "settings-bailian.png")
+                ui.fields["ak"].setStringValue_("LTAI-preview")
+                ui.fields["sk"].setStringValue_("bailian-secret")
+                ui.save_settings()
+                saved = storage.load_settings()
+                assert (saved.provider, saved.region) == ("bailian", "cn-beijing")
+                assert storage.load_credentials("bailian") == Credentials("LTAI-preview", "bailian-secret")
+                # Saving Bailian credentials must not touch the Volcengine entries.
+                assert {name for _, name in storage._keyring.values} == {
+                    "bailian_access_key_id", "bailian_secret_access_key"}
+                assert "bailian-secret" not in storage.config_path.read_text(encoding="utf-8")
                 ui.toggle_card()
                 assert not ui.card.isVisible()
                 ui.toggle_card()
@@ -499,7 +544,7 @@ def main(argv=None):
                 assert not ui.details.isVisible()
                 assert "winreg" not in __import__("sys").modules
                 (args.artifacts / "smoke-result.txt").write_text(
-                    "PASS: ten states, default/small/wide responsive windows, remaining progress and AX labels, focus/scroll preservation, settings validation/help, card refresh button, click/move/resize gestures and no details buttons, geometry preferences, desktop/floating modes and menus, hidden/visible restart, shutdown\n"
+                    f"PASS: {len(states())} fake states across both providers, default/small/wide responsive windows, remaining progress and AX labels, focus/scroll preservation, settings validation/help, card refresh button, click/move/resize gestures and no details buttons, geometry preferences, desktop/floating modes and menus, hidden/visible restart, shutdown\n"
                     + ("PASS: bundled runtime, certificates and Keychain backend imports\n" if getattr(sys, "frozen", False) else ""))
                 print("Native macOS smoke checks passed", flush=True)
             except BaseException as exc:

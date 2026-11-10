@@ -223,3 +223,55 @@ def test_error_category_propagates_and_clears_on_recovery(tmp_path, failure):
         assert monitor.get_state().error is None
     finally:
         monitor.stop()
+
+
+def test_provider_switch_clears_the_cached_snapshot(tmp_path):
+    storage = configured_storage(tmp_path, "AKLT-a")
+    release = threading.Event()
+    seen = []
+
+    class RecordingClient:
+        def __init__(self, settings):
+            self.settings = settings
+
+        def query(self):
+            seen.append(self.settings.provider)
+            if not release.wait(2):
+                raise TimeoutError("test release failed")
+            return snapshot()
+
+    monitor = UsageMonitor(
+        storage, client_factory=lambda settings, credentials: RecordingClient(settings)
+    )
+    try:
+        monitor.start()
+        wait_for(lambda: len(seen) == 1)
+        monitor.update_configuration(Settings(provider="bailian"), Credentials("AKLT-a", "secret"))
+        state = monitor.get_state()
+        assert state.provider == "bailian"
+        assert state.snapshot is None
+        assert state.status == "empty"
+        assert storage.load_snapshot() is None
+        release.set()
+        wait_for(lambda: len(seen) == 2)
+        assert seen == ["volcengine", "bailian"]
+        wait_for(lambda: monitor.get_state().status == "ok")
+        assert monitor.get_state().provider == "bailian"
+    finally:
+        release.set()
+        monitor.stop()
+
+
+def test_resaving_the_same_provider_keeps_the_cached_snapshot(tmp_path):
+    storage = configured_storage(tmp_path, "AKLT-a")
+    monitor = UsageMonitor(
+        storage, client_factory=lambda settings, credentials: StaticClient(snapshot())
+    )
+    try:
+        monitor.start()
+        wait_for(lambda: monitor.get_state().status == "ok")
+        monitor.update_configuration(Settings(), Credentials("AKLT-a", "secret"))
+        assert monitor.get_state().snapshot is not None
+        assert storage.load_snapshot() is not None
+    finally:
+        monitor.stop()

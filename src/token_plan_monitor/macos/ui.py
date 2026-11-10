@@ -11,11 +11,19 @@ import Quartz  # registers CGColor / CALayer bridge metadata
 from objc import super
 
 from ..assets import make_tray_icon
-from ..models import CARD_MIN_HEIGHT, CARD_MIN_WIDTH, QueryError, WINDOW_ORDER
+from ..models import (
+    CARD_MIN_HEIGHT,
+    CARD_MIN_WIDTH,
+    DEFAULT_PROVIDER,
+    PROVIDER_REGIONS,
+    QueryError,
+    WINDOW_ORDER,
+)
 from ..presentation import (
     WINDOW_LABELS, compact_remaining, format_datetime, format_number,
     hover_summary, menu_lines, state_tone, status_text,
 )
+from ..providers import PROVIDERS, get_provider
 from .layout import (
     FieldValidationError,
     clamp_card,
@@ -27,7 +35,9 @@ from .layout import (
 )
 
 logger = logging.getLogger(__name__)
-TITLE = "火山方舟用量监控"
+# Provider-neutral app title; window titles that show quota data are prefixed
+# with the active provider instead (see MonitorUI.app_title).
+TITLE = "Token Plan 用量监控"
 TEXT = A.NSColor.colorWithCalibratedWhite_alpha_(0.15, 1)
 SECONDARY = A.NSColor.colorWithCalibratedWhite_alpha_(0.28, 1)
 WARNING = A.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.48, 0.29, 0.02, 1)
@@ -285,6 +295,7 @@ class Actions(F.NSObject):
 
     def tick_(self, timer):
         self.owner.drain_events()
+        self.owner.flush_settings_rebuild()
 
     def wake_(self, notification):
         self.owner.monitor.refresh_if_due()
@@ -332,6 +343,9 @@ class MonitorUI:
         self.closed = False
         self.materials = []
         self.status_image = None
+        self.provider_popup = None
+        self.settings_provider = DEFAULT_PROVIDER
+        self._settings_dirty = False
 
     def run(self):
         self.setup()
@@ -390,6 +404,14 @@ class MonitorUI:
         self.app.activateIgnoringOtherApps_(True)
         window.makeKeyAndOrderFront_(None)
 
+    @property
+    def provider_spec(self):
+        """Spec of the provider the current state was fetched from."""
+        return get_provider(self.state.provider)
+
+    def app_title(self):
+        return f"{self.state.provider_label}用量监控"
+
     def make_menu(self, include_details=True):
         menu = A.NSMenu.alloc().initWithTitle_(TITLE)
         menu.setAutoenablesItems_(False)
@@ -431,6 +453,7 @@ class MonitorUI:
                     "settings": self.open_settings, "save": self.save_settings,
                     "check-credentials": self.check_credentials,
                     "credential-help": self.toggle_credential_help,
+                    "provider": self.provider_changed,
                     "cancel": lambda: self.settings.orderOut_(None),
                     "close-details": lambda: self.details.orderOut_(None),
                     "exit": lambda: self.app.terminate_(None)}
@@ -486,7 +509,8 @@ class MonitorUI:
         self.details_root = root
         self.details_header = FlippedView.alloc().initWithFrame_(rect(0, 0, 480, 154))
         root.addSubview_(self.details_header)
-        self.header_title = text_label(self.details_header, "火山方舟 · 套餐用量", 24, 14, 432, 20, bold=True)
+        # Provider-dependent; filled in by render_details on every state change.
+        self.header_title = text_label(self.details_header, "", 24, 14, 432, 20, bold=True)
         self.header_status = text_label(self.details_header, "", 24, 46, 432, 13, bold=True)
         self.header_updated = text_label(self.details_header, "", 24, 72, 432, 11, color=SECONDARY)
         self.header_reason = text_label(self.details_header, "", 24, 94, 432, 12)
@@ -523,6 +547,8 @@ class MonitorUI:
     def render_details(self):
         if not hasattr(self, "details_root"):
             self.create_details_shell()
+        self.details.setTitle_(self.app_title())
+        self.header_title.setStringValue_(f"{self.state.provider_label} · 套餐用量")
         text, color = status_presentation(self.state)
         self.header_status.setStringValue_(text)
         self.header_status.setTextColor_(color)
@@ -581,7 +607,10 @@ class MonitorUI:
                     y += 19
                     text = f"已用 {window.used_percent:.1f}%"
                     if window.quota is not None:
-                        text += f" · AFP {format_number(window.used)} / {format_number(window.quota)} · 剩余 {format_number(window.remaining_absolute)}"
+                        unit = self.provider_spec.unit_label
+                        text += (f" · {unit} {format_number(window.used)} / "
+                                 f"{format_number(window.quota)} · 剩余 "
+                                 f"{format_number(window.remaining_absolute)}")
                     y += label(content, text, 24, y, width, 12, color=SECONDARY)
                     y += label(content, "重置时间：" + (format_datetime(window.reset_at) if window.reset_at else "—"), 24, y, width, 11, color=SECONDARY) + 10
                 quota_background(content, start_y, max(1, content_width - 24), y - start_y - 4)
@@ -649,7 +678,7 @@ class MonitorUI:
             effect.layer().setMasksToBounds_(True)
             self.card_view.addSubview_(effect)
             self.materials = [effect]
-            self.card_title = text_label(self.card_view, "火山方舟", 18, 12, 92, 14, bold=True)
+            self.card_title = text_label(self.card_view, "", 18, 12, 92, 14, bold=True)
             self.card_status = text_label(self.card_view, "", 118, 14, 248, 11)
             self.card_titles, self.card_values = {}, {}
             for i, kind in enumerate(WINDOW_ORDER):
@@ -668,6 +697,7 @@ class MonitorUI:
             self.card_refresh_button.setAccessibilityLabel_("立即刷新")
             self.card_refresh_button.setToolTip_("立即刷新")
             self.card.setInitialFirstResponder_(self.card_refresh_button)
+        self.card_title.setStringValue_(self.state.provider_label)
         text, color = status_presentation(self.state)
         self.card_status.setStringValue_(text)
         self.card_status.setTextColor_(color)
@@ -769,21 +799,73 @@ class MonitorUI:
         if self.settings is not None and self.settings.isVisible():
             self.activate(self.settings)
             return
-        try:
-            self.existing = self.storage.load_credentials()
-        except QueryError as exc:
-            self.existing = None
-            alert(exc.message)
         current = self.storage.load_settings()
         if self.settings is None:
             self.settings = self.window("设置 · " + TITLE, 500, 490)
+        self._settings_dirty = False
+        self.build_settings(current.provider, current.region, str(current.refresh_minutes))
+        self.activate(self.settings)
+
+    def provider_changed(self):
+        """Record the popup selection; the rebuild happens on the next tick.
+
+        Never tear down the view hierarchy from inside the popup's own action
+        dispatch: the control is still tracking the mouse when it fires.
+        """
+        self._settings_dirty = True
+
+    def flush_settings_rebuild(self):
+        if not self._settings_dirty:
+            return
+        self._settings_dirty = False
+        if self.settings is None or not self.settings.isVisible():
+            return
+        index = self.provider_popup.indexOfSelectedItem()
+        if not 0 <= index < len(PROVIDERS):
+            return
+        provider = PROVIDERS[index].id
+        if provider == self.settings_provider:
+            return
+        spec = get_provider(provider)
+        # Carry over what the user already typed, except a region this provider
+        # does not serve.
+        region = str(self.fields["region"].stringValue()).strip()
+        allowed = PROVIDER_REGIONS.get(provider)
+        if allowed is not None and region not in allowed:
+            region = spec.default_region
+        interval = str(self.fields["interval"].stringValue()).strip() or "15"
+        self.build_settings(provider, region, interval)
+
+    def build_settings(self, provider, region, interval):
+        """(Re)create the settings form for one provider."""
+        self.settings_provider = provider
+        spec = get_provider(provider)
+        try:
+            self.existing = self.storage.load_credentials(provider)
+        except QueryError as exc:
+            self.existing = None
+            alert(exc.message)
+        self.settings.setTitle_(f"设置 · {spec.label}用量监控")
         content = FlippedView.alloc().initWithFrame_(rect(0, 0, 500, 490))
         content.setWantsLayer_(True)
         content.layer().setBackgroundColor_(A.NSColor.colorWithCalibratedWhite_alpha_(0.96, 1).CGColor())
         self.settings.setContentView_(content)
         y = 20
-        y += label(content, "连接火山方舟", 24, y, 452, 22, bold=True) + 8
-        y += label(content, "使用控制面账号 AK/SK，不是 sk-… 推理 Key。凭据仅存储在 macOS 钥匙串。", 24, y, 452, 12, color=SECONDARY) + 14
+        y += label(content, "服务商", 24, y, 452, 12) + 3
+        popup = A.NSPopUpButton.alloc().initWithFrame_pullsDown_(rect(24, y, 452, 28), False)
+        popup.addItemsWithTitles_([item.label for item in PROVIDERS])
+        popup.selectItemAtIndex_([item.id for item in PROVIDERS].index(provider))
+        popup.setFont_(A.NSFont.systemFontOfSize_(14))
+        popup.setAccessibilityLabel_("服务商")
+        popup.setTarget_(self.actions)
+        popup.setAction_("menuAction:")
+        popup.setIdentifier_("provider")
+        content.addSubview_(popup)
+        self.provider_popup = popup
+        y += 43
+        y += label(content, f"连接{spec.label}", 24, y, 452, 22, bold=True) + 8
+        note = spec.credential_note.format(store=self.storage.credential_store_name)
+        y += label(content, note, 24, y, 452, 12, color=SECONDARY) + 14
         self.help_expanded = False
         self.help_button = button(content, "凭据说明", 18, y, 116, self.actions, "credential-help")
         self.help_button.setImage_(A.NSImage.imageWithSystemSymbolName_accessibilityDescription_("chevron.right", None))
@@ -792,11 +874,13 @@ class MonitorUI:
         self.help_button.setAccessibilityLabel_("展开凭据说明")
         y += 36
         self.fields = {}
+        ak_label = spec.access_key_label
+        sk_label = spec.secret_key_label
         for key, title, value, secure in (
-            ("ak", "AccessKey ID", self.existing.access_key_id if self.existing else "", False),
-            ("sk", "Secret AccessKey（已保存，留空保持不变）" if self.existing else "Secret AccessKey（必填）", "", True),
-            ("region", "Region", current.region, False),
-            ("interval", "刷新间隔（分钟，5–1440）", str(current.refresh_minutes), False),
+            ("ak", ak_label, self.existing.access_key_id if self.existing else "", False),
+            ("sk", f"{sk_label}（已保存，留空保持不变）" if self.existing else f"{sk_label}（必填）", "", True),
+            ("region", "Region", region, False),
+            ("interval", "刷新间隔（分钟，5–1440）", interval, False),
         ):
             y += label(content, title, 24, y, 452, 12) + 3
             field = (A.NSSecureTextField if secure else A.NSTextField).alloc().initWithFrame_(rect(24, y, 452, 28))
@@ -809,27 +893,21 @@ class MonitorUI:
         self.setting_error = text_label(content, "", 24, y, 452, 12, color=ERROR)
         self.setting_error.setFrameSize_(F.NSMakeSize(452, 38))
         y += 40
-        self.help_text = text_label(content,
-            "在火山引擎账号的访问密钥管理中获取 AK/SK，并确保有套餐用量查询权限。"
-            "它们不是 sk-… 推理 Key；凭据只保存在本机登录钥匙串。\n"
-            "Region 默认 cn-beijing，请按使用区域填写。刷新间隔支持 5–1440 分钟。",
-            24, y, 452, 12, color=SECONDARY)
+        self.help_text = text_label(content, spec.help_text, 24, y, 452, 12, color=SECONDARY)
         self.help_text.setHidden_(True)
         self.settings_buttons_y = y
         self.cancel_button = button(content, "取消", 252, y, 100, self.actions, "cancel", key="\x1b")
         self.save_button = button(content, "保存设置", 364, y, 112, self.actions, "save", key="\r")
-        previous = None
+        previous = popup
         for field in self.fields.values():
-            if previous is not None:
-                previous.setNextKeyView_(field)
+            previous.setNextKeyView_(field)
             previous = field
         previous.setNextKeyView_(self.help_button)
         self.help_button.setNextKeyView_(self.cancel_button)
         self.cancel_button.setNextKeyView_(self.save_button)
-        self.save_button.setNextKeyView_(self.fields["ak"])
+        self.save_button.setNextKeyView_(popup)
         self.settings.setContentMinSize_(F.NSMakeSize(500, y + 56))
         self.settings.setContentSize_(F.NSMakeSize(500, y + 56))
-        self.activate(self.settings)
         self.settings.makeFirstResponder_(self.fields["sk" if self.existing else "ak"])
 
     def toggle_credential_help(self):
@@ -848,8 +926,10 @@ class MonitorUI:
     def save_settings(self):
         try:
             settings, credentials = validate_configuration(
-                *(str(self.fields[key].stringValue()) for key in ("ak", "sk", "region", "interval")), self.existing)
-            self.storage.save_credentials(credentials)
+                self.settings_provider,
+                *(str(self.fields[key].stringValue()) for key in ("ak", "sk", "region", "interval")),
+                self.existing)
+            self.storage.save_credentials(credentials, settings.provider)
             self.storage.save_settings(settings)
         except FieldValidationError as exc:
             self.setting_error.setStringValue_(exc.message)

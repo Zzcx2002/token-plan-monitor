@@ -9,6 +9,22 @@ from typing import Any
 SCHEMA_VERSION = 1
 WINDOW_ORDER = ("five_hour", "weekly", "monthly")
 
+PROVIDER_VOLCENGINE = "volcengine"
+PROVIDER_BAILIAN = "bailian"
+PROVIDER_IDS = (PROVIDER_VOLCENGINE, PROVIDER_BAILIAN)
+PROVIDER_LABELS = {PROVIDER_VOLCENGINE: "火山方舟", PROVIDER_BAILIAN: "阿里云百炼"}
+DEFAULT_PROVIDER = PROVIDER_VOLCENGINE
+DEFAULT_REGION = "cn-beijing"
+PLAN_TYPES = ("agent_plan", "coding_plan", "token_plan")
+
+# Regions each provider's control plane actually serves. None accepts any
+# well-formed region. Kept here so Settings can validate without importing the
+# provider registry (which depends on this module).
+PROVIDER_REGIONS: dict[str, tuple[str, ...] | None] = {
+    PROVIDER_VOLCENGINE: None,
+    PROVIDER_BAILIAN: ("cn-beijing", "ap-southeast-1"),
+}
+
 
 class QueryError(Exception):
     """An expected failure with a message safe to show in the UI."""
@@ -54,25 +70,38 @@ class CacheError(QueryError):
 
 @dataclass(frozen=True)
 class Settings:
-    region: str = "cn-beijing"
+    region: str = DEFAULT_REGION
     refresh_minutes: int = 15
+    provider: str = DEFAULT_PROVIDER
 
     def __post_init__(self) -> None:
+        if not isinstance(self.provider, str):
+            raise ConfigurationError("服务商必须是字符串")
+        provider = self.provider.strip()
+        if provider not in PROVIDER_IDS:
+            raise ConfigurationError("未知的服务商")
         if not isinstance(self.region, str):
             raise ConfigurationError("Region 必须是字符串")
         region = self.region.strip()
         if not re.fullmatch(r"[a-z]{2}-[a-z0-9-]+", region):
             raise ConfigurationError("Region 格式无效，例如 cn-beijing")
+        allowed = PROVIDER_REGIONS[provider]
+        if allowed is not None and region not in allowed:
+            raise ConfigurationError(
+                f"{provider_label(provider)}只支持 {' / '.join(allowed)} 地域"
+            )
         if isinstance(self.refresh_minutes, bool) or not isinstance(
             self.refresh_minutes, int
         ):
             raise ConfigurationError("刷新间隔必须是整数分钟")
         if not 5 <= self.refresh_minutes <= 1440:
             raise ConfigurationError("刷新间隔必须在 5–1440 分钟之间")
+        object.__setattr__(self, "provider", provider)
         object.__setattr__(self, "region", region)
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "provider": self.provider,
             "region": self.region,
             "refresh_minutes": self.refresh_minutes,
         }
@@ -82,9 +111,15 @@ class Settings:
         if not isinstance(value, dict):
             raise ConfigurationError("配置格式无效")
         return cls(
-            region=value.get("region", "cn-beijing"),
+            provider=value.get("provider", DEFAULT_PROVIDER),
+            region=value.get("region", DEFAULT_REGION),
             refresh_minutes=value.get("refresh_minutes", 15),
         )
+
+
+def provider_label(provider: str) -> str:
+    """Display name for a provider id; unknown ids fall back to the raw value."""
+    return PROVIDER_LABELS.get(provider, provider)
 
 
 CARD_DEFAULT_WIDTH = 384
@@ -219,7 +254,7 @@ class UsageSnapshot:
     plan_name: str | None = None
 
     def __post_init__(self) -> None:
-        if self.plan_type not in ("agent_plan", "coding_plan"):
+        if self.plan_type not in PLAN_TYPES:
             raise ValueError(f"Unknown plan type: {self.plan_type}")
         if not isinstance(self.queried_at, datetime) or self.queried_at.tzinfo is None:
             raise ValueError("Query time must be timezone-aware")
@@ -258,6 +293,11 @@ class MonitorViewState:
     last_attempt_at: datetime | None = None
     revision: int = 0
     error_category: str | None = None
+    provider: str = DEFAULT_PROVIDER
+
+    @property
+    def provider_label(self) -> str:
+        return provider_label(self.provider)
 
 
 def datetime_to_iso(value: datetime | None) -> str | None:
@@ -275,6 +315,44 @@ def datetime_from_iso(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         raise ValueError("Datetime must include a timezone")
     return parsed.astimezone(UTC)
+
+
+def parse_reset_time(value: Any) -> datetime | None:
+    """Normalize a provider reset timestamp shared by every provider client.
+
+    Accepts epoch seconds or milliseconds and ISO-8601 strings; providers use
+    all three shapes. Returns None for "no reset scheduled".
+    """
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        try:
+            numeric = float(text)
+        except ValueError:
+            try:
+                parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise ParseError("重置时间格式无效") from exc
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            return parsed.astimezone(UTC)
+    elif isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ParseError("重置时间格式无效")
+    else:
+        numeric = float(value)
+
+    if not math.isfinite(numeric):
+        raise ParseError("重置时间不是有限数值")
+    if numeric <= 0:
+        return None
+    seconds = numeric / 1000.0 if numeric >= 100_000_000_000 else numeric
+    try:
+        return datetime.fromtimestamp(seconds, UTC)
+    except (OverflowError, OSError, ValueError) as exc:
+        raise ParseError("重置时间超出有效范围") from exc
 
 
 def _cache_number(value: Any) -> float:

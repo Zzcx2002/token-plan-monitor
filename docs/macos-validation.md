@@ -4,6 +4,18 @@
 
 开发/验证机器：Apple Silicon，macOS 26.6（25G72）。构建使用 python.org Python 3.13.9 framework、py2app 0.28.10；Python 及依赖都在项目隔离目录，未安装到系统 Python。依赖版本见 `requirements-macos-build.txt`。
 
+## 多服务商（阿里云百炼）改动验证（2026-11-10）
+
+分支：`release/v0.1.0`。为「更换其他订阅的 token 余量查询」新增服务商抽象与阿里云百炼（Token Plan 个人版 / Coding Plan）数据源；macOS 设置窗口新增服务商选择器，Windows 端保持只查火山方舟但做防回归处理。
+
+- 离线 pytest：**158 项通过，3 项跳过**；跳过项为 Windows 原生特效与两个 `TOKEN_PLAN_MONITOR_LIVE=1` 实时接口测试。新增 `tests/test_bailian.py`（23 项：比值→百分比换算、毫秒重置时间、窗口动态发现与排序、信封解包、NotLogined 只重试一次、回落与错误分类、非官方地址拒绝）、`tests/test_providers.py`、以及 signer/storage/monitor/presentation/macos 的 provider 用例。
+- ACS3-HMAC-SHA256 固定回归向量由**独立参考实现**（按公开签名规则另写的脚本）推导，不复制被测模块逻辑；该向量在开发过程中抓出两处真实缺陷（`NotLogined` 大小写匹配、`x-acs-date` 缺冒号）。
+- 原生 AppKit 假数据 smoke（`--preview --smoke-test`）通过：状态数由 10 增至 14，新增百炼 Token Plan（仅百分比、无绝对额度）、百炼 Coding Plan（含 Credits 绝对额度）、百炼未配置与鉴权失败；并新增设置窗口断言：服务商切换为延迟重建、不支持的 Region 回落 `cn-beijing`、字段标签随服务商变化、两个服务商的钥匙串条目互不覆盖、Secret 不写入 `config.json`。截图输出于 `artifacts/macos/`（含 `settings-bailian.png`、`details-bailian_token.png`、`details-bailian_coding.png`、`card-bailian_token.png`），人工目视确认标题、单位与无裁切。
+- `git diff --check`、`python -m compileall src tests` 通过；`tests/test_macos.py::test_entrypoint_does_not_import_windows_ui` 仍通过。
+- 百炼两个官方端点（`modelstudio.cn-beijing.aliyuncs.com` 的 `generateAccessToken`、`bailian-cs.console.aliyun.com` 的 `/cli/api.json`）在开发期以未签名请求探测确认路由存在与错误信封形状；**未使用真实凭据做过端到端查询**。
+
+仍未实测：真实阿里云 AK/SK 下的 Token Plan / Coding Plan 查询（需在设置中保存百炼凭据后运行 `TOKEN_PLAN_MONITOR_LIVE=1 python -m pytest tests/test_live.py -q -s -m live`，或与 `bl usage token-plan --output json` 交叉核对）；Windows 端真机运行与 `tests/gui_*` smoke（这些脚本依赖 `ctypes.windll`/pystray，无法在 macOS 上执行，本次仅做编译与入口隔离检查）。不得由上述程序化检查推断这些项目已通过。
+
 ## v0.1.0 GitHub Release 发布前验证（2026-11-10）
 
 - 整合远端 `main` 的窗口 chrome、主题、外观和尺寸持久化改动与 `codex/macos-app` 的原生 macOS 实现。保留 macOS 专用钥匙串后端及远端窗口几何/外观存储；为 Windows 注册表和原生回调增加非 Windows import 隔离。

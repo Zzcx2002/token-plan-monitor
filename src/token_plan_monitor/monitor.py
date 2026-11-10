@@ -5,7 +5,7 @@ import threading
 import time
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import Callable
+from typing import Any, Callable
 
 from .models import (
     CacheError,
@@ -15,8 +15,8 @@ from .models import (
     QueryError,
     Settings,
 )
+from .providers import create_client
 from .storage import Storage
-from .volcengine import VolcengineClient
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ class UsageMonitor:
     def __init__(
         self,
         storage: Storage,
-        client_factory: Callable[..., VolcengineClient] = VolcengineClient,
+        client_factory: Callable[..., Any] = create_client,
         on_state: Callable[[MonitorViewState], None] | None = None,
         clock: Callable[[], datetime] | None = None,
     ):
@@ -50,9 +50,10 @@ class UsageMonitor:
             if self._thread is not None:
                 return
             self._settings = self.storage.load_settings()
+            provider = self._settings.provider
             snapshot = self.storage.load_snapshot()
             try:
-                self._credentials = self.storage.load_credentials()
+                self._credentials = self.storage.load_credentials(provider)
                 error = None
             except ConfigurationError as exc:
                 self._credentials = None
@@ -68,6 +69,7 @@ class UsageMonitor:
                 error=error,
                 error_category="configuration" if error else None,
                 revision=0,
+                provider=provider,
             )
             self._pending = self._credentials is not None
             if self._pending:
@@ -102,7 +104,10 @@ class UsageMonitor:
     ) -> None:
         should_clear_cache = False
         with self._lock:
-            account_changed = credentials != self._credentials
+            # Switching provider invalidates the cached snapshot just like
+            # switching accounts does: it was fetched from a different service.
+            provider_changed = settings.provider != self._settings.provider
+            account_changed = provider_changed or credentials != self._credentials
             self._settings = settings
             self._credentials = credentials
             self._state = replace(
@@ -112,6 +117,7 @@ class UsageMonitor:
                 error=None,
                 error_category=None,
                 revision=self._state.revision + 1,
+                provider=settings.provider,
             )
             self._pending = True
             self._next_run = None
@@ -196,6 +202,7 @@ class UsageMonitor:
                         error=cache_warning,
                         last_attempt_at=self.clock(),
                         revision=revision,
+                        provider=settings.provider,
                     )
                 else:
                     assert error is not None
@@ -208,6 +215,7 @@ class UsageMonitor:
                         error_category=error.category,
                         last_attempt_at=self.clock(),
                         revision=revision,
+                        provider=settings.provider,
                     )
                 if self._credentials is None:
                     self._next_run = None

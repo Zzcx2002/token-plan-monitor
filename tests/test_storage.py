@@ -169,3 +169,32 @@ def test_clear_snapshot_is_idempotent(tmp_path):
     storage.clear_snapshot()
     storage.clear_snapshot()
     assert storage.load_snapshot() is None
+
+
+def test_provider_credentials_are_isolated_in_the_vault(tmp_path):
+    keyring = FakeKeyring()
+    storage = Storage(tmp_path, keyring)
+    volcengine = Credentials("AKLT-volc", "volc-secret")
+    bailian = Credentials("LTAI-bailian", "bailian-secret")
+    storage.save_credentials(volcengine, "volcengine")
+    storage.save_credentials(bailian, "bailian")
+    # The default provider argument keeps reading the Volcengine entries.
+    assert storage.load_credentials() == volcengine
+    assert storage.load_credentials("volcengine") == volcengine
+    assert storage.load_credentials("bailian") == bailian
+
+    # Losing one provider's secret never leaks into the other provider's pair.
+    keyring.values.pop((KEYRING_SERVICE, "volcengine_secret_access_key"))
+    assert storage.load_credentials("volcengine") is None
+    assert storage.load_credentials("bailian") == bailian
+
+
+def test_provider_secrets_never_reach_the_json_files(tmp_path):
+    storage = Storage(tmp_path, FakeKeyring())
+    storage.save_credentials(Credentials("LTAI-bailian", "bailian-secret"), "bailian")
+    storage.save_settings(Settings(provider="bailian", region="cn-beijing"))
+    storage.save_snapshot(sample_snapshot())
+    serialized = storage.config_path.read_text(encoding="utf-8")
+    serialized += storage.snapshot_path.read_text(encoding="utf-8")
+    assert "bailian-secret" not in serialized
+    assert "LTAI-bailian" not in serialized

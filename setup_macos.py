@@ -31,7 +31,7 @@ setup(
                      "token_plan_monitor.ui", "token_plan_monitor.ui_graphics", "token_plan_monitor.desktop_widget"],
         "plist": {
             "CFBundleName": "TokenPlanMonitor",
-            "CFBundleDisplayName": "火山方舟用量监控",
+            "CFBundleDisplayName": "Token Plan 用量监控",
             "CFBundleIdentifier": "com.zzcx2002.tokenplanmonitor",
             "CFBundleShortVersionString": "0.1.0",
             "CFBundleVersion": "1",

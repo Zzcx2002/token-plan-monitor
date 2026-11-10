@@ -10,6 +10,7 @@ from typing import Any, Callable, Mapping
 
 from .models import CacheError, MonitorViewState, WidgetPreferences
 from .presentation import (
+    PLAN_LABELS,
     compact_remaining,
     hover_summary,
     menu_lines,
@@ -93,7 +94,10 @@ class QuotaCard(tk.Canvas):
         self.create_image(0,0,image=self._surface,anchor="nw")
         extra=max(0,height-124*s)
         state=self.state
-        title=("Agent Plan" if state.snapshot.plan_type=="agent_plan" else "Coding Plan") if state.snapshot else "火山方舟"
+        snapshot=state.snapshot
+        # Look the plan type up instead of a two-way ternary, so a third plan
+        # type (Bailian Token Plan) is not mislabelled as "Coding Plan".
+        title=PLAN_LABELS.get(snapshot.plan_type,snapshot.plan_type) if snapshot else state.provider_label
         self.create_text(18*s,20*s,text=title,font=self.title_font,fill=c["text"],anchor="w")
         tone=state_tone(state)
         colour=c[{"ok":"success","warning":"warning","error":"error","unconfigured":"muted"}[tone]]

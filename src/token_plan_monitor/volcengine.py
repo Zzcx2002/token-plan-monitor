@@ -19,6 +19,7 @@ from .models import (
     Settings,
     TransientProviderError,
     UsageSnapshot,
+    parse_reset_time,
 )
 from .volcengine_signer import OPENAPI_HOST, sign_request
 
@@ -210,39 +211,6 @@ def parse_coding_windows(result: Any) -> tuple[QuotaWindow, ...]:
             )
         )
     return tuple(windows)
-
-
-def parse_reset_time(value: Any) -> datetime | None:
-    if value is None:
-        return None
-    if isinstance(value, str) and not value.strip():
-        return None
-    if isinstance(value, str):
-        text = value.strip()
-        try:
-            numeric = float(text)
-        except ValueError:
-            try:
-                parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-            except ValueError as exc:
-                raise ParseError("重置时间格式无效") from exc
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=UTC)
-            return parsed.astimezone(UTC)
-    elif isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ParseError("重置时间格式无效")
-    else:
-        numeric = float(value)
-
-    if not math.isfinite(numeric):
-        raise ParseError("重置时间不是有限数值")
-    if numeric <= 0:
-        return None
-    seconds = numeric / 1000.0 if numeric >= 100_000_000_000 else numeric
-    try:
-        return datetime.fromtimestamp(seconds, UTC)
-    except (OverflowError, OSError, ValueError) as exc:
-        raise ParseError("重置时间超出有效范围") from exc
 
 
 def _result(body: dict[str, Any]) -> Any:

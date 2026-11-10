@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 
 from token_plan_monitor.models import MonitorViewState, QuotaWindow, UsageSnapshot
 from token_plan_monitor.presentation import (
+    PLAN_LABELS,
     compact_remaining,
     hover_summary,
     menu_lines,
@@ -81,3 +82,15 @@ def test_native_tooltip_is_bounded_without_splitting_surrogate_pairs():
     assert len(tray_tooltip(sample_state()).encode("utf-16-le")) // 2 <= 127
     assert truncate_utf16("A😀B", max_units=2) == "A"
     assert truncate_utf16("A😀B", max_units=3) == "A😀"
+
+
+def test_heading_and_labels_follow_the_active_provider():
+    assert PLAN_LABELS["token_plan"] == "Token Plan"
+    assert MonitorViewState(provider="bailian").provider_label == "阿里云百炼"
+    snapshot = replace(
+        sample_state().snapshot, plan_type="token_plan", plan_name="Token Plan 个人版"
+    )
+    bailian = replace(sample_state(), provider="bailian", snapshot=snapshot)
+    assert hover_summary(bailian).startswith("阿里云百炼 · 数据正常\n")
+    # The default provider keeps the original branding.
+    assert hover_summary(sample_state()).startswith("火山方舟 · 数据正常\n")

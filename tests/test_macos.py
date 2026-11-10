@@ -33,27 +33,44 @@ def test_entrypoint_does_not_import_windows_ui():
 
 def test_settings_keep_secret_and_validate_limits():
     old = Credentials("old", "secret")
-    settings, credentials = validate_configuration("new", "", "cn-beijing", "15", old)
+    settings, credentials = validate_configuration("volcengine", "new", "", "cn-beijing", "15", old)
     assert credentials == Credentials("new", "secret")
     assert settings.refresh_minutes == 15
+    assert settings.provider == "volcengine"
     for interval in ("4", "1441", "1.5", "abc"):
         with pytest.raises(ConfigurationError):
-            validate_configuration("ak", "sk", "cn-beijing", interval, None)
+            validate_configuration("volcengine", "ak", "sk", "cn-beijing", interval, None)
     with pytest.raises(ConfigurationError):
-        validate_configuration("ak", "", "cn-beijing", "15", None)
+        validate_configuration("volcengine", "ak", "", "cn-beijing", "15", None)
 
 
 @pytest.mark.parametrize("field,values", [
-    ("ak", ("", "secret", "cn-beijing", "15")),
-    ("sk", ("ak", "", "cn-beijing", "15")),
-    ("region", ("ak", "secret", "not a region", "15")),
-    ("interval", ("ak", "secret", "cn-beijing", "abc")),
-    ("interval", ("ak", "secret", "cn-beijing", "4")),
+    ("ak", ("volcengine", "", "secret", "cn-beijing", "15")),
+    ("sk", ("volcengine", "ak", "", "cn-beijing", "15")),
+    ("region", ("volcengine", "ak", "secret", "not a region", "15")),
+    ("interval", ("volcengine", "ak", "secret", "cn-beijing", "abc")),
+    ("interval", ("volcengine", "ak", "secret", "cn-beijing", "4")),
+    ("ak", ("bailian", "", "secret", "cn-beijing", "15")),
+    ("region", ("bailian", "ak", "secret", "cn-shanghai", "15")),
 ])
 def test_settings_validation_identifies_field(field, values):
     with pytest.raises(FieldValidationError) as failure:
         validate_configuration(*values, None)
     assert failure.value.field == field
+
+
+def test_bailian_settings_default_region_and_reject_unsupported_one():
+    settings, _ = validate_configuration("bailian", "LTAI-test", "secret", "", "15", None)
+    assert settings.provider == "bailian"
+    assert settings.region == "cn-beijing"
+    with pytest.raises(FieldValidationError) as failure:
+        validate_configuration("bailian", "LTAI-test", "secret", "cn-hangzhou", "15", None)
+    assert failure.value.field == "region"
+
+
+def test_unknown_provider_is_a_configuration_error():
+    with pytest.raises(ConfigurationError):
+        validate_configuration("openai", "ak", "sk", "cn-beijing", "15", None)
 
 
 @pytest.mark.parametrize("status,category,expected", [

@@ -1,6 +1,6 @@
-# 火山方舟 Token Plan 用量监控
+# Token Plan 用量监控（火山方舟 · 阿里云百炼）
 
-一个独立的 Windows 托盘 / macOS 菜单栏工具，用于查看火山方舟 **Agent Plan / Coding Plan** 的 5 小时、每周和每月订阅容量。协议实现参考 CC Switch，但不依赖 CC Switch，也不读取或修改其配置和数据库。
+一个独立的 Windows 托盘 / macOS 菜单栏工具，用于查看订阅套餐的 5 小时、每周和每月容量。当前支持两个服务商：**火山方舟**（Agent Plan / Coding Plan）与**阿里云百炼**（Token Plan 个人版 / Coding Plan）。macOS 版可在设置中切换服务商；Windows 版目前只查询火山方舟。协议实现参考 CC Switch 与阿里云百炼 CLI，但不依赖二者，也不读取或修改其配置和数据库。
 
 ## macOS 版
 
@@ -19,7 +19,7 @@
 - 卡片普通单击不打开窗口；空白处拖动移动，边缘或角落拖动调整大小，右键或 Control-单击显示操作菜单。默认可见且置顶，可隐藏和恢复，重启恢复位置、尺寸和显示偏好。
 - 菜单栏右键菜单和卡片右键菜单的“显示模式”可切换“悬浮卡片”与“桌面组件”。桌面组件显示在所有普通桌面的桌面层，其他应用窗口可盖住它，全屏应用中不显示；仍可拖动、调整大小和刷新。桌面模式下“卡片置顶”不可用，切回悬浮卡片会恢复之前的置顶选择。切换保持位置、尺寸及隐藏状态，重启恢复模式，退出应用后组件随之关闭。
 - 卡片使用显示器可用区域定位，支持负坐标布局和屏幕断开后的自动校正；不覆盖其他应用的全屏空间。
-- 详情的数字和进度条统一表示剩余容量；已用百分比与 AFP 为辅助说明。顶部展示状态、最近成功更新及错误，底部操作栏固定可见，中间容量信息可滚动并随窗口宽度重排；后台更新和窗口缩放保持滚动位置及键盘焦点。
+- 详情的数字和进度条统一表示剩余容量；已用百分比为辅助说明，提供绝对额度的套餐额外显示已用/总额（火山方舟为 AFP，百炼 Coding Plan 为 Credits 额度；百炼 Token Plan 只返回百分比）。顶部展示状态、最近成功更新及错误，底部操作栏固定可见，中间容量信息可滚动并随窗口宽度重排；后台更新和窗口缩放保持滚动位置及键盘焦点。
 - 桌面卡片以三列展示 5 小时、每周、每月剩余量，标记最低项并显示更新时间；剩余低于 10% 时显示“额度偏低”。右下角圆形箭头按钮可立即刷新，只有可见按钮区域响应点击和悬停提示，透明外圈仍由卡片处理；刷新中禁用，最外侧角落用于缩放。卡片右键菜单提供其他操作，主详情窗口仅从菜单栏打开。
 - 首次配置与已保存 Secret 使用不同说明，设置提供可展开的凭据帮助；校验失败保留输入并聚焦对应字段。鉴权或配置错误优先“检查凭据”，网络错误优先“重试”。断网保留上次成功数据并标记过期；从睡眠唤醒后到期则合并刷新一次。
 - 关闭窗口只隐藏窗口，通过菜单栏“退出”关闭进程。设置支持 Tab、回车保存、Escape 取消以及 Command-C/V 等原生文本编辑快捷键。
@@ -29,14 +29,14 @@
 
 ```text
 ~/Library/Application Support/TokenPlanMonitor/
-  config.json         Region 和刷新间隔
+  config.json         服务商、Region 和刷新间隔
   snapshot.json       最近成功的用量缓存
   widget.json         卡片位置、尺寸、可见性、置顶状态和桌面组件模式（Cocoa 点坐标）
   instance-*.lock     单实例锁文件；退出后保留文件，由系统释放锁
 ~/Library/Logs/TokenPlanMonitor/app.log
 ```
 
-AK/SK 只存入 macOS 登录钥匙串，service 为 `TokenPlanMonitor`，account 分别为 `volcengine_access_key_id` 和 `volcengine_secret_access_key`。拒绝钥匙串访问会显示错误，不降级到明文文件。更换凭据后清除旧快照，不自动迁移 Windows 配置。移除应用时，如需清除凭据，请在“钥匙串访问”中仅删除上述两项，再删除上述数据和日志目录。
+AK/SK 只存入 macOS 登录钥匙串，service 为 `TokenPlanMonitor`。每个服务商使用各自独立的一对 account：火山方舟为 `volcengine_access_key_id` / `volcengine_secret_access_key`，阿里云百炼为 `bailian_access_key_id` / `bailian_secret_access_key`，切换服务商不会读取或覆盖另一家的凭据。拒绝钥匙串访问会显示错误，不降级到明文文件。更换服务商或凭据后清除旧快照，不自动迁移 Windows 配置。移除应用时，如需清除凭据，请在“钥匙串访问”中仅删除上述条目，再删除上述数据和日志目录。
 
 ### 源码运行和构建
 
@@ -86,8 +86,9 @@ open dist/TokenPlanMonitor.app --args --preview --state agent
 ## 功能
 
 - 后台每 15 分钟查询一次，可在设置中调整为 5–1440 分钟。
+- macOS 设置顶部可切换服务商（火山方舟 / 阿里云百炼）。各服务商的凭据、Region 和填写说明相互独立；切换会清空上一家的用量缓存并立即按新服务商重新查询。Windows 版暂只查询火山方舟，设置中不提供切换。
 - 托盘悬停简要显示 5 小时和每周剩余量；右键菜单直接列出 5 小时、每周、每月的已用/剩余百分比及最近成功更新时间。
-- 单击托盘图标打开简洁用量弹窗，查看剩余百分比、进度和重置时间；“展开详情”查看已用百分比与 AFP 绝对量；也支持立即刷新、设置和退出。
+- 单击托盘图标打开简洁用量弹窗，查看剩余百分比、进度和重置时间；“展开详情”查看已用百分比与绝对额度；也支持立即刷新、设置和退出。
 - 桌面常驻一张可拖动的 macOS 风格圆角迷你卡片，显示状态、5 小时和每周剩余量；悬停看摘要，右键看三窗口详情与操作。卡片尺寸随字体和 DPI 实际测量，避免文字裁切。
 - 迷你卡片默认置顶，可从卡片或托盘菜单取消置顶、隐藏和恢复；位置、可见性和置顶状态会随应用重启恢复，不会设置开机自启。
 - 桌面卡片、用量弹窗、设置和悬停提示采用统一的 macOS 风格：黑白双主题、少量蓝色强调、无常态描边的圆角输入框与按钮、柔和阴影。卡片表面、剩余进度条和主要按钮采用轻微渐变。Windows 支持时在底板和留白处显示 Acrylic 毛玻璃，正文与容量面板保持不透明，不降低文字透明度。
@@ -97,21 +98,27 @@ open dist/TokenPlanMonitor.app --args --preview --state agent
 - 默认跟随 Windows 的应用主题，每 2 秒检查一次；弹窗右上角的 ◐ 菜单可立即保存浅色、深色或跟随系统的选择。设置中的三段选择器支持实时预览，取消、Esc 或关闭设置会恢复原选择，保存后记住选择。
 - 外观偏好独立保存到 `data/appearance.json`，不触发用量查询、不重写账号凭据，也不清除缓存或当前展开状态。设置中只改外观并保存时，不重新配置后台查询。
 - 大字体或工作区较小时，窗口正文可滚动，底部操作保持可见；Tab 切换到正文中的控件时会自动滚动到该控件。Windows 原生菜单使用系统支持的外观。
-- Agent Plan 额外展示接口返回的 AFP 已用、总额和剩余量；Coding Plan 通常只提供百分比。本工具不把 AFP 换算成 token，也不根据请求日志猜测容量。
+- 火山方舟 Agent Plan 额外展示接口返回的 AFP 已用、总额和剩余量；Coding Plan 与百炼套餐按各自接口能力展示百分比或 Credits 额度（百炼 Token Plan 只返回百分比）。本工具不把 AFP 或 Credits 换算成 token，也不根据请求日志猜测容量。
 - 查询失败时保留上次成功结果，并明确标记“数据可能过期”。
 - AK/SK 仅保存到 Windows 凭据管理器，配置、缓存和日志不保存 Secret。
 
+## 支持的服务商
+
+| 服务商 | 套餐 | 用量窗口 | 绝对额度 |
+| --- | --- | --- | --- |
+| 火山方舟 | Agent Plan（先查）、Coding Plan（回落） | 5 小时 / 每周 / 每月 | Agent Plan 有 AFP |
+| 阿里云百炼 | Token Plan 个人版（先查）、Coding Plan（回落） | 按接口返回，通常为每月 | Coding Plan 有 Credits 额度 |
+
+百炼 Token Plan 个人版按订阅月计量，接口只返回各窗口的使用比例与重置时间，没有绝对额度；百炼新人免费额度（按模型的免费 token）和 Token Plan 团队版暂不支持。
+
 ## 重要：需要哪套凭据
 
-容量查询使用火山引擎**控制面 OpenAPI**，不是推理接口：
+两个服务商都使用**控制面凭据**，不是推理接口的 Key：
 
-```text
-POST https://open.volcengineapi.com/
-Action=GetAFPUsage / GetCodingPlanUsage
-Version=2024-01-01
-```
+- **火山方舟**：火山引擎控制面 OpenAPI（`POST https://open.volcengineapi.com/`，`Action=GetAFPUsage / GetCodingPlanUsage`，`Version=2024-01-01`），需要火山账号的 **AccessKey ID + Secret AccessKey**。
+- **阿里云百炼**：先用 AK/SK 以 ACS3-HMAC-SHA256 签名调用 `modelstudio.<region>.aliyuncs.com` 的 `GenerateCLIAccessToken` 换取控制台访问令牌，再用该令牌调用百炼控制台网关查询额度（与百炼官方 CLI 相同的协议）。需要阿里云账号的 **AccessKey ID + Secret AccessKey**；RAM 子账号还需授予 `AliyunTokenPlanReadOnlyAccess` 与 `AliyunBSSReadOnlyAccess` 只读策略。百炼 Token Plan 目前仅在华北2（北京）提供，Region 只接受 `cn-beijing` 或 `ap-southeast-1`。
 
-因此需要火山账号的 **AccessKey ID + Secret AccessKey**，不能使用 `sk-...` 推理 API Key 代替。建议使用只具有 Ark 套餐用量查询所需权限的子账号/IAM 凭据，并确保本机系统时间准确。
+两家的凭据都**不能**用 `sk-...`（百炼还有 `sk-sp-...` 套餐 Key）推理 API Key 代替。建议使用只具有套餐用量查询所需权限的子账号凭据，并确保本机系统时间准确。访问令牌只在内存中持有，不落盘、不写日志。
 
 程序只会访问固定的官方 HTTPS 地址，不启用遥测，不允许自定义脚本或任意请求地址。
 
@@ -255,6 +262,6 @@ set TOKEN_PLAN_MONITOR_LIVE=
 
 ## 参考与许可
 
-- [CC Switch](https://github.com/farion1231/cc-switch)：`src-tauri/src/services/coding_plan.rs`
-- 调研固定 revision：`ef7b77dee255e2c3b9a594de454eae21476ca687`
-- CC Switch 的 MIT 版权与许可文本见 `THIRD_PARTY_NOTICES.md`。
+- [CC Switch](https://github.com/farion1231/cc-switch)：`src-tauri/src/services/coding_plan.rs`，调研固定 revision `ef7b77dee255e2c3b9a594de454eae21476ca687`。火山方舟签名与响应解析参考它。
+- [阿里云百炼 CLI](https://github.com/modelstudioai/cli)：`packages/core/src/client/acs.ts`、`packages/core/src/console/gateway.ts`、`packages/core/src/console/models.ts` 与 `packages/commands/src/commands/usage/`，调研固定 revision `fa8330c27862635f7d769c5488c33a06a47063d5`。百炼的 ACS3 签名、控制台网关协议与额度解析参考它。
+- 两者的版权与许可文本（MIT / Apache-2.0）见 `THIRD_PARTY_NOTICES.md`。

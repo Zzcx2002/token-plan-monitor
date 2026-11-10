@@ -25,6 +25,7 @@ from .models import (
     Settings,
 )
 from .monitor import UsageMonitor
+from .providers import get_provider
 from .presentation import (
     PLAN_LABELS,
     WINDOW_LABELS,
@@ -646,10 +647,11 @@ class MonitorUI:
 
         windows = {window.kind: window for window in snapshot.windows} if snapshot else {}
         visible_kinds = tuple(kind for kind in WINDOW_LABELS if kind in windows)
+        unit = get_provider(state.provider).unit_label
         for kind, row in self.rows.items():
             window = windows.get(kind)
             if window is not None:
-                self._render_window(row, window)
+                self._render_window(row, window, unit)
 
         empty_key: tuple[str, str, str] | None = None
         if not visible_kinds:
@@ -724,7 +726,7 @@ class MonitorUI:
             return f"{int(age//60)} 分钟前更新"
         return f"更新于 {value.astimezone():%m-%d %H:%M}"
 
-    def _render_window(self,row:dict[str,Any],window:QuotaWindow) -> None:
+    def _render_window(self,row:dict[str,Any],window:QuotaWindow,unit:str="AFP") -> None:
         warning=window.remaining_percent<10
         row["remaining"].configure(text=f"{window.remaining_percent:.1f}%",
             style="WarningRemaining.TLabel" if warning else "Remaining.TLabel")
@@ -733,7 +735,7 @@ class MonitorUI:
                               self.colors["warning_start"] if warning else self.colors["accent_start"])
         has_absolute=window.quota is not None and window.used is not None
         if has_absolute:
-            row["absolute"].configure(text=f"AFP 剩余 {_format_number(window.remaining_absolute)} · "
+            row["absolute"].configure(text=f"{unit} 剩余 {_format_number(window.remaining_absolute)} · "
                 f"已用 {_format_number(window.used)} / 总额 {_format_number(window.quota)}")
             row["absolute"].pack(anchor="w",pady=(4,0),before=row["full_reset"])
         else:
