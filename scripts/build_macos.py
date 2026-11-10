@@ -65,6 +65,24 @@ def verify_binaries(app):
     print(f"Verified {count} arm64 binaries, deployment targets <= macOS 14")
 
 
+def verify_resources(app):
+    resources = app / "Contents/Resources"
+    required = [
+        resources / "LICENSE",
+        resources / "THIRD_PARTY_NOTICES.md",
+        resources / "licenses/Python-3.13.9.txt",
+        resources / "licenses/Certifi-2026.10.23.txt",
+        resources / "licenses/Pillow-12.3.0-and-native-libraries.txt",
+        resources / "licenses/PyObjC-12.2.2.txt",
+        resources / "licenses/OpenSSL-3.0.18.txt",
+        resources / "licenses/ZlibNG-2.3.3.md",
+    ]
+    missing = [str(path.relative_to(app)) for path in required if not path.is_file()]
+    if missing:
+        raise RuntimeError(f"Missing bundled license resources: {', '.join(missing)}")
+    print("Verified project and third-party license resources")
+
+
 def main():
     if sys.platform != "darwin" or platform.machine() != "arm64" or sys.version_info[:2] != (3, 13):
         raise SystemExit("Use Python 3.13 on an Apple Silicon Mac")
@@ -85,6 +103,7 @@ def main():
         generated.rename(APP)
     thin_binaries(APP)
     verify_binaries(APP)
+    verify_resources(APP)
     run("codesign", "--force", "--deep", "--sign", "-", APP)
     run("codesign", "--verify", "--deep", "--strict", APP)
     stage = ROOT / "dist/dmg-stage"

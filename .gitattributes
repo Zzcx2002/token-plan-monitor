@@ -1,0 +1,2 @@
+# Preserve upstream license and notice files verbatim.
+licenses/** whitespace=-blank-at-eof

@@ -8,9 +8,11 @@
 
 ### 安装和使用
 
-打开 `dist/TokenPlanMonitor-0.1.0-arm64.dmg`，将 `TokenPlanMonitor.app` 拖到 Applications 后双击启动。应用包含 Python 运行时，不需要另外安装依赖。
+从 [GitHub Release v0.1.0](https://github.com/Zzcx2002/token-plan-monitor/releases/tag/v0.1.0) 下载 [TokenPlanMonitor-0.1.0-arm64.dmg](https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.1.0/TokenPlanMonitor-0.1.0-arm64.dmg)，打开后将 `TokenPlanMonitor.app` 拖到 Applications，再双击启动。应用包含 Python 运行时，不需要另外安装依赖。
 
-首版只有本地 ad-hoc 签名，没有 Developer ID 签名和 Apple 公证。对于从网络下载的副本，首次打开可能被 Gatekeeper 阻止；确认来源后，可在系统设置“隐私与安全性”中使用“仍要打开”。不要关闭系统安全保护。
+可同时下载 [SHA-256 校验文件](https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.1.0/TokenPlanMonitor-0.1.0-arm64.dmg.sha256)。将 DMG 和校验文件放在同一目录后运行 `shasum -a 256 -c TokenPlanMonitor-0.1.0-arm64.dmg.sha256`，应显示 `OK`。
+
+首版只有本地 ad-hoc 签名，没有 Developer ID 签名和 Apple 公证。对于从网络下载的副本，首次打开可能被 Gatekeeper 阻止；确认来源后，可在系统设置“隐私与安全性”中使用“仍要打开”，再确认“打开”。不要关闭系统安全保护或删除应用的 quarantine 属性。
 
 - 首次启动填写账号 AK/SK、Region 和刷新间隔；Secret 留空保留已保存值，输入框不会显示原 Secret。
 - 菜单栏图标左键打开详情，右键或 Control-单击打开三周期用量及操作菜单，悬停显示摘要。
@@ -53,7 +55,7 @@ python3.13 -m venv .venv
 .venv/bin/python scripts/build_macos.py
 ```
 
-脚本替换生成的 `build/`、`dist/TokenPlanMonitor.app` 和 DMG 暂存目录，生成独立应用及 DMG。构建检查所有 Mach-O 文件为 arm64、最低系统版本不高于 14，且动态链接不依赖开发机路径；同时验证本地签名。Bundle ID 固定为 `com.zzcx2002.tokenplanmonitor`，应用数据不写入 `.app` 内。
+脚本替换生成的 `build/`、`dist/TokenPlanMonitor.app` 和 DMG 暂存目录，生成独立应用及 DMG。构建检查所有 Mach-O 文件为 arm64、最低系统版本不高于 14，且动态链接不依赖开发机路径；同时验证项目及第三方许可证资源已入包和本地 ad-hoc 签名。Bundle ID 固定为 `com.zzcx2002.tokenplanmonitor`，应用数据不写入 `.app` 内。
 
 ### macOS 离线验证
 
