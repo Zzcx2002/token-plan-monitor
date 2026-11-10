@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
-import os
 import math
+import os
+import sys
 from pathlib import Path
 from typing import Any
 
 import keyring
+from .paths import PROJECT_ROOT, data_directory
 
 from .appearance import AppearancePreferences
 
@@ -20,8 +22,7 @@ from .models import (
     WidgetPreferences,
 )
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
+DEFAULT_DATA_DIR = data_directory()
 KEYRING_SERVICE = "TokenPlanMonitor"
 AK_USERNAME = "volcengine_access_key_id"
 SK_USERNAME = "volcengine_secret_access_key"
@@ -35,7 +36,12 @@ class Storage:
         self.widget_path = self.data_dir / "widget.json"
         self.geometry_path = self.data_dir / "window_geometry.json"
         self.appearance_path = self.data_dir / "appearance.json"
-        self._keyring = keyring_backend or keyring
+        # Explicitly select the OS backend: never silently use a plaintext plugin.
+        if keyring_backend is None and sys.platform == "darwin":
+            from keyring.backends.macOS import Keyring
+            keyring_backend = Keyring()
+        self._keyring = keyring_backend if keyring_backend is not None else keyring
+        self.credential_store_name = "macOS 钥匙串" if sys.platform == "darwin" else "Windows 凭据管理器"
 
     def load_window_size(self, name: str) -> tuple[float, float] | None:
         value = (self._read_json(self.geometry_path) or {}).get(name)
@@ -118,13 +124,13 @@ class Storage:
             ak = self._keyring.get_password(KEYRING_SERVICE, AK_USERNAME)
             sk = self._keyring.get_password(KEYRING_SERVICE, SK_USERNAME)
         except Exception as exc:
-            raise ConfigurationError("无法读取 Windows 凭据管理器") from exc
+            raise ConfigurationError(f"无法读取{self.credential_store_name}") from exc
         if not ak or not sk:
             return None
         return Credentials(access_key_id=ak, secret_access_key=sk)
 
     def save_credentials(self, credentials: Credentials) -> None:
-        """Save only the two user-authorized Windows credential entries."""
+        """Save only the two application credential entries in the OS vault."""
         try:
             self._keyring.set_password(
                 KEYRING_SERVICE, SK_USERNAME, credentials.secret_access_key
@@ -133,7 +139,7 @@ class Storage:
                 KEYRING_SERVICE, AK_USERNAME, credentials.access_key_id
             )
         except Exception as exc:
-            raise ConfigurationError("无法保存到 Windows 凭据管理器") from exc
+            raise ConfigurationError(f"无法保存到{self.credential_store_name}") from exc
 
     def _read_json(self, path: Path) -> dict[str, Any] | None:
         try:

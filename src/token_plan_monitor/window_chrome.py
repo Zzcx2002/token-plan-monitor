@@ -11,7 +11,10 @@ from .ui_graphics import dpi_scale, native_handle
 
 logger = logging.getLogger(__name__)
 LRESULT = ctypes.c_ssize_t
-WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM)
+# Keep the pure geometry helpers importable on macOS; WindowChrome itself is Windows-only.
+WNDPROC = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)(
+    LRESULT, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM
+)
 
 
 def resize_hit(x: int, y: int, width: int, height: int, edge: int) -> int:

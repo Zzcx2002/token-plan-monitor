@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import ctypes
 import tkinter as tk
-import winreg
+try:
+    import winreg
+except ModuleNotFoundError:
+    winreg = None
 from dataclasses import dataclass
 from functools import lru_cache
 from tkinter import ttk
@@ -406,6 +409,8 @@ def native_handle(window: tk.Misc) -> int:
 
 
 def transparency_enabled() -> bool:
+    if winreg is None:
+        return False
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                 r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as key:

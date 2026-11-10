@@ -7,6 +7,9 @@ artifacts/
 *.egg-info/
 build/
 dist/
+.build-python/
+.uv-cache/
+.venv-build/
 data/*.json
 data/*.tmp
 data/*.corrupt

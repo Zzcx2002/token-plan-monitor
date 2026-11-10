@@ -87,12 +87,22 @@ class Settings:
         )
 
 
+CARD_DEFAULT_WIDTH = 384
+CARD_DEFAULT_HEIGHT = 160
+CARD_MIN_WIDTH = 320
+CARD_MIN_HEIGHT = 160
+CARD_MAX_DIMENSION = 10_000
+
+
 @dataclass(frozen=True)
 class WidgetPreferences:
     x: int | None = None
     y: int | None = None
     visible: bool = True
     topmost: bool = True
+    desktop_mode: bool = False
+    width: int = CARD_DEFAULT_WIDTH
+    height: int = CARD_DEFAULT_HEIGHT
 
     def __post_init__(self) -> None:
         for coordinate in (self.x, self.y):
@@ -102,8 +112,15 @@ class WidgetPreferences:
                 or abs(coordinate) > 1_000_000
             ):
                 raise ValueError("Widget coordinates must be reasonable integers")
-        if type(self.visible) is not bool or type(self.topmost) is not bool:
-            raise ValueError("Widget visibility and topmost flags must be booleans")
+        if any(type(flag) is not bool for flag in (self.visible, self.topmost, self.desktop_mode)):
+            raise ValueError("Widget visibility, topmost and desktop mode flags must be booleans")
+        for dimension, minimum in ((self.width, CARD_MIN_WIDTH), (self.height, CARD_MIN_HEIGHT)):
+            if (
+                isinstance(dimension, bool)
+                or not isinstance(dimension, int)
+                or not minimum <= dimension <= CARD_MAX_DIMENSION
+            ):
+                raise ValueError("Widget dimensions must be reasonable integers")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -111,6 +128,9 @@ class WidgetPreferences:
             "y": self.y,
             "visible": self.visible,
             "topmost": self.topmost,
+            "desktop_mode": self.desktop_mode,
+            "width": self.width,
+            "height": self.height,
         }
 
     @classmethod
@@ -122,6 +142,9 @@ class WidgetPreferences:
             y=value.get("y"),
             visible=value.get("visible", True),
             topmost=value.get("topmost", True),
+            desktop_mode=value.get("desktop_mode", False),
+            width=value.get("width", CARD_DEFAULT_WIDTH),
+            height=value.get("height", CARD_DEFAULT_HEIGHT),
         )
 
 
@@ -234,6 +257,7 @@ class MonitorViewState:
     error: str | None = None
     last_attempt_at: datetime | None = None
     revision: int = 0
+    error_category: str | None = None
 
 
 def datetime_to_iso(value: datetime | None) -> str | None:

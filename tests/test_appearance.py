@@ -35,7 +35,8 @@ def test_system_selection_and_failed_registry_access():
     with patch("token_plan_monitor.appearance.system_theme",return_value="dark"):
         assert resolve_theme("system") is DARK
         assert resolve_theme("light") is LIGHT
-    with patch("token_plan_monitor.appearance.winreg.OpenKey",side_effect=OSError):
+    with patch("token_plan_monitor.appearance.winreg") as registry:
+        registry.OpenKey.side_effect=OSError
         assert system_theme()=="light"
 
 

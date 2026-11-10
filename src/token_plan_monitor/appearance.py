@@ -1,7 +1,11 @@
 """Application appearance is independent of account and quota configuration."""
 from __future__ import annotations
 
-import winreg
+try:
+    import winreg
+except ModuleNotFoundError:
+    winreg = None
+
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -63,6 +67,8 @@ DARK = Theme("dark", MappingProxyType({
 
 
 def system_theme() -> str:
+    if winreg is None:
+        return "light"
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                 r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as key:
