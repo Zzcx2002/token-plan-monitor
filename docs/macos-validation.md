@@ -4,6 +4,18 @@
 
 开发/验证机器：Apple Silicon，macOS 26.6（25G72）。构建使用 python.org Python 3.13.9 framework、py2app 0.28.10；Python 及依赖都在项目隔离目录，未安装到系统 Python。依赖版本见 `requirements-macos-build.txt`。
 
+## v0.1.0 GitHub Release 发布前验证（2026-11-10）
+
+- 整合远端 `main` 的窗口 chrome、主题、外观和尺寸持久化改动与 `codex/macos-app` 的原生 macOS 实现。保留 macOS 专用钥匙串后端及远端窗口几何/外观存储；为 Windows 注册表和原生回调增加非 Windows import 隔离。
+- 离线 pytest：**116 项通过，2 项跳过**；跳过真实 OpenAPI 和 Windows 原生特效测试。`git diff --check`、源码编译检查及原生 AppKit 隔离 smoke test 通过。
+- 使用 `.venv-build` 中 python.org Python 3.13.9 framework 重新构建，未复用此前 DMG。构建检查 **109 个 Mach-O 文件均为 arm64**，部署目标不高于 macOS 14，动态链接不依赖开发机路径。
+- Info.plist 核对版本 `0.1.0`、build `1`、Bundle ID `com.zzcx2002.tokenplanmonitor`、最低系统 macOS 14 和版权信息。app 为 ad-hoc 签名，`codesign --verify --deep --strict` 通过，无 Team Identifier，未做 Developer ID 签名或 Apple 公证。
+- 项目 LICENSE、CC Switch 声明、Python/依赖许可证、OpenSSL 3.0.18、zlib-ng 2.3.3 及 Pillow 上游原生库声明已在 ad-hoc 签名前放入 `Contents/Resources`，并随应用一并签名；构建对必需资源执行存在性检查。
+- `hdiutil verify` 通过。已生成与 Release DMG 同名的 `.sha256` 伴随资产；校验值不写入受版本控制的文档，以 Release 资产为准。
+- 只读挂载最终 DMG，确认 `Applications -> /Applications`、应用和许可证资源；从挂载副本执行打包二进制的完整原生 smoke test 和 `codesign --verify --deep --strict`，均通过。截图输出位于 `/tmp/token-plan-monitor-v0.1.0-dmg-smoke/`，未写入镜像。
+- 检查未发现应用配置、用量快照、用户凭据、日志或项目测试截图被打包；Python 标准库自带的 `test/tkinterdata/python.png` 属于运行时上游测试资源，不是本项目验收截图。
+- 本节仅记录发布前本地验收。干净 macOS 14、真实 Keychain/OpenAPI、VoiceOver、硬件鼠标/多屏/Spaces，以及浏览器下载后的 Gatekeeper“仍要打开”流程仍未实测；不得由上述程序化检查推断这些项目已通过。
+
 ## 已验证
 
 - 离线 pytest：58 项通过；实时接口测试和 Windows 原生特效测试按条件跳过。
