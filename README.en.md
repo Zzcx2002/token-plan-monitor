@@ -56,12 +56,12 @@ Model Studio Token Plan (Individual) is metered per subscription month: the API 
 
 ### macOS
 
-Download [TokenPlanMonitor-0.1.0-arm64.dmg](https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.1.0/TokenPlanMonitor-0.1.0-arm64.dmg) from the [GitHub Release v0.1.0](https://github.com/Zzcx2002/token-plan-monitor/releases/tag/v0.1.0) page, open it, drag `TokenPlanMonitor.app` into Applications, and launch it. The app bundles its own Python runtime — you do not need to install anything else.
+Download [TokenPlanMonitor-0.1.1-arm64.dmg](https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.1.1/TokenPlanMonitor-0.1.1-arm64.dmg) from the [GitHub Release v0.1.1](https://github.com/Zzcx2002/token-plan-monitor/releases/tag/v0.1.1) page, open it, drag `TokenPlanMonitor.app` into Applications, and launch it. The app bundles its own Python runtime — you do not need to install anything else.
 
-To confirm the download is intact, put the DMG and the [SHA-256 checksum file](https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.1.0/TokenPlanMonitor-0.1.0-arm64.dmg.sha256) in the same folder and run:
+To confirm the download is intact, put the DMG and the [SHA-256 checksum file](https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.1.1/TokenPlanMonitor-0.1.1-arm64.dmg.sha256) in the same folder and run:
 
 ```sh
-shasum -a 256 -c TokenPlanMonitor-0.1.0-arm64.dmg.sha256
+shasum -a 256 -c TokenPlanMonitor-0.1.1-arm64.dmg.sha256
 ```
 
 This first release is only ad-hoc signed locally: no Developer ID signature, no Apple notarization. A copy downloaded from the network may be blocked by Gatekeeper on first launch. Once you are satisfied with the source, use **Open Anyway** under System Settings → Privacy & Security, then confirm **Open**. Do **not** turn off your system security protections or strip the app's quarantine attribute.

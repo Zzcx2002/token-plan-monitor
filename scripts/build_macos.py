@@ -94,6 +94,7 @@ def main():
             shutil.rmtree(path)
     icon = ROOT / "build/assets/app.icns"
     icon.parent.mkdir(parents=True, exist_ok=True)
+    from token_plan_monitor import __version__
     from token_plan_monitor.assets import make_brand_icon
     make_brand_icon(1024).save(icon, format="ICNS")
     env = dict(os.environ, MACOSX_DEPLOYMENT_TARGET="14.0", PYTHONNOUSERSITE="1")
@@ -110,9 +111,13 @@ def main():
     stage.mkdir()
     shutil.copytree(APP, stage / APP.name, symlinks=True)
     (stage / "Applications").symlink_to("/Applications")
+    # Named from the package version, so the artifact can never disagree with
+    # CFBundleShortVersionString the way a hardcoded name did.
+    image = ROOT / f"dist/TokenPlanMonitor-{__version__}-arm64.dmg"
     run("hdiutil", "create", "-volname", "TokenPlanMonitor", "-srcfolder", stage,
-        "-ov", "-format", "UDZO", ROOT / "dist/TokenPlanMonitor-0.1.0-arm64.dmg")
+        "-ov", "-format", "UDZO", image)
     print(f"Built {APP}")
+    print(f"Built {image}")
 
 
 if __name__ == "__main__":

@@ -150,4 +150,6 @@ set TOKEN_PLAN_MONITOR_LIVE=
 
 [docs/macos-validation.md](macos-validation.md) 记录每轮改动的验证结果与尚需实机复核的场景。macOS 14 最低版本声明和二进制检查不能替代 macOS 14 实机运行测试。
 
-发布前请确认 Release 资产自洽：GitHub 上 `TokenPlanMonitor-0.1.0-arm64.dmg` 的实际摘要与同目录 `.sha256` 文件内容一致，否则使用者按 README 校验必然失败。本地 `dist/` 在重新构建后与 `.sha256` 不一致是正常现象，以 Release 为准。
+发布前请确认 Release 资产自洽：GitHub 上当前 `TokenPlanMonitor-<版本>-arm64.dmg` 的实际摘要与同目录 `.sha256` 文件内容一致，否则使用者按 README 校验必然失败。本地 `dist/` 在重新构建后与 `.sha256` 不一致是正常现象，以 Release 为准。
+
+镜像文件名现在由 `token_plan_monitor.__version__` 推导（`scripts/build_macos.py`），与 `CFBundleShortVersionString` 同源；发新阶版本只需改 `__init__.py` 一处版本号，不要再去脚本里硬写文件名。

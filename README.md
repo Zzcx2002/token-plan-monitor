@@ -53,12 +53,12 @@
 
 ### macOS
 
-从 [GitHub Release v0.1.0](https://github.com/Zzcx2002/token-plan-monitor/releases/tag/v0.1.0) 下载 [TokenPlanMonitor-0.1.0-arm64.dmg](https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.1.0/TokenPlanMonitor-0.1.0-arm64.dmg)，打开后把 `TokenPlanMonitor.app` 拖进 Applications，双击启动。应用自带 Python 运行时，不需要另外安装任何东西。
+从 [GitHub Release v0.1.1](https://github.com/Zzcx2002/token-plan-monitor/releases/tag/v0.1.1) 下载 [TokenPlanMonitor-0.1.1-arm64.dmg](https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.1.1/TokenPlanMonitor-0.1.1-arm64.dmg)，打开后把 `TokenPlanMonitor.app` 拖进 Applications，双击启动。应用自带 Python 运行时，不需要另外安装任何东西。
 
-想确认下载完整，把 DMG 和 [SHA-256 校验文件](https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.1.0/TokenPlanMonitor-0.1.0-arm64.dmg.sha256) 放在同一目录后执行：
+想确认下载完整，把 DMG 和 [SHA-256 校验文件](https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.1.1/TokenPlanMonitor-0.1.1-arm64.dmg.sha256) 放在同一目录后执行：
 
 ```sh
-shasum -a 256 -c TokenPlanMonitor-0.1.0-arm64.dmg.sha256
+shasum -a 256 -c TokenPlanMonitor-0.1.1-arm64.dmg.sha256
 ```
 
 首版只有本地 ad-hoc 签名，没有 Developer ID 签名，也没有 Apple 公证。从网络下载的副本首次打开可能被 Gatekeeper 阻止；确认来源后，在系统设置「隐私与安全性」里点「仍要打开」，再确认「打开」。**不要**关闭系统安全保护，也不要删除应用的 quarantine 属性。
