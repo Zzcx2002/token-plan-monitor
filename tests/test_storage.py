@@ -4,6 +4,8 @@ from datetime import UTC, datetime
 import pytest
 
 from token_plan_monitor.models import (
+    ClaudeProviderPrefs,
+    ConfigurationError,
     Credentials,
     QuotaWindow,
     Settings,
@@ -198,3 +200,63 @@ def test_provider_secrets_never_reach_the_json_files(tmp_path):
     serialized += storage.snapshot_path.read_text(encoding="utf-8")
     assert "bailian-secret" not in serialized
     assert "LTAI-bailian" not in serialized
+
+
+def test_inference_keys_are_isolated_per_provider(tmp_path):
+    keyring = FakeKeyring()
+    storage = Storage(tmp_path, keyring)
+    storage.save_inference_key("sk-sp-bailian", "bailian")
+    storage.save_credentials(Credentials("AKLT", "ak-secret"), "volcengine")
+    assert storage.load_inference_key("bailian") == "sk-sp-bailian"
+    assert storage.load_inference_key("volcengine") is None
+    assert {name for _, name in keyring.values} == {
+        "bailian_inference_api_key",
+        "volcengine_access_key_id",
+        "volcengine_secret_access_key",
+    }
+    with pytest.raises(ConfigurationError):
+        storage.save_inference_key("   ", "bailian")
+
+
+def test_inference_key_never_reaches_the_json_files(tmp_path):
+    storage = Storage(tmp_path, FakeKeyring())
+    storage.save_inference_key("sk-sp-secret", "bailian")
+    storage.save_claude_prefs(
+        ClaudeProviderPrefs(model="qwen3.8-max", base_url="https://x/apps/anthropic"), "bailian")
+    storage.save_settings(Settings(provider="bailian"))
+    storage.save_snapshot(sample_snapshot())
+    serialized = "".join(
+        path.read_text(encoding="utf-8")
+        for path in (storage.config_path, storage.snapshot_path, storage.claude_path))
+    assert "sk-sp-secret" not in serialized
+
+
+def test_claude_prefs_round_trip_without_cross_provider_clobbering(tmp_path):
+    storage = Storage(tmp_path, FakeKeyring())
+    storage.save_claude_prefs(
+        ClaudeProviderPrefs(model="qwen3.8-max", base_url="https://x/apps/anthropic"), "bailian")
+    assert storage.load_claude_prefs("bailian").model == "qwen3.8-max"
+    assert storage.load_claude_prefs("volcengine") == ClaudeProviderPrefs()
+    storage.save_claude_prefs(ClaudeProviderPrefs(custom_model="ep-abc"), "volcengine")
+    assert storage.load_claude_prefs("bailian").base_url == "https://x/apps/anthropic"
+    assert storage.load_claude_prefs("volcengine").custom_model == "ep-abc"
+
+
+@pytest.mark.parametrize("payload", [
+    "{ not json",
+    "[]",
+    '{"schema_version": 99, "providers": {"bailian": {"model": "x"}}}',
+    '{"schema_version": 1, "providers": []}',
+    '{"schema_version": 1, "providers": {"bailian": {"model": 42}}}',
+    '{"schema_version": 1, "providers": {"bailian": null}}',
+])
+def test_corrupt_claude_prefs_fall_back_to_defaults(tmp_path, payload):
+    storage = Storage(tmp_path, FakeKeyring())
+    storage.claude_path.write_text(payload, encoding="utf-8")
+    assert storage.load_claude_prefs("bailian") == ClaudeProviderPrefs()
+
+
+def test_saving_prefs_for_an_unknown_provider_is_rejected(tmp_path):
+    storage = Storage(tmp_path, FakeKeyring())
+    with pytest.raises(ConfigurationError):
+        storage.save_claude_prefs(ClaudeProviderPrefs(), "openai")

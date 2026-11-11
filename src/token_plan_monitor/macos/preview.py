@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -14,8 +15,10 @@ import Quartz
 from PyObjCTools import AppHelper
 
 from ..models import Credentials, MonitorViewState, QuotaWindow, UsageSnapshot
+from ..providers import get_provider
 from ..storage import Storage
-from .ui import MonitorUI
+from . import theme as T
+from .ui import SETTINGS_MAX_HEIGHT, SETTINGS_WIDTH, MonitorUI, status_presentation
 
 
 class MemoryKeyring:
@@ -88,6 +91,144 @@ class FakeMonitor:
         pass
     def update_configuration(self, settings, credentials):
         self.request_refresh()
+
+
+def collect_texts(view):
+    """Every NSTextField string under `view`, recursively.
+
+    Recursive because the settings controls live inside a scroll document and a
+    pinned footer, so a single-level subviews scan would silently stop checking.
+    """
+    found = [str(child.stringValue()) for child in view.subviews()
+             if isinstance(child, A.NSTextField)]
+    for child in view.subviews():
+        found += collect_texts(child)
+    return found
+
+
+def edge_profile(bitmap, scale, well, root):
+    """Colors down a well's left edge, in content-view space.
+
+    Compared against the same column with the well unlit rather than matched to
+    a hue: the ring follows the system accent color, so a Graphite or Green Mac
+    would fail any blue assumption, and the accent also draws translucently.
+    """
+    frame = well.convertRect_toView_(well.bounds(), root)
+    x = int(round((frame.origin.x + 1) * scale))
+    out = []
+    for y_pt in range(int(frame.origin.y + 5), int(frame.origin.y + frame.size.height - 5)):
+        y = int(y_pt * scale)
+        if not (0 <= y < bitmap.pixelsHigh() and 0 <= x < bitmap.pixelsWide()):
+            continue
+        c = bitmap.colorAtX_y_(x, y).colorUsingColorSpace_(A.NSColorSpace.sRGBColorSpace())
+        out.append((c.redComponent(), c.greenComponent(), c.blueComponent()))
+    return out
+
+
+def profile_delta(a, b):
+    """Largest per-pixel channel difference between two edge profiles."""
+    if len(a) != len(b):
+        return float("inf")           # the row moved between captures
+    if not a:
+        return 0.0                    # off screen: nothing was sampled either way
+    return max(max(abs(x - y) for x, y in zip(pa, pb)) for pa, pb in zip(a, b))
+
+
+def settings_bitmap(ui):
+    root = ui.settings.contentView()
+    bitmap = root.bitmapImageRepForCachingDisplayInRect_(root.bounds())
+    root.cacheDisplayInRect_toBitmapImageRep_(root.bounds(), bitmap)
+    return root, bitmap, bitmap.pixelsWide() / root.bounds().size.width
+
+
+def assert_ring_drawn(ui, key):
+    """Lighting a well changes exactly that well's edge, and nothing else.
+
+    Not checkable through the layer: ``NSViewBackingLayer`` will not report a
+    border it was told to draw (reading its ``backgroundColor`` fails the same
+    way), and the stock focus ring never rasterizes at all -- the pre-redesign
+    baseline captured none either. So this compares rendered pixels before and
+    after lighting, which also keeps the test independent of the user's accent
+    color. Which rows *should* be lit is assert_focus_matches_key_state's job and
+    the unit tests; this proves what lighting looks like.
+    """
+    wells = ui.field_wells
+    for well in wells.values():
+        well.set_focused(False)
+    root, bitmap, scale = settings_bitmap(ui)
+    before = {name: edge_profile(bitmap, scale, well, root) for name, well in wells.items()}
+
+    wells[key].set_focused(True)
+    root, bitmap, scale = settings_bitmap(ui)
+    after = {name: edge_profile(bitmap, scale, well, root) for name, well in wells.items()}
+    try:
+        assert len(after[key]) > 15, ("row is off screen", key, len(after[key]))
+        delta = profile_delta(before[key], after[key])
+        assert delta > 0.10, ("lighting the well changed nothing", key, delta)
+        # Rows scrolled out of the document's visible band have no samples to
+        # compare; require the ones that do exist, so this can't pass by
+        # quietly checking nothing.
+        checked = 0
+        for name in wells:
+            if name == key or not before[name]:
+                continue
+            checked += 1
+            other = profile_delta(before[name], after[name])
+            assert other < 0.02, ("neighbour ring changed", name, other)
+        assert checked >= 2, ("too many rows off screen to compare", checked)
+    finally:
+        wells[key].set_focused(False)
+
+
+def assert_focus_matches_key_state(ui):
+    """The lit rows match the rule for the window's actual key state.
+
+    The window is key by the time the smoke reaches this point, so the rule can
+    be checked directly against AppKit's own state: a row is lit exactly when it
+    owns the field editor. Whether a *non-key* window dims every row cannot be
+    set up here, so that half lives in tests/test_macos_theme.py, and what a lit
+    row looks like is proven by assert_ring_drawn below.
+    """
+    ui.refresh_field_focus()
+    key = ui.settings.isKeyWindow()
+    responder = ui.settings.firstResponder() if key else None
+    expected = sorted(name for name, field in ui.fields.items()
+                      if responder is not None and responder is field.currentEditor())
+    lit = sorted(name for name, well in ui.field_wells.items() if well.focused)
+    assert lit == expected, (lit, expected)
+    if not key:
+        # Still a real assertion: a ring left lit on a row that no longer owns
+        # the editor (or survives the window going inactive) fails here. It is
+        # not proof that a key window lights the right row -- the harness has no
+        # run loop, so isKeyWindow() never turns true here and that half is a
+        # manual check. Returned so smoke-result.txt says which half ran.
+        assert lit == [], lit
+    return "key" if key else "inactive"
+
+
+def srgb(color):
+    """Comparable RGB triple for any color, dynamic or not."""
+    c = color.colorUsingColorSpace_(A.NSColorSpace.sRGBColorSpace())
+    return tuple(round(v, 3) for v in (c.redComponent(), c.greenComponent(),
+                                       c.blueComponent(), c.alphaComponent()))
+
+
+def assert_status_tone(ui, state, name):
+    """The status line actually carries the tone the state implies.
+
+    This is a regression guard against a real failure: colors registered through
+    colorWithName:dynamicProvider: are stored by name, so sharing one name made
+    every tone resolve to whichever was assigned first -- stale and error
+    headers rendered "all good" green while the text said otherwise. Nothing
+    else in this suite looks at color, so the check belongs here.
+    """
+    _, expected = status_presentation(state)
+    assert srgb(ui.header_status.textColor()) == srgb(expected), (
+        name, "details status tone", srgb(ui.header_status.textColor()), srgb(expected))
+    assert srgb(ui.card_status.textColor()) == srgb(expected), (name, "card status tone")
+    if state.status == "error":
+        assert srgb(ui.header_reason.textColor()) == srgb(expected), (
+            name, "reason tone follows the failing state")
 
 
 def capture(window, path):
@@ -391,14 +532,31 @@ def main(argv=None):
     parser.add_argument("--smoke-test", action="store_true")
     parser.add_argument("--state", choices=states(), default="agent")
     parser.add_argument("--artifacts", type=Path, default=Path("artifacts/macos"))
+    # Screenshots are the review artifact for a visual change, and the shell now
+    # follows the system appearance, so a run has to say which appearance it
+    # proves. "system" leaves it alone; light/dark pin NSApp for the session.
+    # View captures never include blur, window shadows or the stock focus ring,
+    # so these PNGs prove layout, color and hierarchy only.
+    parser.add_argument("--appearance", choices=("system", "light", "dark"), default="system")
     args = parser.parse_args(argv)
     with TemporaryDirectory(prefix="token-monitor-preview-") as temporary:
         storage = Storage(Path(temporary), MemoryKeyring())
         storage.save_credentials(Credentials("preview-ak", "preview-secret"))
+        if args.appearance != "system":
+            A.NSApplication.sharedApplication().setAppearance_(A.NSAppearance.appearanceNamed_(
+                A.NSAppearanceNameAqua if args.appearance == "light"
+                else A.NSAppearanceNameDarkAqua))
         ui = MonitorUI(FakeMonitor(states()[args.state]), storage)
+        # Hermetic Claude Code target: never read or write a real ~/.claude.
+        claude_home = Path(temporary) / "claude-home"
+        ui.claude_paths_override = (claude_home / "settings.json",
+                                    claude_home / ".claude.json")
         ui.setup()
         ui.show_details()
         failure = []
+        # Which focus branch the harness could really exercise, reported in
+        # smoke-result.txt so nobody reads the inactive-window case as proof.
+        focus_modes = []
         def smoke():
             try:
                 args.artifacts.mkdir(parents=True, exist_ok=True)
@@ -416,6 +574,7 @@ def main(argv=None):
                     assert backend.Keyring.priority > 0
                 for name, state in states().items():
                     ui.render(state)
+                    assert_status_tone(ui, state, name)
                     ui.details.displayIfNeeded()
                     ui.card.displayIfNeeded()
                     capture(ui.details, args.artifacts / f"details-{name}.png")
@@ -495,12 +654,31 @@ def main(argv=None):
                 assert ui.existing is None
                 ui.save_settings()
                 assert ui.setting_error.stringValue() == "请填写 AccessKey ID"
+                # The message must read as an error. Ordering matters: the label
+                # is built in the error tone, so a first failure proves nothing
+                # about a writer that skips the tone. Show a success note first,
+                # then fail -- save_settings used to set the string directly and
+                # would render this error in success green.
+                ui.show_form_message("已写入 Claude 配置", "ok")
+                assert srgb(ui.setting_error.textColor()) == srgb(T.tone("ok"))
+                ui.save_settings()
+                assert srgb(ui.setting_error.textColor()) == srgb(T.tone("error")), (
+                    "error kept the previous message's tone",
+                    srgb(ui.setting_error.textColor()))
                 assert ui.settings.firstResponder() == ui.fields["ak"].currentEditor()
+                # Inputs are borderless on purpose, so the focus cue lives on the
+                # well that is the visible row: ring on the focused row, none on
+                # any other. This replaces the stock bezel's own highlight.
+                focus_modes.append(assert_focus_matches_key_state(ui))
+                assert_ring_drawn(ui, "ak")
                 ui.fields["ak"].setStringValue_("test-ak")
                 ui.save_settings()
                 assert ui.fields["ak"].stringValue() == "test-ak"
                 assert ui.setting_error.stringValue() == "首次连接请填写 Secret AccessKey"
                 assert ui.settings.firstResponder() == ui.fields["sk"].currentEditor()
+                # The ring follows a focus move the code asked for, not just a click.
+                focus_modes.append(assert_focus_matches_key_state(ui))
+                assert_ring_drawn(ui, "sk")
                 capture(ui.settings, args.artifacts / "settings-first-use.png")
                 # Provider switching: rebuild is deferred, regions are revalidated
                 # and each provider owns its own vault entries.
@@ -529,6 +707,167 @@ def main(argv=None):
                 assert {name for _, name in storage._keyring.values} == {
                     "bailian_access_key_id", "bailian_secret_access_key"}
                 assert "bailian-secret" not in storage.config_path.read_text(encoding="utf-8")
+
+                # --- Claude Code hookup, confined to the temp claude home ---
+                settings_target = claude_home / "settings.json"
+                ui.settings.orderOut_(None)
+                ui.open_settings()
+                catalog = get_provider("bailian").claude_models
+                titles = [item.title() for item in ui.model_popup.itemArray()]
+                assert titles == [option.label for option in catalog] + ["自定义模型 ID…"]
+                assert ui.fields["base_url"].stringValue() == ""      # nothing live yet
+                assert ui.fields["api_key"].stringValue() == ""
+                ui.model_popup.selectItemAtIndex_(1)                  # qwen3.8-max
+                ui.fields["api_key"].setStringValue_("sk-sp-preview")
+                ui._confirm_override = True
+                ui.apply_claude_config()
+                ui._confirm_override = None
+                written = json.loads(settings_target.read_text(encoding="utf-8"))
+                assert written["env"]["ANTHROPIC_MODEL"] == "qwen3.8-max"
+                assert written["env"]["ANTHROPIC_BASE_URL"] == (
+                    "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic")
+                assert written["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-sp-preview"
+                assert written["model"] == "qwen3.8-max"
+                # No alias existed on a fresh file, so every tier got filled.
+                assert written["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "qwen3.8-max"
+                assert storage.load_inference_key("bailian") == "sk-sp-preview"
+                assert "sk-sp-preview" not in storage.claude_path.read_text(encoding="utf-8")
+                assert json.loads((claude_home / ".claude.json").read_text("utf-8"))[
+                    "hasCompletedOnboarding"] is True
+                capture(ui.settings, args.artifacts / "settings-claude.png")
+
+                # Re-apply against a hand-tuned live config: the opus alias is
+                # what actually selects the model, and everything else survives.
+                hand_tuned = {
+                    "env": {
+                        "ANTHROPIC_BASE_URL": "https://token-plan.maas.qianwenaiapi.com/apps/anthropic",
+                        "ANTHROPIC_MODEL": "auto",
+                        "ANTHROPIC_DEFAULT_SONNET_MODEL": "qwen3.8-flash",
+                        "ANTHROPIC_DEFAULT_OPUS_MODEL": "qwen3.8-max",
+                        "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "983616",
+                    },
+                    "permissions": {"deny": ["WebSearch"]},
+                    "model": "opus",
+                }
+                settings_target.write_text(json.dumps(hand_tuned), encoding="utf-8")
+                ui.settings.orderOut_(None)
+                ui.open_settings()
+                # Prefill comes from the live file, so a proxy host is never reset.
+                assert ui.fields["base_url"].stringValue().endswith("qianwenaiapi.com/apps/anthropic")
+                assert titles[ui.model_popup.indexOfSelectedItem()].startswith("auto")
+                assert ui.fields["api_key"].stringValue() == ""       # token not surfaced
+                assert ui.inference_key == "sk-sp-preview"
+                ui.model_popup.selectItemAtIndex_(1)
+                ui._confirm_override = True
+                ui.apply_claude_config()
+                ui._confirm_override = None
+                merged = json.loads(settings_target.read_text(encoding="utf-8"))
+                assert merged["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "qwen3.8-max"
+                assert merged["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "qwen3.8-flash"
+                assert merged["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "983616"
+                assert merged["permissions"] == {"deny": ["WebSearch"]}
+                assert merged["env"]["ANTHROPIC_BASE_URL"].endswith("qianwenaiapi.com/apps/anthropic")
+                assert any(p.name.startswith("settings.json.bak.") for p in claude_home.iterdir())
+
+                # A pending provider switch must not tear down the form mid-write.
+                ui._applying_claude = True
+                ui._settings_dirty = True
+                ui.provider_popup.selectItemAtIndex_(0)
+                ui.flush_settings_rebuild()
+                assert ui._settings_dirty is True
+                assert ui.settings_provider == "bailian"
+                ui._applying_claude = False
+                ui._settings_dirty = False
+
+                # Ark: unverified endpoint is warned about and never guessed.
+                ui.settings.orderOut_(None)
+                ui.open_settings()
+                ui.provider_popup.selectItemAtIndex_(0)
+                ui.provider_changed()
+                ui.flush_settings_rebuild()
+                assert ui.settings_provider == "volcengine"
+                # A provider with nothing of its own shows what Claude Code
+                # actually points at; blank fields read as lost input.
+                assert ui.fields["base_url"].stringValue().endswith("qianwenaiapi.com/apps/anthropic")
+                assert ui.fields["model"].stringValue() == "qwen3.8-max"
+                assert any("未经验证" in text for text in collect_texts(ui.settings.contentView()))
+                before_bytes = settings_target.read_bytes()
+                # No Ark inference key is known, so the write is refused instead
+                # of shipping the Bailian key to another provider's endpoint.
+                ui._confirm_override = True
+                ui.apply_claude_config()
+                ui._confirm_override = None
+                assert "API Key" in ui.setting_error.stringValue()
+                assert settings_target.read_bytes() == before_bytes
+                # Ark has no verified default, so a cleared URL is demanded, never guessed.
+                ui.fields["base_url"].setStringValue_("")
+                ui.fields["api_key"].setStringValue_("ark-preview-key")
+                ui._confirm_override = True
+                ui.apply_claude_config()
+                ui._confirm_override = None
+                assert "Anthropic" in ui.setting_error.stringValue()
+                assert settings_target.read_bytes() == before_bytes
+                capture(ui.settings, args.artifacts / "settings-ark.png")
+
+                # --- window geometry: capped height, width that actually follows ---
+                height = ui.settings.contentView().bounds().size.height
+                assert 480 <= height <= SETTINGS_MAX_HEIGHT + 1, height
+                assert ui.settings_body.frame().size.height > (
+                    ui.settings_scroll.contentView().bounds().size.height), "form must be scrollable"
+                # The visible row is its input well; the text view is inset
+                # inside it, so the left-inset and width checks land on the well
+                # and the field-to-well relationship is checked separately.
+                row = ui.field_wells["base_url"]
+                pad = T.WELL_PAD_X
+                narrow = ui.fields["base_url"].frame().size.width
+                ui.settings.setContentSize_(F.NSMakeSize(720, SETTINGS_MAX_HEIGHT))
+                ui.layout_settings()
+                wide = ui.fields["base_url"].frame().size.width
+                assert wide > narrow + 100, (narrow, wide)
+                assert row.frame().origin.x == 24
+                assert abs(row.frame().size.width - (wide + 2 * pad)) < 1
+                footer = ui.settings_footer.frame()
+                save = ui.save_button.frame()
+                assert abs(footer.size.width - (save.origin.x + save.size.width) - 24) < 1
+                cancel = ui.cancel_button.frame()
+                assert abs(save.origin.x - 12 - (cancel.origin.x + cancel.size.width)) < 1
+                ui.settings.setContentSize_(F.NSMakeSize(SETTINGS_WIDTH, height))
+                ui.layout_settings()
+                assert abs(ui.fields["base_url"].frame().size.width - narrow) < 1
+
+                # --- provider round trip must not discard typed Claude input ---
+                ui.provider_popup.selectItemAtIndex_(1)
+                ui.provider_changed()
+                ui.flush_settings_rebuild()
+                assert ui.settings_provider == "bailian"
+                ui.fields["base_url"].setStringValue_("https://typed.example/apps/anthropic")
+                ui.fields["model"].setStringValue_("qwen-new")
+                ui.fields["api_key"].setStringValue_("sk-sp-draft")
+                ui.provider_popup.selectItemAtIndex_(0)
+                ui.provider_changed()
+                ui.flush_settings_rebuild()
+                assert ui.settings_provider == "volcengine"
+                ui.provider_popup.selectItemAtIndex_(1)
+                ui.provider_changed()
+                ui.flush_settings_rebuild()
+                assert ui.fields["base_url"].stringValue() == "https://typed.example/apps/anthropic"
+                assert ui.fields["model"].stringValue() == "qwen-new"
+                # The key is never echoed back into the field, yet it is remembered:
+                # the label says so, and an apply with a blank field still writes it.
+                assert ui.fields["api_key"].stringValue() == ""
+                assert any("推理 API Key（已保存" in text for text in collect_texts(ui.settings.contentView()))
+                ui._confirm_override = True
+                ui.apply_claude_config()
+                ui._confirm_override = None
+                written = json.loads(settings_target.read_text(encoding="utf-8"))
+                assert written["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-sp-draft"
+                assert written["env"]["ANTHROPIC_MODEL"] == "qwen-new"
+                assert written["env"]["ANTHROPIC_BASE_URL"] == "https://typed.example/apps/anthropic"
+                # Drafts persisted to disk must stay secret-free.
+                for path in (storage.claude_path, storage.config_path):
+                    assert "sk-sp-draft" not in path.read_text(encoding="utf-8")
+                capture(ui.settings, args.artifacts / "settings-restored.png")
+
                 ui.toggle_card()
                 assert not ui.card.isVisible()
                 ui.toggle_card()
@@ -544,7 +883,10 @@ def main(argv=None):
                 assert not ui.details.isVisible()
                 assert "winreg" not in __import__("sys").modules
                 (args.artifacts / "smoke-result.txt").write_text(
-                    f"PASS: {len(states())} fake states across both providers, default/small/wide responsive windows, remaining progress and AX labels, focus/scroll preservation, settings validation/help, card refresh button, click/move/resize gestures and no details buttons, geometry preferences, desktop/floating modes and menus, hidden/visible restart, shutdown\n"
+                    f"PASS: appearance={args.appearance} (captures never include blur, window shadows or the stock focus ring)\n"
+                    + f"NOTE: focus-ring end-to-end branch exercised = {sorted(set(focus_modes)) or 'none'}"
+                      " (key-window lighting needs the on-display check)\n"
+                    + f"PASS: {len(states())} fake states across both providers, capped/scrollable settings window with width-following footer, default/small/wide responsive windows, remaining progress and AX labels, focus/scroll preservation, settings validation/help, card refresh button, click/move/resize gestures and no details buttons, geometry preferences, desktop/floating modes and menus, hidden/visible restart, shutdown\n"
                     + ("PASS: bundled runtime, certificates and Keychain backend imports\n" if getattr(sys, "frozen", False) else ""))
                 print("Native macOS smoke checks passed", flush=True)
             except BaseException as exc:

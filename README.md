@@ -165,15 +165,15 @@ powershell -NoProfile -File .\scripts\New-AppShortcuts.ps1
 
 为什么要动档位：Claude Code 里 `model: "opus"` 只是别名，真正选出模型的是 `ANTHROPIC_DEFAULT_OPUS_MODEL`。只写 `ANTHROPIC_MODEL` 对这种配置基本无效。副作用是顶层 `model` 变成具体模型名后，`/model opus` 走的是 `ANTHROPIC_DEFAULT_OPUS_MODEL`（现在等于所选模型），与你原来纯靠别名的分层用法不同。
 
-**安全**：每次写入前先备份为 `settings.json.bak.<时间戳>`；只合并不重建；文件不是有效 JSON 或 `env` 不是对象时**放弃写入且不动原文件**；写完权限收紧为 `0600`；重复点击结果一致。点击后先弹出逐条变更清单，确认才写。
+**安全**：每次写入前先把原文件备份为 `settings.json.bak.<时间戳>`——备份里是上一版的明文 Key，所以它和原文件一样保持 `0600`，并且会顺手把此前遗留的全局可读备份一起收紧；只合并不重建；文件不是有效 JSON 或 `env` 不是对象时**放弃写入且不动原文件**；写完权限收紧为 `0600`；重复点击结果一致。点击后先弹出逐条变更清单，确认才写。
 
 **要知道的代价**：
 
-- 推理 Key 平时只存钥匙串，但 Claude Code 通过环境变量消费它，所以写入后的 `settings.json` 里 `ANTHROPIC_AUTH_TOKEN` 是明文（`0600`，仅本用户可读；以本账户运行的进程仍能读到）。确认弹窗会说明这一点。
+- 推理 Key 平时只存钥匙串，但 Claude Code 通过环境变量消费它，所以写入后的 `settings.json` 里 `ANTHROPIC_AUTH_TOKEN` 是明文（`0600`，仅本用户可读；以本账户运行的进程仍能读到），它的备份同样是明文，权限也是 `0600`。确认弹窗会说明这一点。
 - 重写 `settings.json` 会丢掉 `//`、`/* */` 注释和键的顺序（值不受影响）；`~/.claude.json` 会被整体重新格式化并同样收紧为 `0600`，不存在时会被创建。
 - 官方只承诺 permissions / hooks / apiKeyHelper 一类编辑会热重载，没点名 `env` 和 `model`，所以**请重开一个 Claude Code 会话**确认生效。
 
-**Base URL 与模型**：留空时用服务商默认地址。百炼默认是已验证的 `https://token-plan.<region>.maas.aliyuncs.com/apps/anthropic`，粘贴 OpenAI 兼容地址（`/compatible-mode/v1`）会被自动改写，填你自己域名下的代理地址可以原样保留；百炼提供一份模型清单（默认 `auto`），自定义模型 ID 只能包含字母、数字和 `. _ : / + -`。**火山方舟没有可验证的 Anthropic 兼容端点**（官方只给 `/api/v3` 的 OpenAI 兼容地址，且说明 BaseUrl 需由使用者提供），所以该字段留空、需要你自己填，界面会标 ⚠ 未经验证，模型也只能手填 ID。
+**Base URL 与模型**：留空时用服务商默认地址，而拼进这个地址的 Region 会先按「格式 + 该服务商支持的地域」校验，与保存凭据用的是同一条规则。带账号密码的地址（`https://user:pass@host`）一律拒绝：`@` 之前的部分不是主机名，看起来正规的域名可能被悄悄替换成别的主机，而密钥正要发往那里。百炼默认是已验证的 `https://token-plan.<region>.maas.aliyuncs.com/apps/anthropic`，粘贴 OpenAI 兼容地址（`/compatible-mode/v1`）会被自动改写，填你自己域名下的代理地址可以原样保留；百炼提供一份模型清单（默认 `auto`），自定义模型 ID 只能包含字母、数字和 `. _ : / + -`。**火山方舟没有可验证的 Anthropic 兼容端点**（官方只给 `/api/v3` 的 OpenAI 兼容地址，且说明 BaseUrl 需由使用者提供），所以该字段留空、需要你自己填，界面会标 ⚠ 未经验证，模型也只能手填 ID。
 
 两个服务商之间来回切换时，各自填的模型与 Base URL 会被记住；推理 Key 只在本次运行的内存里留草稿、不回显，但字段标题会提示「已保存，留空保持不变」。取值优先级是：本次填写 → 磁盘上的真实配置 → 该服务商上次保存的偏好 → 服务商默认。把磁盘配置排在已存偏好之前，是为了你手工改过的接入地址不会被下一次写入悄悄还原成旧值。
 
@@ -201,7 +201,7 @@ AK/SK 只存 macOS 登录钥匙串，service 为 `TokenPlanMonitor`，每个服�
 
 切换服务商不会读取或覆盖另一家的凭据，控制面 AK/SK 与推理 Key 互不复用。拒绝钥匙串访问会直接报错，**不会**降级成明文文件。
 
-彻底清除：在「钥匙串访问」里只删除上面这几条 account，再删掉上面的数据目录和日志目录。更换服务商或凭据时旧快照会被清除，不会自动迁移 Windows 的配置。
+彻底清除：在「钥匙串访问」里只删除上面这几条 account，删掉上面的数据目录和日志目录，并删掉接入 Claude Code 时写到 `~/.claude` 的内容——`settings.json` 里的明文 Key 以及它的每一份 `settings.json.bak.*` 备份。更换服务商或凭据时旧快照会被清除，不会自动迁移 Windows 的配置。
 
 ### Windows
 

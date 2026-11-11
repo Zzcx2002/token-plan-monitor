@@ -32,13 +32,21 @@ SOFTWARE.
 ## Alibaba Cloud Bailian CLI
 
 The Alibaba Cloud ACS3-HMAC-SHA256 signing rules, the Bailian console gateway
-protocol, the Token Plan / Coding Plan quota response parsing behavior and the
+protocol, the Token Plan / Coding Plan quota response parsing behavior, the
+Claude Code `settings.json` write semantics (JSONC reading, timestamped backup,
+merge-only env patching, `/compatible-mode` → `/apps/anthropic` rewrite) and the
 related test fixtures in this project are adapted from
 [modelstudioai/cli](https://github.com/modelstudioai/cli), specifically
 `packages/core/src/client/acs.ts`, `packages/core/src/console/gateway.ts`,
-`packages/core/src/console/models.ts` and
-`packages/commands/src/commands/usage/` at revision
+`packages/core/src/console/models.ts`, `packages/commands/src/commands/usage/`
+and `packages/commands/src/commands/config/agent/writers/` at revision
 `fa8330c27862635f7d769c5488c33a06a47063d5`.
+
+This project deliberately diverges from that reference in two places, both
+safer: a malformed settings file aborts the write instead of being replaced by
+an empty document, and only the tier variable that the current top-level `model`
+alias resolves through is rewritten, so a hand-tuned per-tier model split is
+preserved.
 
 Apache License, Version 2.0, January 2004, http://www.apache.org/licenses/
 

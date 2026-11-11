@@ -16,6 +16,7 @@ from .models import (
     DEFAULT_PROVIDER,
     SCHEMA_VERSION,
     CacheError,
+    ClaudeProviderPrefs,
     ConfigurationError,
     Credentials,
     Settings,
@@ -41,6 +42,7 @@ class Storage:
         self.widget_path = self.data_dir / "widget.json"
         self.geometry_path = self.data_dir / "window_geometry.json"
         self.appearance_path = self.data_dir / "appearance.json"
+        self.claude_path = self.data_dir / "claude.json"
         # Explicitly select the OS backend: never silently use a plaintext plugin.
         if keyring_backend is None and sys.platform == "darwin":
             from keyring.backends.macOS import Keyring
@@ -154,6 +156,55 @@ class Storage:
     def _credential_entries(provider: str) -> tuple[str, str]:
         spec = get_provider(provider)
         return spec.access_key_username, spec.secret_key_username
+
+    def load_inference_key(self, provider: str = DEFAULT_PROVIDER) -> str | None:
+        """Read the vault entry holding the inference key, if any.
+
+        Kept separate from `load_credentials`: control-plane AK/SK cannot call
+        the model API, and an inference key must never be sent to the OpenAPI.
+        """
+        username = get_provider(provider).inference_key_username
+        try:
+            value = self._keyring.get_password(KEYRING_SERVICE, username)
+        except Exception as exc:
+            raise ConfigurationError(f"无法读取{self.credential_store_name}") from exc
+        return value.strip() if isinstance(value, str) and value.strip() else None
+
+    def save_inference_key(self, api_key: str, provider: str = DEFAULT_PROVIDER) -> None:
+        username = get_provider(provider).inference_key_username
+        secret = api_key.strip()
+        if not secret:
+            raise ConfigurationError("推理 API Key 不能为空")
+        try:
+            self._keyring.set_password(KEYRING_SERVICE, username, secret)
+        except Exception as exc:
+            raise ConfigurationError(f"无法保存到{self.credential_store_name}") from exc
+
+    def load_claude_prefs(self, provider: str) -> ClaudeProviderPrefs:
+        value = self._read_json(self.claude_path)
+        if value is None:
+            return ClaudeProviderPrefs()
+        try:
+            if value.get("schema_version") != SCHEMA_VERSION:
+                return ClaudeProviderPrefs()
+            providers = value.get("providers")
+            if not isinstance(providers, dict):
+                return ClaudeProviderPrefs()
+            entry = providers.get(provider, {})
+            return ClaudeProviderPrefs.from_dict(entry if entry is not None else {})
+        except (KeyError, TypeError, ValueError):
+            return ClaudeProviderPrefs()
+
+    def save_claude_prefs(self, prefs: ClaudeProviderPrefs, provider: str) -> None:
+        get_provider(provider)  # reject an unknown id before touching the file
+        stored = self._read_json(self.claude_path) or {}
+        existing = stored.get("providers")
+        providers = dict(existing) if isinstance(existing, dict) else {}
+        providers[provider] = prefs.to_dict()
+        self._write_json(
+            self.claude_path,
+            {"schema_version": SCHEMA_VERSION, "providers": providers},
+        )
 
     def _read_json(self, path: Path) -> dict[str, Any] | None:
         try:

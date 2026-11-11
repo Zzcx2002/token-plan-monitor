@@ -6,14 +6,24 @@ import pytest
 
 from token_plan_monitor.macos.layout import (
     FieldValidationError,
+    resolve_claude_seed,
     clamp_card,
     fit_card_size,
     lowest_windows,
     primary_action,
     resize_card_frame,
+    validate_claude_configuration,
     validate_configuration,
 )
-from token_plan_monitor.models import ConfigurationError, Credentials, MonitorViewState, QuotaWindow, UsageSnapshot
+from token_plan_monitor.models import (
+    ClaudeProviderPrefs,
+    ConfigurationError,
+    Credentials,
+    MonitorViewState,
+    QuotaWindow,
+    UsageSnapshot,
+)
+from token_plan_monitor.providers import get_provider
 from token_plan_monitor.monitor import UsageMonitor
 from token_plan_monitor.paths import PROJECT_ROOT, data_directory, log_directory
 from token_plan_monitor.storage import Storage
@@ -178,3 +188,138 @@ def test_lock_survives_duplicate_release_and_recovers_after_crash(tmp_path):
         assert with_lock.acquire()
     finally:
         with_lock.release()
+
+
+def test_claude_configuration_defaults_come_from_the_provider():
+    request = validate_claude_configuration(
+        "bailian", "cn-beijing", "qwen3.8-max", "", "", "", "sk-sp-held")
+    assert request.base_url == "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic"
+    assert request.model == "qwen3.8-max"
+    assert request.api_key == "sk-sp-held"          # blank field reuses the vault
+    assert request.base_url_verified is True
+    assert request.rewritten_from is None
+
+
+def test_custom_model_id_overrides_the_popup_choice():
+    request = validate_claude_configuration(
+        "bailian", "cn-beijing", "auto", "qwen-newest", "", "", "key")
+    assert request.model == "qwen-newest"
+
+
+def test_claude_configuration_rewrites_a_compatible_mode_url():
+    request = validate_claude_configuration(
+        "bailian", "cn-beijing", "auto", "",
+        "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", "", "key")
+    assert request.base_url.endswith("/apps/anthropic")
+    assert request.rewritten_from.endswith("/compatible-mode/v1")
+
+
+@pytest.mark.parametrize("field,args", [
+    ("model", ("bailian", "cn-beijing", "", "", "", "", "key")),
+    ("model", ("bailian", "cn-beijing", "", "has a space", "", "", "key")),
+    ("base_url", ("bailian", "cn-beijing", "auto", "", "https://ark.cn-beijing.volces.com/api/v3", "", "key")),
+    ("base_url", ("volcengine", "cn-beijing", "auto", "", "", "", "key")),
+    ("api_key", ("bailian", "cn-beijing", "auto", "", "", "", "")),
+    ("api_key", ("bailian", "cn-beijing", "auto", "", "", "", "key with space")),
+    # Region is interpolated into the provider's URL template, so it must clear
+    # the same rule the save path applies. The first row is the reproduced
+    # attack: it used to render a URL whose real host was evil.example.com.
+    ("region", ("bailian", "cn-beijing@evil.example.com/", "auto", "", "", "", "key")),
+    ("region", ("bailian", "cn-shanghai", "auto", "", "", "", "key")),
+    # Checked even when a Base URL is typed, so one field never depends on
+    # whether another happens to be filled in.
+    ("region", ("volcengine", "not a region", "auto", "",
+                "https://proxy.example.com/apps/anthropic", "", "key")),
+])
+def test_claude_validation_identifies_field(field, args):
+    with pytest.raises(FieldValidationError) as failure:
+        validate_claude_configuration(*args)
+    assert failure.value.field == field
+
+
+def test_claude_validation_falls_back_to_the_provider_default_region():
+    """An empty Region still yields the official address -- the same fallback the
+    save path has always had, and the reason the rule cannot simply require a
+    non-empty value."""
+    request = validate_claude_configuration("bailian", "", "auto", "", "", "", "key")
+    assert request.base_url == "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic"
+
+
+def test_claude_validation_accepts_every_supported_bailian_region():
+    from urllib.parse import urlsplit
+    for region in ("cn-beijing", "ap-southeast-1"):
+        request = validate_claude_configuration("bailian", region, "auto", "", "", "", "key")
+        host = urlsplit(request.base_url).hostname
+        assert host == f"token-plan.{region}.maas.aliyuncs.com", host
+
+
+def test_claude_request_repr_hides_the_inference_key():
+    request = validate_claude_configuration(
+        "bailian", "cn-beijing", "auto", "", "", "", "sk-sp-topsecret")
+    assert "sk-sp-topsecret" not in repr(request)
+
+
+def _prefs(model="", custom_model="", base_url=""):
+    return ClaudeProviderPrefs(model=model, custom_model=custom_model, base_url=base_url)
+
+
+def test_never_configured_provider_falls_back_to_the_live_config_not_blank():
+    """Regression lock: switching providers used to wipe base URL / model."""
+    seed = resolve_claude_seed(
+        get_provider("bailian"), None, None,
+        live_base_url="https://token-plan.maas.qianwenaiapi.com/apps/anthropic",
+        live_model="auto")
+    assert seed["claude_base_url"].endswith("qianwenaiapi.com/apps/anthropic")
+    assert seed["claude_model"] == "auto"
+    assert seed["claude_custom"] == ""
+
+
+def test_seed_order_is_draft_then_live_then_prefs():
+    draft = _prefs(model="qwen3.8-max", base_url="https://draft/apps/anthropic")
+    prefs = _prefs(model="qwen3.6-flash", base_url="https://prefs/apps/anthropic")
+    live = "https://live/apps/anthropic"
+
+    # What is typed in this session wins over everything.
+    seed = resolve_claude_seed(get_provider("bailian"), draft, prefs, live, "auto")
+    assert (seed["claude_model"], seed["claude_base_url"]) == (
+        "qwen3.8-max", "https://draft/apps/anthropic")
+
+    # Without a draft the file on disk outranks the cache: a hand-edited
+    # endpoint must never be silently reverted by the next apply.
+    seed = resolve_claude_seed(get_provider("bailian"), None, prefs, live, "auto")
+    assert (seed["claude_model"], seed["claude_base_url"]) == ("auto", live)
+
+    # The cache only supplies what the live file does not carry.
+    seed = resolve_claude_seed(get_provider("bailian"), None, prefs, "", "")
+    assert (seed["claude_model"], seed["claude_base_url"]) == (
+        "qwen3.6-flash", "https://prefs/apps/anthropic")
+
+
+def test_seed_takes_model_and_custom_from_one_layer_without_mixing():
+    draft = _prefs(custom_model="brand-new-model")
+    prefs = _prefs(model="auto", base_url="https://prefs/apps/anthropic")
+    seed = resolve_claude_seed(get_provider("bailian"), draft, prefs, "", "qwen3.7-max")
+    assert seed["claude_custom"] == "brand-new-model"
+    assert seed["claude_model"] == ""          # not "auto", not "qwen3.7-max"
+    assert seed["claude_base_url"] == "https://prefs/apps/anthropic"
+
+
+def test_seed_moves_an_uncatalogued_model_into_the_custom_field():
+    seed = resolve_claude_seed(get_provider("bailian"), None,
+                               _prefs(model="qwen3.8-max-preview"), "", "")
+    assert seed["claude_model"] == ""
+    assert seed["claude_custom"] == "qwen3.8-max-preview"
+
+
+def test_ark_has_no_catalogue_so_every_model_is_custom():
+    seed = resolve_claude_seed(get_provider("volcengine"), None,
+                               _prefs(model="doubao-seed-2-1-pro"), "", "")
+    assert seed["claude_model"] == ""
+    assert seed["claude_custom"] == "doubao-seed-2-1-pro"
+
+
+def test_empty_everywhere_uses_the_provider_default_and_no_url():
+    assert resolve_claude_seed(get_provider("bailian"), None, None, "", "") == {
+        "claude_model": "auto", "claude_custom": "", "claude_base_url": ""}
+    assert resolve_claude_seed(get_provider("volcengine"), None, None, "", "") == {
+        "claude_model": "", "claude_custom": "", "claude_base_url": ""}

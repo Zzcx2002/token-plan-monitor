@@ -1,6 +1,9 @@
 """Pure helpers shared by the native shell and offline tests."""
 from __future__ import annotations
 
+import re
+
+from ..claude_code import ClaudeApplyRequest, normalize_base_url
 from ..models import (
     CARD_MAX_DIMENSION,
     CARD_MIN_HEIGHT,
@@ -9,6 +12,7 @@ from ..models import (
     Credentials,
     MonitorViewState,
     Settings,
+    validate_region,
 )
 from ..providers import get_provider
 
@@ -69,6 +73,103 @@ def validate_configuration(provider: str, ak: str, sk: str, region: str, interva
         raise FieldValidationError("region", exc.message) from exc
     credentials = Credentials(ak, sk.strip() or (existing.secret_access_key if existing else ""))
     return settings, credentials
+
+
+MODEL_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/+\-]{0,199}")
+
+
+def validate_claude_configuration(provider: str, region: str, popup_model: str,
+                                  custom_model: str, base_url_text: str,
+                                  api_key_text: str,
+                                  existing_key: str | None) -> ClaudeApplyRequest:
+    """Turn the Claude section's raw text into an apply request, field-tagged.
+
+    Mirrors `validate_configuration`: an empty key reuses what is already in the
+    vault, and an empty base URL falls back to the provider default.
+    """
+    spec = get_provider(provider)
+    model = (custom_model.strip() or popup_model.strip())
+    if not model:
+        raise FieldValidationError("model", "请选择模型，或直接填写模型 ID")
+    if MODEL_ID_PATTERN.fullmatch(model) is None:
+        raise FieldValidationError("model", "模型 ID 只能包含字母、数字和 . _ : / + -")
+
+    try:
+        # The region lands inside the provider's URL template just below, so it
+        # must pass the same rule the save path enforces. Empty falls back to the
+        # provider default, exactly as validate_configuration does above, so a
+        # blank field still yields the official address.
+        region_value = validate_region(provider, region.strip() or spec.default_region)
+    except ConfigurationError as exc:
+        raise FieldValidationError("region", exc.message) from exc
+
+    base_url = base_url_text.strip() or spec.default_claude_base_url(region_value)
+    if not base_url:
+        raise FieldValidationError(
+            "base_url", f"{spec.label}没有已验证的 Anthropic 兼容地址，请自行填写"
+        )
+    try:
+        normalized, rewritten_from = normalize_base_url(base_url)
+    except ConfigurationError as exc:
+        raise FieldValidationError("base_url", exc.message) from exc
+
+    api_key = api_key_text.strip() or (existing_key.strip() if existing_key else "")
+    if not api_key:
+        raise FieldValidationError("api_key", "请填写推理 API Key（百炼形如 sk-sp-…）")
+    if any(character.isspace() for character in api_key):
+        raise FieldValidationError("api_key", "推理 API Key 不能包含空格")
+
+    return ClaudeApplyRequest(
+        provider=provider,
+        base_url=normalized,
+        model=model,
+        api_key=api_key,
+        rewritten_from=rewritten_from,
+        base_url_verified=spec.claude_base_url_verified,
+    )
+
+
+def resolve_claude_seed(spec, draft, prefs, live_base_url="", live_model=""):
+    """Initial values: draft → **live config** → saved prefs → provider default.
+
+    Why this order:
+
+    * `draft` (this dialog session) comes first so switching providers never
+      discards what was just typed — the reported bug.
+    * The live settings.json ranks **above** stored prefs. Prefs are only a
+      cache of what we last wrote; if the file now says something else, the
+      user hand-edited it, and trusting the cache would let a re-apply silently
+      revert their proxy host. Keeping that promise outranks remembering an
+      unapplied choice from a previous session.
+    * `prefs` fills only what the live file does not carry.
+
+    `model` and `custom_model` are taken as a pair from one layer so a draft's
+    popup choice is never merged with an older layer's free-form id.
+    """
+    layers = []
+    if draft is not None:
+        layers.append((draft.model or "", draft.custom_model or "", draft.base_url or ""))
+    # The live file has no free-form id of its own, only ANTHROPIC_MODEL.
+    layers.append((live_model or "", "", live_base_url or ""))
+    if prefs is not None:
+        layers.append((prefs.model or "", prefs.custom_model or "", prefs.base_url or ""))
+
+    model = custom = base_url = ""
+    for layer_model, layer_custom, layer_base in layers:
+        if not model and not custom and (layer_model or layer_custom):
+            model, custom = layer_model, layer_custom
+        if not base_url and layer_base:
+            base_url = layer_base
+        if model and base_url:
+            break
+
+    known = [option.id for option in spec.claude_models]
+    if model and model not in known:
+        # An id outside the catalogue can only be expressed as free-form text.
+        model, custom = "", model
+    if not model and not custom:
+        model = spec.claude_default_model
+    return {"claude_model": model, "claude_custom": custom, "claude_base_url": base_url}
 
 
 ScreenRect = tuple[float, float, float, float]

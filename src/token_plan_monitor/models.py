@@ -80,16 +80,7 @@ class Settings:
         provider = self.provider.strip()
         if provider not in PROVIDER_IDS:
             raise ConfigurationError("未知的服务商")
-        if not isinstance(self.region, str):
-            raise ConfigurationError("Region 必须是字符串")
-        region = self.region.strip()
-        if not re.fullmatch(r"[a-z]{2}-[a-z0-9-]+", region):
-            raise ConfigurationError("Region 格式无效，例如 cn-beijing")
-        allowed = PROVIDER_REGIONS[provider]
-        if allowed is not None and region not in allowed:
-            raise ConfigurationError(
-                f"{provider_label(provider)}只支持 {' / '.join(allowed)} 地域"
-            )
+        region = validate_region(provider, self.region)
         if isinstance(self.refresh_minutes, bool) or not isinstance(
             self.refresh_minutes, int
         ):
@@ -120,6 +111,69 @@ class Settings:
 def provider_label(provider: str) -> str:
     """Display name for a provider id; unknown ids fall back to the raw value."""
     return PROVIDER_LABELS.get(provider, provider)
+
+
+REGION_PATTERN = re.compile(r"[a-z]{2}-[a-z0-9-]+")
+
+
+def validate_region(provider: str, region: Any) -> str:
+    """The one region rule every path shares: returns the stripped region.
+
+    Previously locked inside ``Settings.__post_init__``, which left the Claude
+    Code apply path validating nothing -- and that path interpolates the region
+    straight into a base URL, so ``cn-beijing@evil.example.com/`` silently moved
+    the request (and the inference key) to another host. Both the save path and
+    the apply path call this now.
+
+    It does not fill in a default for an empty value: callers decide that, and
+    ``Settings`` has always rejected an empty region outright.
+    """
+    if not isinstance(region, str):
+        raise ConfigurationError("Region 必须是字符串")
+    normalized = region.strip()
+    if REGION_PATTERN.fullmatch(normalized) is None:
+        raise ConfigurationError("Region 格式无效，例如 cn-beijing")
+    # .get, not [...]: this is public now, and an unknown provider id must raise
+    # the same "未知的服务商" style error the caller's own checks produce rather
+    # than a KeyError from a rule helper.
+    allowed = PROVIDER_REGIONS.get(provider)
+    if allowed is not None and normalized not in allowed:
+        raise ConfigurationError(
+            f"{provider_label(provider)}只支持 {' / '.join(allowed)} 地域"
+        )
+    return normalized
+
+
+@dataclass(frozen=True)
+class ClaudeProviderPrefs:
+    """Per-provider Claude Code hookup choices.
+
+    Secrets never live here: the inference key is vault-only and this object is
+    persisted to a plaintext JSON file next to the monitor config.
+    """
+
+    model: str = ""
+    custom_model: str = ""
+    base_url: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "model": self.model,
+            "custom_model": self.custom_model,
+            "base_url": self.base_url,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Any) -> ClaudeProviderPrefs:
+        if not isinstance(value, dict):
+            raise ValueError("Claude preferences must be an object")
+        strings = {}
+        for key in ("model", "custom_model", "base_url"):
+            item = value.get(key, "")
+            if not isinstance(item, str) or len(item) > 500:
+                raise ValueError(f"Claude preference {key} must be a short string")
+            strings[key] = item
+        return cls(**strings)
 
 
 CARD_DEFAULT_WIDTH = 384

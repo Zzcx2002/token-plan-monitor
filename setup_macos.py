@@ -39,7 +39,6 @@ setup(
             "LSUIElement": True,
             "LSMinimumSystemVersion": "14.0",
             "NSHighResolutionCapable": True,
-            "NSRequiresAquaSystemAppearance": True,
         },
     }},
 )
