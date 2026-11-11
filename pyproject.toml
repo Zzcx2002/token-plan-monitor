@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "token-plan-monitor"
 version = "0.1.0"
-description = "A lightweight Windows and macOS menu bar monitor for Volcengine Ark plan quotas"
+description = "A lightweight Windows and macOS menu bar monitor for Volcengine Ark and Alibaba Cloud Model Studio plan quotas"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
