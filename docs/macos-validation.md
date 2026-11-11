@@ -4,6 +4,19 @@
 
 开发/验证机器：Apple Silicon，macOS 26.6（25G72）。构建使用 python.org Python 3.13.9 framework、py2app 0.28.10；Python 及依赖都在项目隔离目录，未安装到系统 Python。依赖版本见 `requirements-macos-build.txt`。
 
+## v0.1.1 发布记录（2026-11-11）
+
+分支 `release/v0.1.0`，提交 `3f005be`，附注标签 `v0.1.1`。
+
+- 为什么是新版本而不是原地替换 v0.1.0 资产：`v0.1.0` 标签指向 `ffe322d`，早于本次界面重做与安全修复。直接换掉 v0.1.0 的资产会让该 Release 的镜像与它自己的标签不一致，且已有 2 次下载记录，同名不同内容比多一个版本号更糟。
+- 版本名单一来源：镜像文件名改由 `token_plan_monitor.__version__` 推导（`scripts/build_macos.py`），与 `CFBundleShortVersionString` 同源。此前脚本里硬写 `TokenPlanMonitor-0.1.0-arm64.dmg`，正是产物名与包内版本能各自漂移的原因。`CFBundleVersion` 1 → 2。
+- 发布前对最终产物验证：Info.plist 报告 `0.1.1` / build `2`、无 `NSRequiresAquaSystemAppearance`；`codesign --verify --deep --strict` 通过；`hdiutil verify` 通过；109 个 Mach-O 均为 arm64 且部署目标不高于 macOS 14；从只读挂载的镜像运行打包应用的原生 smoke test，浅色与深色各一次。
+- 发布后按使用者路径复验：从 Release 资产链接重新下载 DMG 与 `.sha256`（均 200，34263756 / 99 字节），`shasum -a 256 -c` 通过，挂载后 plist 与签名正确，从该挂载副本再次跑通深色 smoke test。GitHub 侧计算的镜像摘要与本地一致（`a929060578e01…`）。
+- 未改动 v0.1.0：其 Release 与两个资产保持原样，已核对它自己的 `.sha256` 仍与 DMG 摘要一致，老用户的校验不会失败。
+- 离线测试 269 passed、3 skipped；`README.md` / `README.en.md` 的下载与校验链接已指向 v0.1.1。
+
+仍未实机验证的项目与本次发布一同记入 Release 说明：干净 macOS 14、真实钥匙串/OpenAPI、VoiceOver、硬件鼠标、多屏/Spaces、浏览器下载后的 Gatekeeper 流程，以及深色模式下只能目视的背景模糊、窗口外阴影和"激活窗口点亮正确输入行"。
+
 ## Claude Code 接入的两处安全缺陷修复（2026-11-11）
 
 这两处是在界面改版的独立复查中顺带发现的，属于并行推进中的 Claude Code 接入功能，不是界面改造本身。两处都先在本仓库代码上实测复现，再动手修。
