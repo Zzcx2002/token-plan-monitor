@@ -29,6 +29,10 @@ class ClaudeModelOption:
     #: Exact model id written into ANTHROPIC_MODEL. Never invented — see catalogs.
     id: str
     label: str
+    #: True for the light/fast members of the catalog. Only the auto mode
+    #: classifier consumes this today: a heavy classifier can time out its
+    #: safety judgement and block tool calls, so the UI recommends these first.
+    lightweight: bool = False
 
 
 @dataclass(frozen=True)
@@ -71,12 +75,12 @@ class ProviderSpec:
 BAILIAN_CLAUDE_MODELS = (
     ClaudeModelOption("auto", "auto · 按请求自动匹配"),
     ClaudeModelOption("qwen3.8-max", "qwen3.8-max · 推理/视觉理解"),
-    ClaudeModelOption("qwen3.8-flash", "qwen3.8-flash · 推理/视觉理解"),
+    ClaudeModelOption("qwen3.8-flash", "qwen3.8-flash · 推理/视觉理解", lightweight=True),
     ClaudeModelOption("qwen3.7-max", "qwen3.7-max · 推理/文本"),
     ClaudeModelOption("qwen3.7-plus", "qwen3.7-plus · 推理/视觉理解"),
-    ClaudeModelOption("qwen3.6-flash", "qwen3.6-flash · 推理/视觉理解"),
+    ClaudeModelOption("qwen3.6-flash", "qwen3.6-flash · 推理/视觉理解", lightweight=True),
     ClaudeModelOption("deepseek-v4-pro", "deepseek-v4-pro · 推理/文本"),
-    ClaudeModelOption("deepseek-v4.1-flash", "deepseek-v4.1-flash · 推理/视觉理解"),
+    ClaudeModelOption("deepseek-v4.1-flash", "deepseek-v4.1-flash · 推理/视觉理解", lightweight=True),
     ClaudeModelOption("glm-5.3", "glm-5.3 · 推理/文本"),
     ClaudeModelOption("glm-5.2", "glm-5.2 · 推理/文本"),
 )

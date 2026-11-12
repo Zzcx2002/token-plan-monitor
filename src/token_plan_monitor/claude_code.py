@@ -25,6 +25,10 @@ ENV_BASE_URL = "ANTHROPIC_BASE_URL"
 ENV_AUTH_TOKEN = "ANTHROPIC_AUTH_TOKEN"
 ENV_MODEL = "ANTHROPIC_MODEL"
 ENV_SUBAGENT = "CLAUDE_CODE_SUBAGENT_MODEL"
+#: The model Claude Code's auto mode uses to judge whether a tool call is safe.
+#: Optional: an empty selection never touches this key -- it is deliberately not
+#: part of ALL_TIER_KEYS, so neither `set` nor `add_if_absent` can fill it.
+ENV_AUTO_MODE = "CLAUDE_CODE_AUTO_MODE_MODEL"
 #: A stale ANTHROPIC_API_KEY shadows ANTHROPIC_AUTH_TOKEN, so it must go.
 ENV_SHADOWING_KEY = "ANTHROPIC_API_KEY"
 
@@ -55,6 +59,11 @@ class ClaudeApplyRequest:
     rewritten_from: str | None = None
     #: Provider default is an unverified Anthropic endpoint (Volcengine Ark).
     base_url_verified: bool = True
+    #: Optional auto mode classifier model; "" means "do not touch the key".
+    auto_mode_model: str = ""
+    #: Set by the layout layer from the provider catalogue; only feeds warning
+    #: copy -- a heavy classifier model can time out and block tool calls.
+    auto_mode_model_lightweight: bool = True
 
 
 @dataclass(frozen=True)
@@ -67,6 +76,8 @@ class EnvPatch:
     top_level_model: str
     #: Tier the current `model` alias resolves through, when there is one.
     tier_for_alias: str | None = None
+    #: Selected auto mode classifier model, "" when the user chose nothing.
+    auto_mode_model: str = ""
 
     @property
     def touched_env_keys(self) -> tuple[str, ...]:
@@ -174,6 +185,10 @@ def compute_env_patch(
         for key in ALL_TIER_KEYS
         if key not in set_keys and is_absent(env.get(key))
     }
+    # Optional by contract: an empty selection keeps the key entirely out of
+    # the patch -- not written, not backfilled, not removed.
+    if request.auto_mode_model:
+        set_keys[ENV_AUTO_MODE] = request.auto_mode_model
     remove = tuple(key for key in (ENV_SHADOWING_KEY,) if key in env)
 
     return EnvPatch(
@@ -182,6 +197,7 @@ def compute_env_patch(
         remove=remove,
         top_level_model=request.model,
         tier_for_alias=alias_tier,
+        auto_mode_model=request.auto_mode_model,
     )
 
 
@@ -338,6 +354,17 @@ def describe_changes(
         lines.append("以下档位已有配置，保持不变：" + "、".join(untouched))
     if patch.add_if_absent:
         lines.append("以下档位原本为空，将填入所选模型：" + "、".join(patch.add_if_absent))
+
+    if patch.auto_mode_model:
+        lines.append(
+            f"{ENV_AUTO_MODE}：{_shown(env.get(ENV_AUTO_MODE))} → {patch.auto_mode_model}"
+            "（auto mode 判断命令安全性的分类模型，与对话模型无关）")
+        if not request.auto_mode_model_lightweight:
+            lines.append(
+                "⚠ 该分类模型偏重：auto mode 判断可能超时并拦下工具调用，建议改用轻量模型")
+    elif not is_absent(env.get(ENV_AUTO_MODE)):
+        lines.append(
+            f"{ENV_AUTO_MODE} 未选择，保留文件中现有的 {env[ENV_AUTO_MODE]}，不改动")
 
     lines.append(f"顶层 model 将从 {_shown(document.get('model'))} 改为具体模型名 {patch.top_level_model}")
 

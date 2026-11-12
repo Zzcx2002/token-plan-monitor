@@ -8,7 +8,11 @@ import pytest
 
 from token_plan_monitor import claude_code as cc
 from token_plan_monitor.claude_code import ClaudeConfigError
-from token_plan_monitor.models import CacheError, ConfigurationError
+from token_plan_monitor.models import (
+    CacheError,
+    ConfigurationError,
+    ClaudeProviderPrefs,
+)
 
 OFFICIAL = "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic"
 
@@ -165,8 +169,76 @@ def test_patch_with_no_top_level_model_leaves_every_tier_to_add_if_absent():
 
 
 # ----------------------------------------------------------------------
-# Merge
+# Optional auto mode classifier model (CLAUDE_CODE_AUTO_MODE_MODEL)
 # ----------------------------------------------------------------------
+
+
+def test_patch_leaves_auto_mode_key_alone_by_default():
+    with_auto = dict(LIVE_DOCUMENT, env={**LIVE_DOCUMENT["env"],
+                                         cc.ENV_AUTO_MODE: "qwen3.6-flash"})
+    for document in (LIVE_DOCUMENT, with_auto):
+        patch = patch_for(document)
+        assert cc.ENV_AUTO_MODE not in patch.set
+        assert cc.ENV_AUTO_MODE not in patch.add_if_absent
+        assert cc.ENV_AUTO_MODE not in patch.remove
+        assert patch.auto_mode_model == ""
+
+
+def test_patch_sets_auto_mode_key_only_when_selected():
+    patch = patch_for(auto_mode_model="qwen3.6-flash")
+    assert patch.set[cc.ENV_AUTO_MODE] == "qwen3.6-flash"
+    assert patch.auto_mode_model == "qwen3.6-flash"
+    # It is deliberately not one of the tiers: tiers backfill, this never does.
+    assert cc.ENV_AUTO_MODE not in cc.ALL_TIER_KEYS
+
+
+def test_apply_neither_writes_nor_deletes_the_auto_mode_key_when_unset(tmp_path):
+    path = tmp_path / "settings.json"
+    document = dict(LIVE_DOCUMENT, env={**LIVE_DOCUMENT["env"],
+                                        cc.ENV_AUTO_MODE: "hand-tuned-mini"})
+    path.write_text(json.dumps(document), encoding="utf-8")
+    cc.apply_request(make_request(), path, clock=lambda: 600)
+    env = json.loads(path.read_text(encoding="utf-8"))["env"]
+    assert env[cc.ENV_AUTO_MODE] == "hand-tuned-mini"
+
+
+def test_apply_writes_the_selected_auto_mode_classifier(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps(LIVE_DOCUMENT), encoding="utf-8")
+    cc.apply_request(make_request(auto_mode_model="qwen3.6-flash"), path,
+                     clock=lambda: 601)
+    env = json.loads(path.read_text(encoding="utf-8"))["env"]
+    assert env[cc.ENV_AUTO_MODE] == "qwen3.6-flash"
+    # The tier policy is unchanged by the extra key.
+    assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "qwen3.8-max"
+
+
+def test_describe_changes_reports_auto_mode_selection_and_warns_on_heavy_choices():
+    request = make_request(auto_mode_model="qwen3.8-max",
+                           auto_mode_model_lightweight=False)
+    lines = "\n".join(cc.describe_changes(
+        request, cc.compute_env_patch(request, LIVE_DOCUMENT), LIVE_DOCUMENT,
+        Path("/x/settings.json"), False))
+    assert cc.ENV_AUTO_MODE in lines and "qwen3.8-max" in lines
+    assert "⚠" in lines and "超时" in lines
+
+
+def test_describe_changes_keeps_a_hand_written_auto_mode_value_silent_but_visible():
+    document = dict(LIVE_DOCUMENT, env={**LIVE_DOCUMENT["env"],
+                                        cc.ENV_AUTO_MODE: "keepme"})
+    lines = "\n".join(cc.describe_changes(
+        make_request(), patch_for(document), document,
+        Path("/x/settings.json"), False))
+    assert "keepme" in lines and "不改动" in lines
+
+
+def test_prefs_from_dict_tolerates_files_without_the_auto_mode_fields():
+    prefs = ClaudeProviderPrefs.from_dict(
+        {"model": "auto", "custom_model": "", "base_url": "https://x/apps/anthropic"})
+    assert prefs.auto_mode_model == "" and prefs.auto_mode_custom_model == ""
+    round_trip = ClaudeProviderPrefs.from_dict(
+        ClaudeProviderPrefs(model="auto", auto_mode_model="qwen3.6-flash").to_dict())
+    assert round_trip.auto_mode_model == "qwen3.6-flash"
 
 
 def test_merge_preserves_unknown_keys_and_does_not_mutate_input():

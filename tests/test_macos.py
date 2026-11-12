@@ -320,6 +320,63 @@ def test_ark_has_no_catalogue_so_every_model_is_custom():
 
 def test_empty_everywhere_uses_the_provider_default_and_no_url():
     assert resolve_claude_seed(get_provider("bailian"), None, None, "", "") == {
-        "claude_model": "auto", "claude_custom": "", "claude_base_url": ""}
+        "claude_model": "auto", "claude_custom": "", "claude_base_url": "",
+        "claude_auto_model": "", "claude_auto_custom": ""}
     assert resolve_claude_seed(get_provider("volcengine"), None, None, "", "") == {
-        "claude_model": "", "claude_custom": "", "claude_base_url": ""}
+        "claude_model": "", "claude_custom": "", "claude_base_url": "",
+        "claude_auto_model": "", "claude_auto_custom": ""}
+
+
+def test_auto_pair_seeds_from_live_then_prefs_and_demotes_uncatalogued_ids():
+    prefs = ClaudeProviderPrefs(auto_mode_model="qwen3.6-flash")
+    # The live classifier variable outranks the cache, like every other field.
+    seed = resolve_claude_seed(get_provider("bailian"), None, prefs,
+                               "", "", "qwen3.8-flash")
+    assert seed["claude_auto_model"] == "qwen3.8-flash"
+    assert seed["claude_auto_custom"] == ""
+    # Without a live value the cached pair is taken together.
+    seed = resolve_claude_seed(get_provider("bailian"), None, prefs, "", "", "")
+    assert seed["claude_auto_model"] == "qwen3.6-flash"
+    # An id outside the catalogue lands in the free-form field, not a popup
+    # index; there is no provider default for this pair -- unset is a value.
+    seed = resolve_claude_seed(get_provider("bailian"), None,
+                               ClaudeProviderPrefs(auto_mode_model="brand-new-mini"),
+                               "", "", "")
+    assert seed["claude_auto_model"] == ""
+    assert seed["claude_auto_custom"] == "brand-new-mini"
+
+
+def test_claude_validation_auto_model_is_optional_and_field_tagged():
+    request = validate_claude_configuration(
+        "bailian", "cn-beijing", "auto", "", "", "", "key")
+    assert request.auto_mode_model == ""
+    assert request.auto_mode_model_lightweight is True
+    # Custom beats popup, mirroring the main model pair.
+    request = validate_claude_configuration(
+        "bailian", "cn-beijing", "auto", "", "", "", "key",
+        "qwen3.6-flash", "glm-4-custom")
+    assert request.auto_mode_model == "glm-4-custom"
+    with pytest.raises(FieldValidationError) as failure:
+        validate_claude_configuration(
+            "bailian", "cn-beijing", "auto", "", "", "", "key", "", "has space")
+    assert failure.value.field == "auto_model"
+
+
+def test_auto_model_lightweight_flag_feeds_only_the_warning():
+    # Catalogue knowledge: flash tiers are light, the rest are not.
+    assert validate_claude_configuration(
+        "bailian", "cn-beijing", "auto", "", "", "", "key",
+        "qwen3.6-flash", "").auto_mode_model_lightweight is True
+    assert validate_claude_configuration(
+        "bailian", "cn-beijing", "auto", "", "", "", "key",
+        "qwen3.8-max", "").auto_mode_model_lightweight is False
+    # Free-form ids fall back to the name heuristic, never block the write.
+    assert validate_claude_configuration(
+        "bailian", "cn-beijing", "auto", "", "", "", "key",
+        "", "vendor-max-2").auto_mode_model == "vendor-max-2"
+    assert validate_claude_configuration(
+        "bailian", "cn-beijing", "auto", "", "", "", "key",
+        "", "vendor-max-2").auto_mode_model_lightweight is False
+    assert validate_claude_configuration(
+        "bailian", "cn-beijing", "auto", "", "", "", "key",
+        "", "vendor-mini-fast").auto_mode_model_lightweight is True

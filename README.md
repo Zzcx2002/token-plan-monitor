@@ -161,6 +161,7 @@ powershell -NoProfile -File .\scripts\New-AppShortcuts.ps1
 | `env.ANTHROPIC_API_KEY` | 存在则删除（它会遮蔽 `ANTHROPIC_AUTH_TOKEN`） |
 | 顶层 `model` 指向的别名那一档（`opus` → `ANTHROPIC_DEFAULT_OPUS_MODEL`，sonnet/haiku 同理） | 改为所选模型 |
 | 其他档位、`CLAUDE_CODE_SUBAGENT_MODEL` | 原本为空才填；已有值不动 |
+| `env.CLAUDE_CODE_AUTO_MODE_MODEL`（可选） | 选择了才写；不选则完全不碰（不写、不填、不删） |
 | 顶层 `model` | 改为所选的具体模型名 |
 
 为什么要动档位：Claude Code 里 `model: "opus"` 只是别名，真正选出模型的是 `ANTHROPIC_DEFAULT_OPUS_MODEL`。只写 `ANTHROPIC_MODEL` 对这种配置基本无效。副作用是顶层 `model` 变成具体模型名后，`/model opus` 走的是 `ANTHROPIC_DEFAULT_OPUS_MODEL`（现在等于所选模型），与你原来纯靠别名的分层用法不同。
@@ -174,6 +175,8 @@ powershell -NoProfile -File .\scripts\New-AppShortcuts.ps1
 - 官方只承诺 permissions / hooks / apiKeyHelper 一类编辑会热重载，没点名 `env` 和 `model`，所以**请重开一个 Claude Code 会话**确认生效。
 
 **Base URL 与模型**：留空时用服务商默认地址，而拼进这个地址的 Region 会先按「格式 + 该服务商支持的地域」校验，与保存凭据用的是同一条规则。带账号密码的地址（`https://user:pass@host`）一律拒绝：`@` 之前的部分不是主机名，看起来正规的域名可能被悄悄替换成别的主机，而密钥正要发往那里。百炼默认是已验证的 `https://token-plan.<region>.maas.aliyuncs.com/apps/anthropic`，粘贴 OpenAI 兼容地址（`/compatible-mode/v1`）会被自动改写，填你自己域名下的代理地址可以原样保留；百炼提供一份模型清单（默认 `auto`），自定义模型 ID 只能包含字母、数字和 `. _ : / + -`。**火山方舟没有可验证的 Anthropic 兼容端点**（官方只给 `/api/v3` 的 OpenAI 兼容地址，且说明 BaseUrl 需由使用者提供），所以该字段留空、需要你自己填，界面会标 ⚠ 未经验证，模型也只能手填 ID。
+
+**Auto mode 分类模型（可选）**：Claude Code 的 auto mode 用一个轻量模型（分类器）判断每条命令是否安全。设置里默认是「不设置」，此时 `CLAUDE_CODE_AUTO_MODE_MODEL` 完全不写入、也不改动（你在文件里手写的值原样保留）。选择后会随一次写入一并更新，确认清单会逐条说明。**建议选轻量模型**（如 `qwen3.6-flash`）：分类模型偏重时判断容易超时，auto mode 会因此拦下工具调用、要求重试（实测该键在 Claude Code 2.1.322 生效；更早版本可能忽略它，忽略时不影响其他配置）。
 
 两个服务商之间来回切换时，各自填的模型与 Base URL 会被记住；推理 Key 只在本次运行的内存里留草稿、不回显，但字段标题会提示「已保存，留空保持不变」。取值优先级是：本次填写 → 磁盘上的真实配置 → 该服务商上次保存的偏好 → 服务商默认。把磁盘配置排在已存偏好之前，是为了你手工改过的接入地址不会被下一次写入悄悄还原成旧值。
 

@@ -77,11 +77,25 @@ def validate_configuration(provider: str, ak: str, sk: str, region: str, interva
 
 MODEL_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/+\-]{0,199}")
 
+#: Substrings that mark a free-form model id as heavy when it is not in the
+#: provider catalogue and carries no `lightweight` flag. Advisory only -- it
+#: feeds the warning copy, it never blocks a write.
+_HEAVY_ID_MARKS = ("-max", "-pro", "preview")
+
+
+def _looks_lightweight(model: str, spec) -> bool:
+    options = {option.id: option for option in spec.claude_models}
+    option = options.get(model)
+    if option is not None:
+        return option.lightweight
+    return not any(mark in model.lower() for mark in _HEAVY_ID_MARKS)
+
 
 def validate_claude_configuration(provider: str, region: str, popup_model: str,
                                   custom_model: str, base_url_text: str,
                                   api_key_text: str,
-                                  existing_key: str | None) -> ClaudeApplyRequest:
+                                  existing_key: str | None,
+                                  popup_auto: str = "", custom_auto: str = "") -> ClaudeApplyRequest:
     """Turn the Claude section's raw text into an apply request, field-tagged.
 
     Mirrors `validate_configuration`: an empty key reuses what is already in the
@@ -119,6 +133,12 @@ def validate_claude_configuration(provider: str, region: str, popup_model: str,
     if any(character.isspace() for character in api_key):
         raise FieldValidationError("api_key", "推理 API Key 不能包含空格")
 
+    # Optional: nothing selected => the key is never touched. Custom beats popup,
+    # exactly like the main model pair above.
+    auto_model = (custom_auto.strip() or popup_auto.strip())
+    if auto_model and MODEL_ID_PATTERN.fullmatch(auto_model) is None:
+        raise FieldValidationError("auto_model", "模型 ID 只能包含字母、数字和 . _ : / + -")
+
     return ClaudeApplyRequest(
         provider=provider,
         base_url=normalized,
@@ -126,10 +146,14 @@ def validate_claude_configuration(provider: str, region: str, popup_model: str,
         api_key=api_key,
         rewritten_from=rewritten_from,
         base_url_verified=spec.claude_base_url_verified,
+        auto_mode_model=auto_model,
+        auto_mode_model_lightweight=(
+            _looks_lightweight(auto_model, spec) if auto_model else True),
     )
 
 
-def resolve_claude_seed(spec, draft, prefs, live_base_url="", live_model=""):
+def resolve_claude_seed(spec, draft, prefs, live_base_url="", live_model="",
+                        live_auto_model=""):
     """Initial values: draft → **live config** → saved prefs → provider default.
 
     Why this order:
@@ -144,23 +168,29 @@ def resolve_claude_seed(spec, draft, prefs, live_base_url="", live_model=""):
     * `prefs` fills only what the live file does not carry.
 
     `model` and `custom_model` are taken as a pair from one layer so a draft's
-    popup choice is never merged with an older layer's free-form id.
+    popup choice is never merged with an older layer's free-form id; the auto
+    mode pair obeys the same rule and has no default -- "unset" is a value.
     """
     layers = []
     if draft is not None:
-        layers.append((draft.model or "", draft.custom_model or "", draft.base_url or ""))
-    # The live file has no free-form id of its own, only ANTHROPIC_MODEL.
-    layers.append((live_model or "", "", live_base_url or ""))
+        layers.append((draft.model or "", draft.custom_model or "", draft.base_url or "",
+                       draft.auto_mode_model or "", draft.auto_mode_custom_model or ""))
+    # The live file has no free-form ids of its own, only ANTHROPIC_MODEL and
+    # the auto mode classifier variable.
+    layers.append((live_model or "", "", live_base_url or "", live_auto_model or "", ""))
     if prefs is not None:
-        layers.append((prefs.model or "", prefs.custom_model or "", prefs.base_url or ""))
+        layers.append((prefs.model or "", prefs.custom_model or "", prefs.base_url or "",
+                       prefs.auto_mode_model or "", prefs.auto_mode_custom_model or ""))
 
-    model = custom = base_url = ""
-    for layer_model, layer_custom, layer_base in layers:
+    model = custom = base_url = auto = auto_custom = ""
+    for layer_model, layer_custom, layer_base, layer_auto, layer_auto_custom in layers:
         if not model and not custom and (layer_model or layer_custom):
             model, custom = layer_model, layer_custom
+        if not auto and not auto_custom and (layer_auto or layer_auto_custom):
+            auto, auto_custom = layer_auto, layer_auto_custom
         if not base_url and layer_base:
             base_url = layer_base
-        if model and base_url:
+        if model and base_url and auto:
             break
 
     known = [option.id for option in spec.claude_models]
@@ -169,7 +199,11 @@ def resolve_claude_seed(spec, draft, prefs, live_base_url="", live_model=""):
         model, custom = "", model
     if not model and not custom:
         model = spec.claude_default_model
-    return {"claude_model": model, "claude_custom": custom, "claude_base_url": base_url}
+    # The auto pair has no provider default: "nothing" is itself a valid state.
+    if auto and auto not in known:
+        auto, auto_custom = "", auto
+    return {"claude_model": model, "claude_custom": custom, "claude_base_url": base_url,
+            "claude_auto_model": auto, "claude_auto_custom": auto_custom}
 
 
 ScreenRect = tuple[float, float, float, float]

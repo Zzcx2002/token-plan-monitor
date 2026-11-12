@@ -155,12 +155,17 @@ class ClaudeProviderPrefs:
     model: str = ""
     custom_model: str = ""
     base_url: str = ""
+    #: Optional auto mode classifier choice; both empty = "do not write the key".
+    auto_mode_model: str = ""
+    auto_mode_custom_model: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "model": self.model,
             "custom_model": self.custom_model,
             "base_url": self.base_url,
+            "auto_mode_model": self.auto_mode_model,
+            "auto_mode_custom_model": self.auto_mode_custom_model,
         }
 
     @classmethod
@@ -168,7 +173,8 @@ class ClaudeProviderPrefs:
         if not isinstance(value, dict):
             raise ValueError("Claude preferences must be an object")
         strings = {}
-        for key in ("model", "custom_model", "base_url"):
+        for key in ("model", "custom_model", "base_url",
+                    "auto_mode_model", "auto_mode_custom_model"):
             item = value.get(key, "")
             if not isinstance(item, str) or len(item) > 500:
                 raise ValueError(f"Claude preference {key} must be a short string")

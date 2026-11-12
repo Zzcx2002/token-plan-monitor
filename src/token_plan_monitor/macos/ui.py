@@ -559,6 +559,7 @@ class MonitorUI:
         self._settings_dirty = False
         # Claude Code hookup: the model popup is read on apply, never observed.
         self.model_popup = None
+        self.auto_popup = None
         self.apply_claude_button = None
         self.inference_key = None
         self._applying_claude = False
@@ -1113,19 +1114,20 @@ class MonitorUI:
             prefs = self.storage.load_claude_prefs(provider)
         except QueryError:
             prefs = ClaudeProviderPrefs()
-        live_base_url = live_model = ""
+        live_base_url = live_model = live_auto_model = ""
         try:
             document, _ = claude_code.read_document_at(self.resolve_claude_paths()[0])
         except (ClaudeConfigError, QueryError):
             document = None
         env = document.get("env") if isinstance(document, dict) else None
         if isinstance(env, dict):
-            # Only the two non-secret fields are echoed back; the token in the
+            # Only the non-secret fields are echoed back; the token in the
             # live file is deliberately never surfaced into a text field.
             live_base_url = str(env.get("ANTHROPIC_BASE_URL") or "").strip()
             live_model = str(env.get("ANTHROPIC_MODEL") or "").strip()
+            live_auto_model = str(env.get(claude_code.ENV_AUTO_MODE) or "").strip()
         return resolve_claude_seed(get_provider(provider), self._claude_drafts.get(provider),
-                                   prefs, live_base_url, live_model)
+                                   prefs, live_base_url, live_model, live_auto_model)
 
     def stored_inference_key(self, provider):
         """Best-known inference key for "leave blank to keep" semantics."""
@@ -1200,7 +1202,8 @@ class MonitorUI:
         self.build_settings(provider, region, interval, **self.claude_seed(provider))
 
     def build_settings(self, provider, region, interval, claude_model="",
-                       claude_custom="", claude_base_url=""):
+                       claude_custom="", claude_base_url="",
+                       claude_auto_model="", claude_auto_custom=""):
         """(Re)create the settings form for one provider."""
         self.settings_provider = provider
         spec = get_provider(provider)
@@ -1323,11 +1326,38 @@ class MonitorUI:
         model_popup.setAccessibilityLabel_("模型")
         self.model_popup = model_popup
         y += T.ROW_GAP
+        y, self.fields["model"], self.field_wells["model"] = form_row(
+            body, "自定义模型 ID（在此填写时优先于上方选择）", claude_custom, False,
+            y, field_width)
+        y += T.ROW_GAP
+        # Optional auto mode classifier. "不设置" leaves CLAUDE_CODE_AUTO_MODE_MODEL
+        # entirely alone -- not written, not backfilled, not removed.
+        auto_labels = (["不设置（保持现状）"]
+                       + [option.label for option in spec.claude_models]
+                       + ["自定义模型 ID…"])
+        if claude_auto_custom:
+            auto_index = len(auto_labels) - 1
+        elif claude_auto_model in known:
+            auto_index = 1 + known.index(claude_auto_model)
+        else:
+            auto_index = 0
+        y, auto_popup = popup_row(body, "Auto mode 分类模型（可选）", y, field_width,
+                                  auto_labels, auto_index)
+        auto_popup.setAccessibilityLabel_("Auto mode 分类模型")
+        self.auto_popup = auto_popup
+        y += T.ROW_GAP
+        y += stretch_label(
+            body,
+            "Auto mode 用该模型判断每条命令是否安全。建议选轻量模型：分类模型偏重时判断可能超时，工具调用会被拦下重试。",
+            y, field_width, 12, color=T.tone("info")) + T.ROW_GAP
+        y, self.fields["auto_model"], self.field_wells["auto_model"] = form_row(
+            body, "Auto mode 自定义模型 ID（优先于上方选择；留空且选「不设置」时不写入）",
+            claude_auto_custom, False, y, field_width)
+        y += T.ROW_GAP
         # A remembered key changes the label but is never echoed into the field.
         key_title = ("推理 API Key（已保存，留空保持不变）" if self.stored_inference_key(provider)
                      else f"推理 API Key（必填{spec.inference_key_hint}）")
         for key, title, value, secure in (
-            ("model", "自定义模型 ID（在此填写时优先于上方选择）", claude_custom, False),
             ("base_url", "Anthropic Base URL（留空使用服务商默认地址）", claude_base_url, False),
             ("api_key", key_title, "", True),
         ):
@@ -1362,6 +1392,7 @@ class MonitorUI:
         # accidental Enter can never trigger an external config change.
         ordered = [popup, self.fields["ak"], self.fields["sk"], self.fields["region"],
                    self.fields["interval"], model_popup, self.fields["model"],
+                   auto_popup, self.fields["auto_model"],
                    self.fields["base_url"], self.fields["api_key"], self.help_button,
                    self.cancel_button, self.apply_claude_button, self.save_button]
         for current, following in zip(ordered, ordered[1:] + [popup]):
@@ -1473,10 +1504,18 @@ class MonitorUI:
         index = self.model_popup.indexOfSelectedItem()
         popup = known[index] if 0 <= index < len(known) else ""
         custom = str(self.fields["model"].stringValue()).strip()
+        # The auto popup is shifted by the leading "不设置" entry; the last entry
+        # is the custom marker, whose value is read from the text field instead.
+        auto_index = self.auto_popup.indexOfSelectedItem()
+        auto_popup = (known[auto_index - 1]
+                      if 1 <= auto_index <= len(known) else "")
+        auto_custom = str(self.fields["auto_model"].stringValue()).strip()
         base_url = str(self.fields["base_url"].stringValue()).strip()
         key = str(self.fields["api_key"].stringValue())
         prefs = ClaudeProviderPrefs(
-            model="" if custom else popup, custom_model=custom, base_url=base_url)
+            model="" if custom else popup, custom_model=custom, base_url=base_url,
+            auto_mode_model="" if auto_custom else auto_popup,
+            auto_mode_custom_model=auto_custom)
         return popup, custom, base_url, key, prefs
 
     def show_form_message(self, text, tone="error"):
@@ -1536,7 +1575,8 @@ class MonitorUI:
             settings_path, onboarding_path = self.resolve_claude_paths()
             try:
                 request = validate_claude_configuration(
-                    provider, region, popup, custom, base_url, key_text, existing_key)
+                    provider, region, popup, custom, base_url, key_text, existing_key,
+                    prefs.auto_mode_model, prefs.auto_mode_custom_model)
             except FieldValidationError as exc:
                 self.show_form_message(exc.message, "error")
                 self.settings.makeFirstResponder_(self.fields[exc.field])
