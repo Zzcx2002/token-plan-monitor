@@ -4,6 +4,20 @@
 
 开发/验证机器：Apple Silicon，macOS 26.6（25G72）。构建使用 python.org Python 3.13.9 framework、py2app 0.28.10；Python 及依赖都在项目隔离目录，未安装到系统 Python。依赖版本见 `requirements-macos-build.txt`。
 
+## v0.1.2 发布记录（2026-11-12）
+
+分支 `release/v0.1.0`，提交 `815db53`（功能提交 `665dbb2`），附注标签 `v0.1.2`。
+
+- 功能：Claude Code auto mode 分类模型 `CLAUDE_CODE_AUTO_MODE_MODEL` 成为可选写入项——不选则不写、不回填、不删除；选型偏重时确认清单追加「判断可能超时」的 ⚠ 行（不拦截）。键的存在性以 2.1.322 二进制取证确认；开发期间该分类器本身多次超时 fail-closed，为该提醒提供了实时案例。
+- 构建环境：本机此前没有 python.org framework Python（uv standalone 解释器被构建脚本的 guard 正确拒绝）。下载官方 `python-3.13.12-macos11.pkg`，其 SHA256 与 python.org sigstore 摘要一致后经图形安装器装入；构建 venv 为 `.venv-build/`（已在 `.gitignore`），不影响开发用 `.venv`。
+- 离线 pytest：**279 passed、3 skipped**。新增 `tests/test_claude_config.py` 7 项（默认不写该键、live 文件已有值时 apply 后原样保留、选择才写、不影响档位策略、警告与「保留」文案、prefs 旧格式兼容）与 `tests/test_macos.py` 3 项（auto 对分层取值与目录降级、字段校验标记、轻量判定只喂文案）。原生 AppKit smoke（`-m token_plan_monitor.macos.preview --smoke-test`）通过，其多次 `apply_claude_config` 全程隔离在临时目录。
+- 发布前产物验证：Info.plist `0.1.2` / build `3`；构建脚本内置的 arm64 thin、许可证入包与 ad-hoc 签名检查随 BUILD_OK 全过。
+- 发布后按使用者路径复验：从 Release 资产链接重新下载 DMG 与 `.sha256`（均 200，34269350 / 99 字节），`shasum -a 256 -c` 通过，`hdiutil verify` VALID，挂载后 plist 正确且 `codesign --verify --deep --strict` 通过，随后弹出。GitHub 侧计算的镜像摘要与本地一致（`136466bc08104a…`）。
+- 实机安装：本机 `/Applications/TokenPlanMonitor.app` 原为 0.1.0 / build 1（0.1.1 的 DMG 从未在本机安装过），本次以本地构建直接替换为 0.1.2 并确认进程启动，属开发路径替换，不替代上面的镜像复验。
+- `README.md` / `README.en.md` 的下载与校验链接已指向 v0.1.2；v0.1.1、v0.1.0 的 Release 与资产未做任何改动。
+
+仍未实机验证：干净 macOS 14 与浏览器下载后的 Gatekeeper「仍要打开」流程、VoiceOver、多屏/Spaces；新选项在**真实** `~/.claude/settings.json` 上点击写入并重开会话确认 auto mode 走所选模型（离线 smoke 全程走临时目录）；以及真实分类器超时在装有本应用的机器上的端到端复现。
+
 ## v0.1.1 发布记录（2026-11-11）
 
 分支 `release/v0.1.0`，提交 `3f005be`，附注标签 `v0.1.1`。
