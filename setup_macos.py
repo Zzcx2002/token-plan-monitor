@@ -33,11 +33,11 @@ setup(
             "CFBundleName": "TokenPlanMonitor",
             "CFBundleDisplayName": "Token Plan 用量监控",
             "CFBundleIdentifier": "com.zzcx2002.tokenplanmonitor",
-            "CFBundleShortVersionString": "0.1.1",
-            # Build 2: same 0.1.x packaging path as the published v0.1.0, but the
-            # bundle differs (dark-capable shell, Claude Code hookup, hardened
-            # backups), so the version pair must not claim to be build 1.
-            "CFBundleVersion": "2",
+            "CFBundleShortVersionString": "0.1.2",
+            # Build 3: the bundle now differs from published build 2 as well --
+            # it can write the optional CLAUDE_CODE_AUTO_MODE_MODEL, so the
+            # version pair must not claim to be build 2.
+            "CFBundleVersion": "3",
             "NSHumanReadableCopyright": "Copyright © 2026 Zzcx2002",
             "LSUIElement": True,
             "LSMinimumSystemVersion": "14.0",
