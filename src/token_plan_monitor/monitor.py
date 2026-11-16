@@ -18,6 +18,7 @@ from .models import (
 from .history import account_fingerprint, entry_from_snapshot
 from .providers import create_client
 from .storage import Storage
+from .trends import trends_for_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +122,7 @@ class UsageMonitor:
                 revision=self._state.revision + 1,
                 provider=settings.provider,
                 alert_threshold_percent=settings.alert.threshold_percent,
+                trends=() if account_changed else self._state.trends,
             )
             self._pending = True
             self._next_run = None
@@ -182,6 +184,7 @@ class UsageMonitor:
                 error = QueryError("刷新失败，请稍后重试")
 
             cache_warning: str | None = None
+            trends: tuple = ()
             if snapshot is not None:
                 with self._lock:
                     current = revision == self._state.revision
@@ -192,16 +195,21 @@ class UsageMonitor:
                         cache_warning = exc.message
                     # History is best-effort: a failed append is logged, never
                     # surfaced as a cache warning and never fails the refresh.
+                    account = account_fingerprint(credentials.access_key_id)
                     try:
                         self.storage.append_history(
-                            entry_from_snapshot(
-                                snapshot,
-                                account_fingerprint(credentials.access_key_id),
-                            ),
+                            entry_from_snapshot(snapshot, account),
                             settings.provider,
                         )
                     except CacheError as exc:
                         logger.warning("Could not append history: %s", exc.message)
+                    # One history read per successful refresh keeps trends in
+                    # the state, so UI rendering never touches the disk.
+                    try:
+                        history = self.storage.load_history(settings.provider, account)
+                        trends = trends_for_snapshot(history, snapshot, self.clock())
+                    except CacheError as exc:
+                        logger.warning("Could not load history for trends: %s", exc.message)
 
             with self._lock:
                 self._in_flight = False
@@ -219,6 +227,7 @@ class UsageMonitor:
                         revision=revision,
                         provider=settings.provider,
                         alert_threshold_percent=settings.alert.threshold_percent,
+                        trends=trends,
                     )
                 else:
                     assert error is not None
@@ -233,6 +242,9 @@ class UsageMonitor:
                         revision=revision,
                         provider=settings.provider,
                         alert_threshold_percent=settings.alert.threshold_percent,
+                        # Like the retained snapshot, trends survive a failed
+                        # refresh instead of blanking out.
+                        trends=self._state.trends,
                     )
                 if self._credentials is None:
                     self._next_run = None

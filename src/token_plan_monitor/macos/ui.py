@@ -28,7 +28,7 @@ from ..models import (
 )
 from ..presentation import (
     WINDOW_LABELS, compact_remaining, format_datetime, format_number,
-    hover_summary, menu_lines, state_tone, status_text,
+    hover_summary, menu_lines, state_tone, status_text, trend_line,
 )
 from ..providers import PROVIDERS, get_provider
 from .layout import (
@@ -893,7 +893,23 @@ class MonitorUI:
                                role="detail", color=SECONDARY, numeric=True)
                     y += label(content, "重置时间：" + (format_datetime(window.reset_at) if window.reset_at else "—"),
                                T.PAGE_INSET + T.GUTTER, y, width, role="caption", color=SECONDARY,
-                               numeric=True) + 10
+                               numeric=True)
+                    trend = next((item for item in self.state.trends if item.kind == kind), None)
+                    trend_text = trend_line(trend, window, self.provider_spec.unit_label)
+                    if trend_text:
+                        # Exhaustion before the reset is the one trend outcome
+                        # worth a warning color; everything else stays quiet.
+                        exhausting = (
+                            trend is not None
+                            and trend.exhausted_at is not None
+                            and trend.resets_before_exhaustion is False
+                        )
+                        y += 2
+                        y += label(content, trend_text, T.PAGE_INSET + T.GUTTER, y, width,
+                                   role="caption",
+                                   color=T.tone("warning") if exhausting else SECONDARY,
+                                   numeric=True)
+                    y += 10
                 card_surface(content, start_y, max(1, content_width - 24), y - start_y - 4,
                        x=T.PAGE_INSET)
                 y += 6

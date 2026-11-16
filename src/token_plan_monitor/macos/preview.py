@@ -14,10 +14,12 @@ import Foundation as F
 import Quartz
 from PyObjCTools import AppHelper
 
+from ..history import HistoryEntry, account_fingerprint
 from ..model_catalog import ModelCatalogError
 from ..models import Credentials, MonitorViewState, QuotaWindow, UsageSnapshot
 from ..providers import get_provider
 from ..storage import Storage
+from ..trends import trends_for_snapshot
 from . import theme as T
 from .ui import SETTINGS_MAX_HEIGHT, SETTINGS_WIDTH, MonitorUI, status_presentation
 
@@ -50,8 +52,43 @@ def states():
             QuotaWindow(kind, percent, now + timedelta(hours=4), 1000, percent * 10)
             for kind, percent in (("five_hour", 28), ("weekly", 64), ("monthly", 81))),
         "Coding Plan Standard"))
+    # Trend demos feed synthetic observations through the *real* pure rules,
+    # so the preview shows exactly what production computes. Six samples at
+    # 15-minute intervals; the last sample matches the live snapshot.
+    account = account_fingerprint("AKLT-preview")
+
+    def with_trends(state, percent_rows):
+        entries = [
+            HistoryEntry(
+                queried_at=now - timedelta(minutes=15 * (len(percent_rows) - 1 - index)),
+                account=account,
+                plan_type=state.snapshot.plan_type,
+                windows=tuple(
+                    QuotaWindow(
+                        window.kind, percent, window.reset_at, window.quota,
+                        percent / 100 * window.quota if window.quota is not None else None,
+                    )
+                    for window, percent in zip(state.snapshot.windows, row)
+                ),
+            )
+            for index, row in enumerate(percent_rows)
+        ]
+        return replace(state, trends=trends_for_snapshot(entries, state.snapshot, now))
+
+    # five_hour burns 20%/h: exhaustion lands before the 4-hour reset (warning
+    # line); weekly/monthly sit still ("近期无消耗").
+    trend = with_trends(ok, [(3, 64, 81), (8, 64, 81), (13, 64, 81),
+                             (18, 64, 81), (23, 64, 81), (28, 64, 81)])
+    # Percent-only Token Plan: a prediction without any absolute amount.
+    trend_percent_only = with_trends(
+        bailian_token, [(22.5,), (25.5,), (28.5,), (31.5,), (34.5,), (37.5,)])
     return {
         "agent": ok,
+        "alert_low": replace(ok, snapshot=replace(ok.snapshot, windows=tuple(
+            QuotaWindow("five_hour", 92, now + timedelta(hours=4), 100, 92)
+            if w.kind == "five_hour" else w for w in ok.snapshot.windows))),
+        "trend": trend,
+        "trend_percent_only": trend_percent_only,
         "bailian_token": bailian_token,
         "bailian_coding": bailian_coding,
         "bailian_unconfigured": MonitorViewState(status="unconfigured", provider="bailian"),
@@ -618,6 +655,35 @@ def main(argv=None):
                     ui.layout_details()
                     ui.render_details_document()
                     assert_details_width(ui)
+                # Trend captions render from the real pure rules, and the
+                # percent-only plan never gains a fabricated absolute amount.
+                ui.render(states()["trend"])
+                ui.render_details_document()
+                texts = collect_texts(ui.details_scroll.documentView())
+                assert any("预计" in t and "耗尽" in t and "早于" in t for t in texts), texts
+                assert any("近期无消耗" in t for t in texts)
+                ui.render(states()["trend_percent_only"])
+                ui.render_details_document()
+                texts = collect_texts(ui.details_scroll.documentView())
+                trend_lines = [t for t in texts if "消耗约" in t]
+                assert trend_lines and all("%/小时" in t for t in trend_lines), texts
+                assert all("Credits" not in t and "AFP" not in t for t in trend_lines)
+                # The configured threshold drives the same tone path: 25%
+                # remaining is healthy at the default 10, low at 30.
+                agent = states()["agent"]
+                threshold_state = replace(
+                    agent, alert_threshold_percent=30,
+                    snapshot=replace(agent.snapshot, windows=(
+                        QuotaWindow("five_hour", 75,
+                                    datetime.now(UTC) + timedelta(hours=4), 100, 75),)),
+                )
+                ui.render(threshold_state)
+                assert_status_tone(ui, threshold_state, "threshold-30")
+                assert "额度偏低" in status_presentation(threshold_state)[0]
+                default_state = replace(threshold_state, alert_threshold_percent=10)
+                ui.render(default_state)
+                assert_status_tone(ui, default_state, "threshold-10")
+                assert "额度偏低" not in status_presentation(default_state)[0]
                 ui.render(states()["long"])
                 ui.details_scroll.contentView().scrollToPoint_(F.NSMakePoint(0, 120))
                 ui.details.makeFirstResponder_(ui.settings_button)

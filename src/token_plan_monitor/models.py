@@ -423,6 +423,25 @@ class UsageSnapshot:
 
 
 @dataclass(frozen=True)
+class WindowTrend:
+    """Consumption trend for one quota window within its current cycle.
+
+    Every number is derived from values the provider API already reported;
+    percent-only plans get percent rates and an estimated exhaustion time,
+    never a fabricated absolute amount. ``None`` fields mean "not enough
+    evidence", which the presentation layer says out loud.
+    """
+
+    kind: str
+    sample_count: int
+    span_seconds: float
+    percent_per_hour: float | None = None
+    exhausted_at: datetime | None = None
+    resets_before_exhaustion: bool | None = None
+    absolute_per_hour: float | None = None
+
+
+@dataclass(frozen=True)
 class MonitorViewState:
     status: str = "empty"
     snapshot: UsageSnapshot | None = None
@@ -436,6 +455,10 @@ class MonitorViewState:
     #: surface (tray, card, details) compares against the same number without
     #: reaching back into storage. Default keeps legacy states at 10%.
     alert_threshold_percent: int = 10
+    #: Per-window trends computed by the monitor after each successful refresh
+    #: (one history read per cycle, so UI rendering stays IO-free). Empty until
+    #: the first successful refresh; retained across failed refreshes.
+    trends: tuple[WindowTrend, ...] = ()
 
     @property
     def provider_label(self) -> str:

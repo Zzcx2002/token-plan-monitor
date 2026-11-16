@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from .models import MonitorViewState, QuotaWindow, WINDOW_ORDER
+from .models import MonitorViewState, QuotaWindow, WindowTrend, WINDOW_ORDER
+from .trends import MIN_RATE_PERCENT_PER_HOUR
 
 WINDOW_LABELS = {"five_hour": "5 小时", "weekly": "每周", "monthly": "每月"}
 STATUS_LABELS = {
@@ -113,3 +114,33 @@ def format_number(value: float | None) -> str:
     if value is None:
         return "—"
     return f"{value:.3f}".rstrip("0").rstrip(".")
+
+
+def _short_time(value: datetime) -> str:
+    local = value.astimezone()
+    if local.date() != datetime.now().astimezone().date():
+        return local.strftime("%m-%d %H:%M")
+    return local.strftime("%H:%M")
+
+
+def trend_line(trend: WindowTrend | None, window: QuotaWindow, unit_label: str) -> str:
+    """One honest caption line per window. Empty string hides the line (no
+    history at all); thin evidence and idle consumption say so in words, and
+    every prediction is marked 预计/约 -- never a fabricated absolute."""
+    if trend is None:
+        return ""
+    if trend.percent_per_hour is None:
+        return "记录不足，持续使用后可预测"
+    if trend.percent_per_hour <= MIN_RATE_PERCENT_PER_HOUR:
+        return "近期无消耗"
+    rate_text = f"消耗约 {trend.percent_per_hour:.1f}%/小时"
+    if trend.absolute_per_hour is not None:
+        rate_text += f"（约 {format_number(trend.absolute_per_hour)} {unit_label}/小时）"
+    if trend.exhausted_at is None:
+        return rate_text
+    if trend.resets_before_exhaustion:
+        return rate_text + " · 预计重置前不会耗尽"
+    line = rate_text + f" · 预计 {_short_time(trend.exhausted_at)} 耗尽"
+    if window.reset_at is not None:
+        line += f"（早于 {_short_time(window.reset_at)} 重置）"
+    return line

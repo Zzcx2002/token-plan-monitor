@@ -1,7 +1,12 @@
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from token_plan_monitor.models import MonitorViewState, QuotaWindow, UsageSnapshot
+from token_plan_monitor.models import (
+    MonitorViewState,
+    QuotaWindow,
+    UsageSnapshot,
+    WindowTrend,
+)
 from token_plan_monitor.presentation import (
     PLAN_LABELS,
     compact_remaining,
@@ -9,6 +14,7 @@ from token_plan_monitor.presentation import (
     menu_lines,
     state_tone,
     tray_tooltip,
+    trend_line,
     truncate_utf16,
 )
 
@@ -91,6 +97,36 @@ def test_low_quota_tone_follows_the_configured_threshold():
     )
     assert state_tone(healthy) == "ok"
     assert state_tone(replace(healthy, alert_threshold_percent=95)) == "warning"
+
+
+def test_trend_line_is_honest_about_evidence_and_predictions():
+    now = datetime.now(UTC)
+    window = QuotaWindow("five_hour", 70, now + timedelta(hours=4))
+    assert trend_line(None, window, "AFP") == ""
+    thin = WindowTrend(kind="five_hour", sample_count=1, span_seconds=0)
+    assert trend_line(thin, window, "AFP") == "记录不足，持续使用后可预测"
+    idle = WindowTrend(kind="five_hour", sample_count=3, span_seconds=1800,
+                       percent_per_hour=0.0)
+    assert trend_line(idle, window, "AFP") == "近期无消耗"
+    burning = WindowTrend(
+        kind="five_hour", sample_count=4, span_seconds=2700,
+        percent_per_hour=20.0, exhausted_at=now + timedelta(hours=1.5),
+        resets_before_exhaustion=False, absolute_per_hour=2.5,
+    )
+    line = trend_line(burning, window, "AFP")
+    assert "消耗约 20.0%/小时" in line
+    assert "约 2.5 AFP/小时" in line
+    assert "预计" in line and "耗尽" in line and "早于" in line
+    # Percent-only plans keep the prediction but never gain an absolute.
+    percent_only = replace(burning, absolute_per_hour=None)
+    line = trend_line(percent_only, window, "Credits")
+    assert "%/小时" in line and "预计" in line
+    assert "Credits" not in line and "AFP" not in line
+    safe = replace(burning, resets_before_exhaustion=True)
+    assert trend_line(safe, window, "AFP").endswith("预计重置前不会耗尽")
+    no_reset = QuotaWindow("five_hour", 70)
+    assert "早于" not in trend_line(replace(burning, resets_before_exhaustion=None),
+                                    no_reset, "AFP")
 
 
 def test_native_tooltip_is_bounded_without_splitting_surrogate_pairs():

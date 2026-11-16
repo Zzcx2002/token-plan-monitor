@@ -1,9 +1,9 @@
 import threading
 import time
 import pytest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from token_plan_monitor.history import account_fingerprint
+from token_plan_monitor.history import HistoryEntry, account_fingerprint
 from token_plan_monitor.models import (
     AlertSettings,
     CacheError,
@@ -319,6 +319,50 @@ def test_history_append_failure_never_fails_the_refresh(tmp_path):
         assert state.snapshot is not None
         # Unlike a snapshot cache failure, history loss is not a UI warning.
         assert state.error is None
+    finally:
+        monitor.stop()
+
+
+def test_trends_come_from_history_and_survive_a_failed_refresh(tmp_path):
+    storage = configured_storage(tmp_path, "AKLT-a")
+    account = account_fingerprint("AKLT-a")
+    base = datetime(2026, 11, 2, tzinfo=UTC)  # snapshot()'s queried_at
+    for minutes, percent in ((-30, 15), (-15, 20)):
+        storage.append_history(
+            HistoryEntry(
+                queried_at=base + timedelta(minutes=minutes),
+                account=account,
+                plan_type="agent_plan",
+                windows=(QuotaWindow(kind="five_hour", used_percent=percent),),
+            ),
+            "volcengine",
+        )
+
+    class FailAfterFirst:
+        calls = 0
+
+        def query(self):
+            self.calls += 1
+            if self.calls > 1:
+                raise NetworkError("网络暂时不可用")
+            return snapshot()  # 25% used
+
+    client = FailAfterFirst()
+    monitor = UsageMonitor(storage, client_factory=lambda *_: client)
+    try:
+        monitor.start()
+        wait_for(lambda: monitor.get_state().status == "ok")
+        trends = monitor.get_state().trends
+        assert len(trends) == 1
+        # 15 -> 20 -> 25 percent over 30 minutes = 20%/h.
+        assert trends[0].percent_per_hour == pytest.approx(20.0)
+        monitor.request_refresh()
+        wait_for(lambda: monitor.get_state().status == "stale")
+        # Like the retained snapshot, the trends stay visible while stale.
+        assert monitor.get_state().trends == trends
+        # Switching account drops trends: they describe the old account.
+        monitor.update_configuration(Settings(), Credentials("AKLT-b", "secret"))
+        assert monitor.get_state().trends == ()
     finally:
         monitor.stop()
 
