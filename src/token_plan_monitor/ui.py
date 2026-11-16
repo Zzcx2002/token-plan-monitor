@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import queue
 import tkinter as tk
 import tkinter.font as tkfont
@@ -17,18 +18,21 @@ from .desktop_widget import DesktopWidget
 from .ui_graphics import (RoundedPanel, RoundedProgress, ScrollableBody, Tooltip, dpi_scale, window_work_area,
                           install_window_effects, apply_window_effects, configure_rounded_buttons)
 from .models import (
+    AlertSettings,
     ConfigurationError,
     Credentials,
     MonitorViewState,
     QueryError,
     QuotaWindow,
     Settings,
+    provider_label,
 )
 from .monitor import UsageMonitor
 from .providers import get_provider
 from .presentation import (
     PLAN_LABELS,
     WINDOW_LABELS,
+    alert_notification,
     format_datetime as _format_datetime,
     format_number as _format_number,
     menu_context_line,
@@ -45,12 +49,18 @@ APP_ICON_PATH = Path(__file__).resolve().parents[2] / "assets" / "app.ico"
 POPUP_WIDTH = 440
 COLORS = LIGHT.colors
 
+logger = logging.getLogger(__name__)
+
 
 class MonitorUI:
     def __init__(self, monitor: UsageMonitor, storage: Storage):
         self.monitor = monitor
         self.storage = storage
         self.monitor.on_state = lambda state: self._events.put(("state", state))
+        # Tray toast delivery for quota alerts; the shared monitor already
+        # carries the trigger rules, Windows only supplies the channel.
+        if getattr(self.monitor, "notifier", None) is None:
+            self.monitor.notifier = self._notify_alert
         self._events: queue.Queue[tuple[str, Any]] = queue.Queue()
         self._closing = False
         self._state = MonitorViewState()
@@ -219,6 +229,10 @@ class MonitorUI:
                         padding=(self.px(10),self.px(8)),indicatorcolor=self.colors["card"],focuscolor=self.colors["focus"])
         style.map("Theme.TRadiobutton",background=[("selected",self.colors["info_surface"]),
                                                     ("active",self.colors["hover"])],
+                  foreground=[("selected",self.colors["accent"])])
+        style.configure("Card.TCheckbutton",background=self.colors["card"],foreground=self.colors["text"],
+                        padding=(self.px(4),self.px(4)),indicatorcolor=self.colors["card"],focuscolor=self.colors["focus"])
+        style.map("Card.TCheckbutton",background=[("active",self.colors["hover"])],
                   foreground=[("selected",self.colors["accent"])])
 
     def _set_theme(self, mode: str, *, persist: bool = False) -> None:
@@ -726,6 +740,17 @@ class MonitorUI:
             return f"{int(age//60)} 分钟前更新"
         return f"更新于 {value.astimezone():%m-%d %H:%M}"
 
+    def _notify_alert(self,event) -> None:
+        """Quota alert channel: a tray toast. Clicking it follows the tray's
+        default action (open the usage popup), which needs no extra wiring."""
+        if self.icon is None:
+            return
+        title,body=alert_notification(event,provider_label(event.provider))
+        try:
+            self.icon.notify(body,title)
+        except Exception:
+            logger.exception("Tray notification failed")
+
     def _render_window(self,row:dict[str,Any],window:QuotaWindow,unit:str="AFP",threshold:int=10) -> None:
         warning=window.remaining_percent<threshold
         row["remaining"].configure(text=f"{window.remaining_percent:.1f}%",
@@ -826,6 +851,14 @@ class MonitorUI:
         # Equal columns keep the settings width stable across long values.
         self._settings_entries["region"].configure(width=16)
         self._settings_entries["refresh"].configure(width=12)
+        alerts=panel("低额度告警")
+        self._settings_alert_enabled=tk.BooleanVar(window,settings.alert.enabled)
+        ttk.Checkbutton(alerts,text="启用系统通知（托盘提示）",variable=self._settings_alert_enabled,
+                        style="Card.TCheckbutton").grid(row=1,column=0,columnspan=2,sticky="w")
+        entry(alerts,"alert_threshold","低额度阈值 · %（1–99）",str(settings.alert.threshold_percent),2)
+        self._settings_alert_reset=tk.BooleanVar(window,settings.alert.notify_on_reset)
+        ttk.Checkbutton(alerts,text="窗口重置时提醒",variable=self._settings_alert_reset,
+                        style="Card.TCheckbutton").grid(row=4,column=0,columnspan=2,sticky="w",pady=(6,0))
         entries=self._settings_entries
         footer=ttk.Frame(window,padding=(self.px(OUTER_PADDING),0,self.px(OUTER_PADDING),self.px(12)))
         footer.pack(fill="x")
@@ -866,7 +899,18 @@ class MonitorUI:
                 self._settings_errors[key].grid_remove()
             general_error.configure(text="")
             try:
-                new_settings=Settings(region=entries["region"].get(),refresh_minutes=int(entries["refresh"].get().strip()))
+                threshold=int(entries["alert_threshold"].get().strip())
+            except ValueError:
+                show_validation_error("阈值必须是 1–99 的整数","alert_threshold")
+                return
+            if not 1<=threshold<=99:
+                show_validation_error("阈值必须在 1–99 之间","alert_threshold")
+                return
+            try:
+                new_settings=Settings(region=entries["region"].get(),refresh_minutes=int(entries["refresh"].get().strip()),
+                                      alert=AlertSettings(enabled=self._settings_alert_enabled.get(),
+                                                          threshold_percent=threshold,
+                                                          notify_on_reset=self._settings_alert_reset.get()))
             except (ValueError,QueryError) as exc:
                 message=exc.message if isinstance(exc,QueryError) else "刷新间隔必须是整数"
                 show_validation_error(message,"region" if isinstance(exc,QueryError) and message.startswith("Region") else "refresh")

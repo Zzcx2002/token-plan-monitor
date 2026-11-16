@@ -162,6 +162,37 @@ def main():
             assert app.settings_window is None
             assert monitor.saved[0].refresh_minutes == 15
             assert app.storage.load_credentials().access_key_id == 'offline-test-access-key'
+            # Alert panel: a bad threshold is a field error that keeps the
+            # dialog; a valid one persists and reaches update_configuration.
+            app.open_settings()
+            app.root.after(80, app.root.quit)
+            app.root.mainloop()
+            save = next(w for w in descendants(app.settings_window)
+                        if isinstance(w, ttk.Button) and w.cget('text') == '保存设置')
+            app._settings_entries["alert_threshold"].delete(0, "end")
+            app._settings_entries["alert_threshold"].insert(0, "0")
+            save.invoke()
+            app.root.after(80, app.root.quit)
+            app.root.mainloop()
+            assert app.settings_window is not None
+            assert app._settings_entries["alert_threshold"].instate(["invalid"])
+            app._settings_entries["alert_threshold"].delete(0, "end")
+            app._settings_entries["alert_threshold"].insert(0, "25")
+            app._settings_alert_reset.set(True)
+            save.invoke()
+            app.root.after(80, app.root.quit)
+            app.root.mainloop()
+            assert app.settings_window is None
+            saved_alert = app.storage.load_settings().alert
+            assert saved_alert.threshold_percent == 25 and saved_alert.notify_on_reset
+            assert monitor.saved[0].alert == saved_alert
+            # Tray toast channel: copy comes from the shared presentation layer.
+            from token_plan_monitor.alerts import AlertEvent
+            recorded = []
+            app.icon = SimpleNamespace(notify=lambda body, title: recorded.append((title, body)))
+            app._notify_alert(AlertEvent("low_quota", "five_hour", "volcengine", 8.0, 10))
+            assert recorded and "额度偏低" in recorded[0][0] and "8.0%" in recorded[0][1]
+            app.icon = None
             app.open_settings()
             app.root.after(80, app.root.quit)
             app.root.mainloop()
@@ -188,7 +219,7 @@ def main():
             card.close()
             app.root.after(80, app.root.quit)
             app.root.mainloop()
-            print('PASS: theme switching, system changes, persistence, rollback, no quota/keyring writes, details retention, click, drag, topmost, hover, no outer shadow, Escape, validation, save, cancel')
+            print('PASS: theme switching, system changes, persistence, rollback, no quota/keyring writes, details retention, click, drag, topmost, hover, no outer shadow, Escape, validation, save, cancel, alert panel, tray toast')
         finally:
             app.shutdown()
         restarted=MonitorUI(Monitor(),Storage(Path(temporary),MemoryKeyring()))
