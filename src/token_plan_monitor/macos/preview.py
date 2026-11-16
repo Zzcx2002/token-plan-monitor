@@ -8,6 +8,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 import AppKit as A
 import Foundation as F
@@ -585,6 +586,14 @@ def main(argv=None):
                 A.NSAppearanceNameAqua if args.appearance == "light"
                 else A.NSAppearanceNameDarkAqua))
         ui = MonitorUI(FakeMonitor(states()[args.state]), storage)
+        # Deterministic smoke in bare preview AND inside the bundle: never pop
+        # a real authorization dialog from a save. Real delivery/authorization
+        # is exercised by the manual bundle checklist, not by smoke.
+        ui.notifier = SimpleNamespace(
+            authorization_status=lambda: "unavailable",
+            request_authorization=lambda: None,
+            notify=lambda event: None,
+        )
         # Hermetic Claude Code target: never read or write a real ~/.claude.
         claude_home = Path(temporary) / "claude-home"
         ui.claude_paths_override = (claude_home / "settings.json",

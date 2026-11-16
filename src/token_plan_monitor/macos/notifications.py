@@ -107,14 +107,14 @@ class MacNotifier:
         if self._center is None:
             return
 
-        def handler(status):
+        def handler(settings):
             self._status = {
                 self._UN.UNAuthorizationStatusAuthorized: "authorized",
                 self._UN.UNAuthorizationStatusDenied: "denied",
                 self._UN.UNAuthorizationStatusNotDetermined: "not_determined",
-            }.get(status, "not_determined")
+            }.get(settings.authorizationStatus(), "not_determined")
 
-        self._center.getAuthorizationStatusWithCompletionHandler_(handler)
+        self._center.getNotificationSettingsWithCompletionHandler_(handler)
 
     def authorization_status(self) -> str:
         """authorized / denied / not_determined / legacy / unavailable."""
