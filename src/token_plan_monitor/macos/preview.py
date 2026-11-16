@@ -16,13 +16,18 @@ import Quartz
 from PyObjCTools import AppHelper
 
 from ..history import HistoryEntry, account_fingerprint
+from ..history_chart import Y_AXIS_WIDTH, build_chart, x_scale
 from ..model_catalog import ModelCatalogError
 from ..models import AlertSettings, Credentials, MonitorViewState, QuotaWindow, UsageSnapshot
+from ..presentation import history_table_time
 from ..providers import get_provider
 from ..storage import Storage
 from ..trends import trends_for_snapshot
 from . import theme as T
-from .ui import SETTINGS_MAX_HEIGHT, SETTINGS_WIDTH, MonitorUI, status_presentation
+from .ui import (
+    HISTORY_HEIGHT, HISTORY_MIN_HEIGHT, HISTORY_WIDTH, SETTINGS_MAX_HEIGHT,
+    SETTINGS_WIDTH, MonitorUI, status_presentation,
+)
 
 
 class MemoryKeyring:
@@ -83,6 +88,54 @@ def states():
     # Percent-only Token Plan: a prediction without any absolute amount.
     trend_percent_only = with_trends(
         bailian_token, [(22.5,), (25.5,), (28.5,), (31.5,), (34.5,), (37.5,)])
+
+    # History demos feed 36 hours of synthetic 15-minute observations through
+    # the *real* contract and pure rules, same philosophy as with_trends: the
+    # five_hour window sawtooths across >=7 cycles (reset_at advances every
+    # 5h AND usage drops at each boundary, so both cut signals agree), weekly
+    # rises, monthly sits flat unless a pattern says otherwise. The last row
+    # always equals the live snapshot.
+    def with_history(state, hours=36, patterns=None):
+        patterns = patterns or {}
+        total = hours * 60
+        steps = total // 15
+        entries = []
+        for k in range(steps + 1):
+            elapsed = 15 * k
+            minutes_ago = total - elapsed
+            windows = []
+            for window in state.snapshot.windows:
+                default = ("sawtooth" if window.kind == "five_hour"
+                           else "rise" if window.kind == "weekly" else "flat")
+                pattern = patterns.get(window.kind, default)
+                if k == steps:
+                    percent, reset = window.used_percent, window.reset_at
+                elif pattern == "sawtooth":
+                    cycle_pos = (300 - minutes_ago % 300) % 300
+                    percent = 3 + (window.used_percent - 3) * cycle_pos / 300
+                    # The boundary sample (cycle_pos 0, the post-reset low)
+                    # already belongs to the NEW cycle, so the usage drop and
+                    # the reset_at change land on the same step -- one cut,
+                    # exactly like real observations, never a stranded sample.
+                    reset = (window.reset_at or now) - timedelta(
+                        minutes=300 * max(0, (minutes_ago - 1) // 300))
+                elif pattern == "rise":
+                    percent = window.used_percent * (0.6 + 0.4 * elapsed / total)
+                    reset = window.reset_at
+                else:
+                    percent, reset = window.used_percent, window.reset_at
+                used = (percent / 100 * window.quota
+                        if window.quota is not None else None)
+                windows.append(QuotaWindow(
+                    window.kind, round(percent, 1), reset, window.quota, used))
+            entries.append(HistoryEntry(
+                now - timedelta(minutes=minutes_ago), account,
+                state.snapshot.plan_type, tuple(windows)))
+        return replace(
+            state, history=tuple(entries), last_attempt_at=now,
+            trends=trends_for_snapshot(entries, state.snapshot, now))
+
+    thin_entry = HistoryEntry(now, account, ok.snapshot.plan_type, ok.snapshot.windows)
     return {
         "agent": ok,
         "alert_low": replace(ok, snapshot=replace(ok.snapshot, windows=tuple(
@@ -90,6 +143,11 @@ def states():
             if w.kind == "five_hour" else w for w in ok.snapshot.windows))),
         "trend": trend,
         "trend_percent_only": trend_percent_only,
+        "history_agent": with_history(ok),
+        "history_percent_only": with_history(bailian_token, patterns={"monthly": "rise"}),
+        "history_empty": replace(ok, history=()),
+        "history_thin": replace(ok, history=(thin_entry,), last_attempt_at=now,
+                                trends=trends_for_snapshot((thin_entry,), ok.snapshot, now)),
         "bailian_token": bailian_token,
         "bailian_coding": bailian_coding,
         "bailian_unconfigured": MonitorViewState(status="unconfigured", provider="bailian"),
@@ -481,6 +539,36 @@ def assert_details_width(ui):
             assert abs(view.frame().size.width - max(1, expected_width - 24)) < 0.01
 
 
+def assert_history_width(ui):
+    """The history document mirrors the details width contract, and every
+    chart's plot width is exactly the inner width minus the y-axis gutter --
+    the same number build_chart was handed."""
+    document = ui.history_scroll.documentView()
+    expected_width = max(1, ui.history_scroll.contentView().bounds().size.width - 24)
+    assert abs(document.frame().size.width - expected_width) < 0.01
+    content_width = max(1, expected_width - 48)
+    for kind, chart in ui._history_charts.items():
+        assert abs(chart.frame().size.width - content_width) < 0.01
+        assert abs(chart.frame().origin.x - (T.PAGE_INSET + T.GUTTER)) < 0.01
+        geometry = ui._history_geometries[kind]
+        assert abs(geometry.plot_width - (content_width - Y_AXIS_WIDTH)) < 0.01
+
+
+def layer_names(chart):
+    return [str(layer.name()) for layer in chart.chart_layers()]
+
+
+def history_table_view(ui, kind):
+    """The expanded 数据列表 table for one window, or None when collapsed."""
+    for child in ui.history_scroll.documentView().subviews():
+        if isinstance(child, A.NSScrollView):
+            document = child.documentView()
+            if (isinstance(document, A.NSTableView)
+                    and str(document.identifier()) == f"history-table-{kind}"):
+                return document
+    return None
+
+
 def check_card_interactions_and_resize(ui, storage):
     assert not hasattr(ui, "card_menu_button")
     assert not hasattr(ui, "card_details_button")
@@ -677,6 +765,148 @@ def main(argv=None):
                 trend_lines = [t for t in texts if "消耗约" in t]
                 assert trend_lines and all("%/小时" in t for t in trend_lines), texts
                 assert all("Credits" not in t and "AFP" not in t for t in trend_lines)
+
+                # --- History window: charts built by the real pure rules ---
+                # Layers are asserted by NAME and count, never by reading a
+                # backing layer's color (NSViewBackingLayer colors cannot be
+                # read back -- see docs/macos-validation.md).
+                ui.render(states()["history_agent"])
+                ui.command("history")
+                assert ui.history is not None and ui.history.isVisible()
+                assert ui.history.title().endswith("用量历史")
+                assert any(str(i.title()) == "用量历史" for i in ui.make_menu().itemArray())
+                assert not any(str(i.title()) == "用量历史"
+                               for i in ui.make_menu(include_details=False).itemArray())
+                assert ui.history_range_control.selectedSegment() == 0
+                assert ui.history_range == "24h"
+                kinds = {w.kind for w in ui.state.snapshot.windows}
+                assert set(ui._history_charts) == kinds
+                chart = ui._history_charts["five_hour"]
+                geometry = ui._history_geometries["five_hour"]
+                # The UI wired the pure module with exactly the state's data.
+                history_now = ui.state.last_attempt_at or ui.state.snapshot.queried_at
+                assert geometry == build_chart(
+                    ui.state.history, "five_hour", now=history_now, range_key="24h",
+                    plot_width=chart.frame().size.width - Y_AXIS_WIDTH,
+                    alert_threshold_percent=ui.state.alert_threshold_percent)
+                assert len(geometry.cycles) >= 2, "36h of sawtooth must cut cycles"
+                names = layer_names(chart)
+                assert sum(1 for n in names if n.startswith("series-")) == len(geometry.cycles)
+                assert sum(1 for n in names if n.startswith("area-")) == len(geometry.cycles)
+                assert {"grid-0", "grid-50", "grid-100", "threshold",
+                        "endpoint", "crosshair"} <= set(names)
+                crosshair = next(l for l in chart.chart_layers()
+                                 if str(l.name()) == "crosshair")
+                assert crosshair.isHidden()
+                assert "5 小时" in chart.accessibilityLabel()
+                ui.history.displayIfNeeded()
+                capture(ui.history, args.artifacts / "history-agent.png")
+                # Tooltip: value leads, absolutes only when reported, snap.
+                sample = geometry.samples[len(geometry.samples) // 2]
+                x = x_scale(sample.queried_at, geometry.range_start,
+                            geometry.range_end, geometry.plot_width)
+                lines = chart.tooltip_lines_at(x)
+                assert lines[0] == f"已用 {sample.used_percent:.1f}%"
+                assert any("AFP" in line for line in lines)
+                assert chart.tooltip_lines_at(x - 0.1)[0] == lines[0]
+                assert chart.tooltip_lines_at(-1) is None
+                chart.show_tooltip_at(x)
+                assert not crosshair.isHidden()
+                assert chart._tooltip is not None
+                chart.hide_tooltip()
+                assert crosshair.isHidden() and chart._tooltip is None
+                # Range switch rescopes everything below the selector.
+                ui.history_range_control.setSelectedSegment_(3)
+                ui.command("history-range")
+                assert ui.history_range == "90d"
+                g90 = ui._history_geometries["five_hour"]
+                assert g90.range_end - g90.range_start == timedelta(days=90)
+                assert len(g90.x_ticks) == 7
+                assert len(g90.rows) <= (int(g90.plot_width / 2) + 1) * len(g90.cycles)
+                ui.history.displayIfNeeded()
+                capture(ui.history, args.artifacts / "history-agent-90d.png")
+                ui.history_range_control.setSelectedSegment_(0)
+                ui.command("history-range")
+                # Table twin: every bucket row reachable without hover.
+                ui.command("history-table:five_hour")
+                assert "five_hour" in ui.history_table_expanded
+                table = history_table_view(ui, "five_hour")
+                assert table is not None
+                g = ui._history_geometries["five_hour"]
+                assert table.numberOfRows() == len(g.rows)
+                assert len(table.tableColumns()) == 3
+                source = table.dataSource()
+                assert source.tableView_objectValueForTableColumn_row_(
+                    table, table.tableColumns()[0], 0) == history_table_time(g.rows[0].queried_at)
+                assert source.tableView_objectValueForTableColumn_row_(
+                    table, table.tableColumns()[1], 0) == f"{g.rows[0].used_percent:.1f}%"
+                ui.history.displayIfNeeded()
+                capture(ui.history, args.artifacts / "history-agent-table.png")
+                ui.command("history-table:five_hour")
+                assert history_table_view(ui, "five_hour") is None
+                # Percent-only plan: one monthly chart, never an absolute.
+                ui.render(states()["history_percent_only"])
+                assert set(ui._history_charts) == {"monthly"}
+                po = ui._history_geometries["monthly"]
+                po_chart = ui._history_charts["monthly"]
+                assert not po.has_absolute
+                s = po.samples[-1]
+                px = x_scale(s.queried_at, po.range_start, po.range_end, po.plot_width)
+                po_lines = po_chart.tooltip_lines_at(px)
+                assert len(po_lines) == 2
+                assert all("额度" not in l and "AFP" not in l for l in po_lines)
+                ui.command("history-table:monthly")
+                po_table = history_table_view(ui, "monthly")
+                assert po_table is not None and len(po_table.tableColumns()) == 2
+                ui.command("history-table:monthly")
+                ui.history.displayIfNeeded()
+                capture(ui.history, args.artifacts / "history-percent-only.png")
+                # Empty / thin / unconfigured states stay honest.
+                ui.render(states()["history_empty"])
+                assert ui._history_charts == {}
+                assert any("尚无历史记录" in t
+                           for t in collect_texts(ui.history_scroll.documentView()))
+                ui.history.displayIfNeeded()
+                capture(ui.history, args.artifacts / "history-empty.png")
+                ui.render(states()["history_thin"])
+                assert any("记录不足" in t
+                           for t in collect_texts(ui.history_scroll.documentView()))
+                assert set(ui._history_charts) == kinds
+                ui.render(states()["unconfigured"])
+                assert any("请先连接账号" in t
+                           for t in collect_texts(ui.history_scroll.documentView()))
+                # Responsive width, scroll preservation, refresh hold.
+                ui.render(states()["history_agent"])
+                ui.history_scroll.contentView().scrollToPoint_(F.NSMakePoint(0, 120))
+                ui.render(states()["history_agent"])
+                assert ui.history_scroll.contentView().bounds().origin.y == 120
+                ui.history.setContentSize_(F.NSMakeSize(720, 640))
+                ui.layout_history()
+                ui.render_history_document()
+                assert_history_width(ui)
+                ui.history.setContentSize_(F.NSMakeSize(HISTORY_WIDTH, HISTORY_MIN_HEIGHT))
+                ui.layout_history()
+                ui.render_history_document()
+                assert_history_width(ui)
+                footer = ui.history_footer.frame()
+                assert footer.origin.y + footer.size.height <= ui.history_root.bounds().size.height
+                assert footer.origin.y >= (ui.history_scroll.frame().origin.y
+                                           + ui.history_scroll.frame().size.height)
+                ui.history.setContentSize_(F.NSMakeSize(HISTORY_WIDTH, HISTORY_HEIGHT))
+                ui.layout_history()
+                ui.render_history_document()
+                assert_history_width(ui)
+                ui.render(replace(states()["history_agent"], is_refreshing=True))
+                assert set(ui._history_charts) == kinds, "refresh must hold, not blank"
+                assert ui.history_refresh_button.title() == "正在刷新…"
+                assert not ui.history_refresh_button.isEnabled()
+                # Close hides the reusable window; the menu reopens it.
+                assert not ui.actions.windowShouldClose_(ui.history)
+                assert not ui.history.isVisible()
+                ui.command("history")
+                assert ui.history.isVisible()
+                ui.history.orderOut_(None)
+
                 # The configured threshold drives the same tone path: 25%
                 # remaining is healthy at the default 10, low at 30.
                 agent = states()["agent"]
@@ -1063,6 +1293,7 @@ def main(argv=None):
                     + f"NOTE: focus-ring end-to-end branch exercised = {sorted(set(focus_modes)) or 'none'}"
                       " (key-window lighting needs the on-display check)\n"
                     + f"PASS: {len(states())} fake states across both providers, capped/scrollable settings window with width-following footer, default/small/wide responsive windows, remaining progress and AX labels, focus/scroll preservation, settings validation/help, card refresh button, click/move/resize gestures and no details buttons, geometry preferences, desktop/floating modes and menus, hidden/visible restart, shutdown\n"
+                    + "PASS: history window — menu entry/exclusion, per-cycle line+area layers against the real pure rules, grid/threshold/endpoint/crosshair by layer name, tooltip value-first honesty (percent-only never gains absolutes), 24h/90d range rescope, table twin rows/columns and collapse, empty/thin/unconfigured copy, width-following charts, scroll preservation, refresh hold, close/reopen\n"
                     + ("PASS: bundled runtime, certificates and Keychain backend imports\n" if getattr(sys, "frozen", False) else ""))
                 print("Native macOS smoke checks passed", flush=True)
             except BaseException as exc:

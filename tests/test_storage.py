@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from token_plan_monitor.history import HistoryEntry, account_fingerprint
+from token_plan_monitor.history import HISTORY_MAX_ROWS, HistoryEntry, account_fingerprint
 from token_plan_monitor.models import (
     AlertSettings,
     CacheError,
@@ -428,6 +428,24 @@ def test_history_rotation_drops_rows_past_the_age_cap(tmp_path, monkeypatch):
     kept = storage.load_history("volcengine")
     assert ancient not in kept
     assert len(kept) == 3
+
+
+def test_history_load_limit_defaults_below_the_retention_cap(tmp_path):
+    # Pins the monitor's limit fix: a 90-day chart at the 15-minute cadence
+    # needs ~8640 rows, so the monitor must ask for the full retention cap,
+    # not the 2000-row default that would silently truncate long ranges.
+    storage = Storage(tmp_path, FakeKeyring())
+    rows = [
+        history_entry(minutes=index, percent=20.0 + index % 50)
+        for index in range(2001)
+    ]
+    path = storage.history_path("volcengine")
+    path.parent.mkdir(parents=True)
+    storage._write_history(path, rows)
+    assert len(storage.load_history("volcengine")) == 2000
+    full = storage.load_history("volcengine", limit=HISTORY_MAX_ROWS)
+    assert len(full) == 2001
+    assert full[0] == rows[0]
 
 
 def test_history_is_isolated_per_provider_and_filterable_per_account(tmp_path):

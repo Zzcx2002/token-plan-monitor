@@ -4,6 +4,19 @@
 
 开发/验证机器：Apple Silicon，macOS 26.6（25G72）。构建使用 python.org Python 3.13.9 framework、py2app 0.28.10；Python 及依赖都在项目隔离目录，未安装到系统 Python。依赖版本见 `requirements-macos-build.txt`。
 
+## 用量历史窗口验证（2026-11-16，本地验证；尚未发布）
+
+分支 `release/v0.1.0`。在 v0.2.0 的历史/趋势数据层之上新增独立「用量历史」窗口：菜单入口、24小时/7天/30天/90天 一行范围选择器、每窗口一张已用%折线/面积图（CAShapeLayer + CGPath，theme 的「无 drawRect_/NSBezierPath」规则注释澄清为允许声明式图层路径）、周期断点不跨重置连线、重置细线/字幕密度门控、告警阈值虚线、悬停十字线+数值领先 tooltip、每图「数据列表」表格孪生、空/薄/未配置诚实文案。
+
+- 数据流：`MonitorViewState.history` 加法字段（TYPE_CHECKING 导入避免 models↔history 循环），随 trends 同一次历史读取携带；**读取上限从默认 2000 行提到 `HISTORY_MAX_ROWS`**（90 天×15 分钟≈8640 行，旧上限会静默截断长范围；`_read_history` 本就整文件解析，零额外 IO）；启动播种、失败刷新保留、换账号清空。仅当前账号。
+- 纯规则新模块 `history_chart.py`：先切周期再按 2px 桶分桶（每桶保 min+max，尖峰与重置存活）、固定 [now−delta, now] x 域、刻度/阈值/重置标记几何、`nearest_sample` 吸附；切点容差与 trends 共用 `RESET_JUMP_TOLERANCE_PERCENT`，有一致性测试钉住「图表末周期 == trends 当前周期」。
+- 离线 pytest：**405 passed、3 skipped**（新增 `tests/test_history_chart.py` 16 项，及 monitor/storage/presentation/macos_theme 的历史携带、上限、文案、图表 token 对比扩展）。
+- 原生 AppKit smoke 双外观通过：新增 history_agent / history_percent_only / history_empty / history_thin 假状态（36 小时合成锯齿经真实纯规则）；断言走 **CALayer name/计数/纯几何**（绝不读 NSViewBackingLayer 颜色）：line/area 层数 == 真实 `build_chart` 周期数、grid/threshold/endpoint/crosshair 齐、UI 几何与独立 `build_chart` 调用逐字段相等、tooltip 数值领先且 percent-only 无绝对值、90d 范围切换、表格行数/列数/折叠、空薄文案、宽度跟随、滚动保持、刷新 hold、关闭/重开。截图 `history-agent/-90d/-table/-percent-only/-empty.png` 双外观入 artifacts。
+- **反向验证**（按本仓库惯例）：移除 threshold 层、跨重置合并周期、去掉 min-max 桶规则三处变异分别被 smoke/smoke/pytest 断言捕获（exit 1），恢复后复绿。
+- 配色：序列复用 info 色调对、告警线 warning、面积 10% 晕染、网格退后灰；dataviz 校验脚本 info↔warning 对 CVD ΔE 22.7/21.5、常视觉 24.9/24.4、对表面 ≥3:1 双外观通过；theme 测试新增非文本对比与 token 双外观解析断言。截图人工目视确认无标签碰撞（重置字幕右对齐于细线左侧、端点值标签置于点上方）。
+- 文档：README/README.en 支持矩阵、菜单行、历史节与截图、术语表；development.md 模块图与截图表。构建脚本无需改（整包打包已含 Quartz）。
+- 仍需实机/手工：真实鼠标悬停十字线与 tooltip 跟随、VoiceOver 朗读图表 accessibilityLabel、开窗状态下系统浅深切换、真实账号 90 天历史的密度门控观感、macOS 14 实机。Windows 壳忽略 history 字段，趋势/历史展示继续后置（沿用 2026-11-16 范围决定）。
+
 ## v0.2.0 发布记录（2026-11-16，本地验证；尚未发布）
 
 分支 `release/v0.1.0`。功能提交五连：`ce41476`（可配置阈值收敛）、`bcb1d23`（追加式历史）、`94eb6ed`（趋势与耗尽预测）、`d39360b`（阈值告警 + macOS 系统通知）、`4bd796a`（Windows 告警设置与托盘通知）；bump 提交 `18d20bc`；呈现修复与探针 `3ea2819` / `e390cdb`。附注标签 `v0.2.0` 指向 `2b86b6c`（其树与最终构建一致），GitHub Release id `446752591`。推送经系统代理 127.0.0.1:7897（直连 github.com 超时）。

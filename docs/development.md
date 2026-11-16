@@ -14,8 +14,8 @@
 
 ## 环境与目录
 
-- 共享核心在 `src/token_plan_monitor/`：`models.py`（数据契约与输入校验）、`providers.py`（服务商注册表、凭据 account、Claude Code 元数据）、`storage.py`（数据目录与钥匙串/凭据管理器、历史 JSONL 读写与轮转）、`monitor.py`（后台刷新调度、历史追加、趋势计算、告警评估与 notifier 注入）、`presentation.py`（屏上文案与通知文案）、`history.py`（历史行契约、采样去重、保留裁剪，纯规则）、`trends.py`（周期切分、最小二乘速率、耗尽预测，纯规则）、`alerts.py`（下穿触发/重新武装/重置提醒，纯规则）、`claude_code.py`（写入 Claude 配置）、`model_catalog.py`（在线模型清单：推导 compatible-mode 地址、过滤对话模型、与内置清单合并）、`volcengine.py` / `bailian.py` / 两个 signer。
-- macOS 壳在 `src/token_plan_monitor/macos/`：`ui.py`（菜单栏、详情窗口、桌面卡片、设置窗口）、`layout.py`（纯规则：校验、恢复动作、最低项标记、几何）、`theme.py`（动态色、字阶、材质）、`notifications.py`（UNUserNotificationCenter + bundle 守卫 + NSUserNotification 降级）、`preview.py`（离线预览与 `--smoke-test`）。
+- 共享核心在 `src/token_plan_monitor/`：`models.py`（数据契约与输入校验）、`providers.py`（服务商注册表、凭据 account、Claude Code 元数据）、`storage.py`（数据目录与钥匙串/凭据管理器、历史 JSONL 读写与轮转）、`monitor.py`（后台刷新调度、历史追加、趋势计算、告警评估与 notifier 注入）、`presentation.py`（屏上文案与通知文案）、`history.py`（历史行契约、采样去重、保留裁剪，纯规则）、`trends.py`（周期切分、最小二乘速率、耗尽预测，纯规则）、`history_chart.py`（历史图表纯规则：范围过滤、周期切分、按像素分桶保 min/max、坐标/刻度/重置标记密度门控）、`alerts.py`（下穿触发/重新武装/重置提醒，纯规则）、`claude_code.py`（写入 Claude 配置）、`model_catalog.py`（在线模型清单：推导 compatible-mode 地址、过滤对话模型、与内置清单合并）、`volcengine.py` / `bailian.py` / 两个 signer。
+- macOS 壳在 `src/token_plan_monitor/macos/`：`ui.py`（菜单栏、详情窗口、用量历史窗口、桌面卡片、设置窗口）、`chart.py`（CAShapeLayer + CGPath 折线/面积图视图与数据列表数据源；声明式图层几何，无 drawRect_/NSBezierPath）、`layout.py`（纯规则：校验、恢复动作、最低项标记、几何）、`theme.py`（动态色、字阶、材质、图表 token）、`notifications.py`（UNUserNotificationCenter + bundle 守卫 + NSUserNotification 降级）、`preview.py`（离线预览与 `--smoke-test`）。
 - Windows 壳在 `src/token_plan_monitor/ui.py`、`desktop_widget.py`、`ui_graphics.py`、`window_chrome.py`、`window_geometry.py`、`appearance.py`。
 - 数据目录：macOS 用 `~/Library/Application Support/TokenPlanMonitor/` 与 `~/Library/Logs/TokenPlanMonitor/`；其他平台用项目内 `data/` 和 `logs/`（两者都在 `.gitignore` 里）。
 - `artifacts/`、`build/`、`dist/` 同样被忽略，都是可随时重生的输出目录。
@@ -94,6 +94,7 @@ dist/TokenPlanMonitor.app/Contents/MacOS/python scripts/verify_macos_notificatio
 | `card-ark.png` | `artifacts/macos-light/card-agent.png` |
 | `card-ark-dark.png` | `artifacts/macos-dark/card-agent.png` |
 | `details-ark.png` | `artifacts/macos-light/details-agent.png` |
+| `history-ark.png` | `artifacts/macos-light/history-agent.png` |
 | `settings-claude-code.png` | `artifacts/macos-light/settings-claude.png` |
 
 ```sh
@@ -102,6 +103,7 @@ dist/TokenPlanMonitor.app/Contents/MacOS/python scripts/verify_macos_notificatio
 cp artifacts/macos-light/card-agent.png       docs/images/card-ark.png
 cp artifacts/macos-dark/card-agent.png        docs/images/card-ark-dark.png
 cp artifacts/macos-light/details-agent.png    docs/images/details-ark.png
+cp artifacts/macos-light/history-agent.png    docs/images/history-ark.png
 cp artifacts/macos-light/settings-claude.png  docs/images/settings-claude-code.png
 ```
 

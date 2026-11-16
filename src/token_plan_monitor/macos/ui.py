@@ -6,6 +6,7 @@ import os
 import queue
 import threading
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 
 import AppKit as A
@@ -26,9 +27,15 @@ from ..models import (
     QueryError,
     WINDOW_ORDER,
 )
+from ..history_chart import (
+    PLOT_HEIGHT, RANGE_KEYS, X_AXIS_HEIGHT, Y_AXIS_WIDTH, build_chart,
+)
 from ..presentation import (
-    WINDOW_LABELS, compact_remaining, format_datetime, format_number,
-    hover_summary, menu_lines, state_tone, status_text, trend_line,
+    HISTORY_RANGE_LABELS, HISTORY_TABLE_COLLAPSE, HISTORY_TABLE_HEADERS,
+    HISTORY_TABLE_TITLE, HISTORY_WINDOW_TITLE, WINDOW_LABELS, compact_remaining,
+    format_datetime, format_number, history_absolute_header, history_chart_title,
+    history_context_line, history_empty_text, hover_summary, menu_lines,
+    state_tone, status_text, trend_line,
 )
 from ..providers import PROVIDERS, get_provider
 from .layout import (
@@ -43,6 +50,7 @@ from .layout import (
     validate_configuration,
 )
 from . import theme as T
+from .chart import ChartView, HistoryTableDataSource
 from .notifications import MacNotifier
 
 logger = logging.getLogger(__name__)
@@ -137,6 +145,15 @@ SETTINGS_WIDTH = 500
 SETTINGS_MIN_HEIGHT = 480
 SETTINGS_MAX_HEIGHT = 640
 SETTINGS_FOOTER_HEIGHT = 58
+# History window: 600 is also the minimum width -- the 90-day x-axis labels
+# are measured at this width, the same rule the settings form follows.
+HISTORY_WIDTH = 600
+HISTORY_HEIGHT = 640
+HISTORY_MIN_HEIGHT = 400
+HISTORY_HEADER_HEIGHT = 110
+HISTORY_FOOTER_HEIGHT = 58
+HISTORY_TABLE_ROW_HEIGHT = 20
+HISTORY_TABLE_MAX_HEIGHT = 264
 # Two wrapped 12pt lines plus padding: the pinned feedback band's resting size.
 SETTINGS_ERROR_HEIGHT = 34
 
@@ -508,6 +525,10 @@ class Actions(F.NSObject):
         elif notification.object() == getattr(self.owner, "settings", None):
             # Never rebuild the settings form here: that would discard typing.
             self.owner.layout_settings()
+        elif notification.object() == getattr(self.owner, "history", None):
+            # Safe to rebuild wholesale: the history window holds no typed input.
+            self.owner.layout_history()
+            self.owner.render_history_document()
 
     def tick_(self, timer):
         self.owner.drain_events()
@@ -567,6 +588,14 @@ class MonitorUI:
         self.details = None
         self.settings = None
         self.card = None
+        self.history = None
+        self.history_range = "24h"
+        # Which charts have their 数据列表 twin expanded; survives document
+        # rebuilds because it lives on the shell, not the discarded views.
+        self.history_table_expanded = set()
+        self._history_charts = {}
+        self._history_geometries = {}
+        self._history_table_sources = []
         self.timer = None
         self.closed = False
         self.materials = []
@@ -693,7 +722,7 @@ class MonitorUI:
         entries = (("立即刷新", "refresh"), ("桌面卡片", "card"), ("显示模式", "display-mode"),
                    ("卡片置顶", "topmost"), ("设置…", "settings"), ("退出", "exit"))
         if include_details:
-            entries = (("打开用量详情", "details"),) + entries
+            entries = (("打开用量详情", "details"), ("用量历史", "history")) + entries
         for title, command in entries:
             item = menu.addItemWithTitle_action_keyEquivalent_(title, "menuAction:", "q" if command == "exit" else "")
             item.setTarget_(self.actions)
@@ -729,8 +758,14 @@ class MonitorUI:
                     "refresh-models": self.refresh_models,
                     "cancel": lambda: self.settings.orderOut_(None),
                     "close-details": lambda: self.details.orderOut_(None),
+                    "history": self.show_history,
+                    "history-range": lambda: self.set_history_range(
+                        RANGE_KEYS[self.history_range_control.selectedSegment()]),
+                    "close-history": lambda: self.history.orderOut_(None),
                     "exit": lambda: self.app.terminate_(None)}
-        if command in handlers:
+        if command.startswith("history-table:"):
+            self.toggle_history_table(command.split(":", 1)[1])
+        elif command in handlers:
             handlers[command]()
 
     def check_credentials(self):
@@ -759,6 +794,8 @@ class MonitorUI:
         self.render_card()
         if self.details is not None:
             self.render_details()
+        if self.history is not None and self.history.isVisible():
+            self.render_history()
 
     def icon_data(self):
         import io
@@ -959,6 +996,230 @@ class MonitorUI:
         max_y = max(0, content.frame().size.height - self.details_scroll.contentView().bounds().size.height)
         self.details_scroll.contentView().scrollToPoint_(F.NSMakePoint(0, min(origin.y, max_y)))
         self.details_scroll.reflectScrolledClipView_(self.details_scroll.contentView())
+
+    # --- History window ------------------------------------------------------
+
+    def show_history(self):
+        if self.history is None:
+            self.history = self.window(
+                f"{self.state.provider_label} · {HISTORY_WINDOW_TITLE}",
+                HISTORY_WIDTH, HISTORY_HEIGHT)
+            self.history.setContentMinSize_(
+                F.NSMakeSize(HISTORY_WIDTH, HISTORY_MIN_HEIGHT))
+        self.render_history()
+        self.activate(self.history)
+
+    def create_history_shell(self):
+        root = T.SurfaceView.alloc().initWithFrame_(self.history.contentView().bounds())
+        root.setAutoresizingMask_(A.NSViewWidthSizable | A.NSViewHeightSizable)
+        root.setWantsLayer_(True)
+        root.fill = "page"
+        self.history.setContentView_(root)
+        self.history_root = root
+        self.history_header = FlippedView.alloc().initWithFrame_(
+            rect(0, 0, HISTORY_WIDTH, HISTORY_HEADER_HEIGHT))
+        root.addSubview_(self.history_header)
+        self.history_title = text_label(
+            self.history_header, HISTORY_WINDOW_TITLE, T.PAGE_INSET, 14,
+            HISTORY_WIDTH - 2 * T.PAGE_INSET, role="title", bold=True)
+        self.history_context = text_label(
+            self.history_header, "", T.PAGE_INSET, 46,
+            HISTORY_WIDTH - 2 * T.PAGE_INSET, role="caption", color=SECONDARY,
+            numeric=True)
+        # One range selector above everything it scopes, pinned in the header
+        # so it stays reachable while the charts scroll.
+        self.history_range_control = A.NSSegmentedControl.alloc().initWithFrame_(
+            rect(T.PAGE_INSET, 72, 320, 28))
+        self.history_range_control.setSegmentCount_(len(RANGE_KEYS))
+        for index, key in enumerate(RANGE_KEYS):
+            self.history_range_control.setLabel_forSegment_(HISTORY_RANGE_LABELS[key], index)
+        self.history_range_control.setSelectedSegment_(RANGE_KEYS.index(self.history_range))
+        self.history_range_control.setTarget_(self.actions)
+        self.history_range_control.setAction_("menuAction:")
+        self.history_range_control.setIdentifier_("history-range")
+        self.history_header.addSubview_(self.history_range_control)
+        self.history_scroll = A.NSScrollView.alloc().initWithFrame_(
+            rect(0, HISTORY_HEADER_HEIGHT, HISTORY_WIDTH,
+                 HISTORY_HEIGHT - HISTORY_HEADER_HEIGHT - HISTORY_FOOTER_HEIGHT))
+        self.history_scroll.setHasVerticalScroller_(True)
+        self.history_scroll.setBorderType_(A.NSNoBorder)
+        self.history_scroll.setDrawsBackground_(False)
+        root.addSubview_(self.history_scroll)
+        self.history_footer = T.SurfaceView.alloc().initWithFrame_(
+            rect(0, HISTORY_HEIGHT - HISTORY_FOOTER_HEIGHT, HISTORY_WIDTH,
+                 HISTORY_FOOTER_HEIGHT))
+        self.history_footer.setWantsLayer_(True)
+        self.history_footer.fill = "page"
+        root.addSubview_(self.history_footer)
+        _stretch(T.surface(self.history_footer, 0, 0, HISTORY_WIDTH,
+                           T.SEAM_HEIGHT, fill="seam"))
+        self.history_refresh_button = button(
+            self.history_footer, "立即刷新", 18, 12, 124, self.actions, "refresh", key="\r")
+        self.history_close_button = button(
+            self.history_footer, "关闭", HISTORY_WIDTH - 126, 12, 108,
+            self.actions, "close-history", key="\x1b")
+        self.history_refresh_button.setNextKeyView_(self.history_close_button)
+        self.history_close_button.setNextKeyView_(self.history_refresh_button)
+        self.layout_history()
+
+    def layout_history(self):
+        if not hasattr(self, "history_root"):
+            return
+        size = self.history_root.bounds().size
+        self.history_header.setFrame_(rect(0, 0, size.width, HISTORY_HEADER_HEIGHT))
+        self.history_scroll.setFrame_(rect(
+            0, HISTORY_HEADER_HEIGHT, size.width,
+            max(0, size.height - HISTORY_HEADER_HEIGHT - HISTORY_FOOTER_HEIGHT)))
+        self.history_footer.setFrame_(
+            rect(0, size.height - HISTORY_FOOTER_HEIGHT, size.width, HISTORY_FOOTER_HEIGHT))
+        self.history_close_button.setFrameOrigin_(F.NSMakePoint(size.width - 126, 12))
+        for view in (self.history_title, self.history_context):
+            view.setFrameSize_(F.NSMakeSize(
+                size.width - 2 * T.PAGE_INSET, view.frame().size.height))
+
+    def render_history(self):
+        if not hasattr(self, "history_root"):
+            self.create_history_shell()
+        self.history.setTitle_(f"{self.state.provider_label} · {HISTORY_WINDOW_TITLE}")
+        self.history_context.setStringValue_(history_context_line(self.state))
+        self.history_refresh_button.setTitle_(
+            "正在刷新…" if self.state.is_refreshing else "立即刷新")
+        self.history_refresh_button.setEnabled_(not self.state.is_refreshing)
+        self.layout_history()
+        self.render_history_document()
+
+    def set_history_range(self, range_key):
+        if range_key not in RANGE_KEYS:
+            return
+        self.history_range = range_key
+        self.render_history_document()
+
+    def toggle_history_table(self, kind):
+        if kind in self.history_table_expanded:
+            self.history_table_expanded.discard(kind)
+        else:
+            self.history_table_expanded.add(kind)
+        self.render_history_document()
+
+    def render_history_document(self):
+        if not hasattr(self, "history_scroll"):
+            return
+        origin = self.history_scroll.contentView().bounds().origin
+        viewport_width = self.history_scroll.contentView().bounds().size.width
+        content_width = max(1, viewport_width - 24)
+        width = max(1, content_width - 48)
+        content = FlippedView.alloc().initWithFrame_(rect(0, 0, content_width, 438))
+        y = 12
+        snapshot = self.state.snapshot
+        # Deterministic between refreshes, honest right edge when stale.
+        now = self.state.last_attempt_at or (
+            snapshot.queried_at if snapshot is not None else None) or datetime.now(UTC)
+        self._history_charts = {}
+        self._history_geometries = {}
+        self._history_table_sources = []
+        if snapshot is None:
+            start_y = y
+            y += T.GUTTER
+            y += label(content, history_empty_text(self.state, "no_history"),
+                       T.PAGE_INSET + T.GUTTER, y, width, role="body") + T.GUTTER
+            card_surface(content, start_y, max(1, content_width - 24),
+                         y - T.GUTTER - start_y, x=T.PAGE_INSET)
+            y += T.GROUP_GAP
+        else:
+            present = {window.kind for window in snapshot.windows}
+            for kind in WINDOW_ORDER:
+                if kind not in present:
+                    continue
+                geometry = build_chart(
+                    self.state.history, kind, now=now, range_key=self.history_range,
+                    plot_width=max(1.0, width - Y_AXIS_WIDTH),
+                    alert_threshold_percent=self.state.alert_threshold_percent)
+                self._history_geometries[kind] = geometry
+                start_y = y
+                y += 8
+                y += label(content, history_chart_title(kind),
+                           T.PAGE_INSET + T.GUTTER, y, width, role="kind", bold=True)
+                y += T.LABEL_GAP
+                if geometry.empty_reason == "no_history":
+                    y += label(content, history_empty_text(self.state, "no_history"),
+                               T.PAGE_INSET + T.GUTTER, y, width,
+                               role="body", color=SECONDARY) + 14
+                else:
+                    chart = ChartView.alloc().initWithFrame_(rect(
+                        T.PAGE_INSET + T.GUTTER, y, width, PLOT_HEIGHT + X_AXIS_HEIGHT))
+                    chart.set_chart(geometry, self.provider_spec.unit_label)
+                    chart.setIdentifier_(f"history-chart-{kind}")
+                    content.addSubview_(chart)
+                    self._history_charts[kind] = chart
+                    y += PLOT_HEIGHT + X_AXIS_HEIGHT
+                    if geometry.empty_reason == "thin":
+                        y += T.LABEL_GAP
+                        y += label(content, history_empty_text(self.state, "thin"),
+                                   T.PAGE_INSET + T.GUTTER, y, width,
+                                   role="caption", color=SECONDARY)
+                    y += T.LABEL_GAP
+                    expanded = kind in self.history_table_expanded
+                    y += button(
+                        content,
+                        HISTORY_TABLE_COLLAPSE if expanded else HISTORY_TABLE_TITLE,
+                        T.PAGE_INSET + T.GUTTER, y, 150, self.actions,
+                        f"history-table:{kind}", bezel="recessed", height=22).frame().size.height
+                    y += T.LABEL_GAP
+                    if expanded:
+                        y += self._history_table(content, geometry, kind, y, width)
+                    y += 10
+                card_surface(content, start_y, max(1, content_width - 24),
+                             y - start_y - 4, x=T.PAGE_INSET)
+                y += 6
+        content.setFrameSize_(F.NSMakeSize(content_width, y + 12))
+        self.history_scroll.setDocumentView_(content)
+        max_y = max(0, content.frame().size.height
+                    - self.history_scroll.contentView().bounds().size.height)
+        self.history_scroll.contentView().scrollToPoint_(
+            F.NSMakePoint(0, min(origin.y, max_y)))
+        self.history_scroll.reflectScrolledClipView_(self.history_scroll.contentView())
+
+    def _history_table(self, content, geometry, kind, y, width):
+        """The chart's table twin: every bucketed sample, newest first, so no
+        value is reachable only through a tooltip. Scrolls instead of capping
+        rows -- a capped table would gate the very values it exists to free."""
+        unit = self.provider_spec.unit_label
+        columns = [("time", HISTORY_TABLE_HEADERS["time"], 110.0),
+                   ("percent", HISTORY_TABLE_HEADERS["percent"], 70.0)]
+        if geometry.has_absolute:
+            columns.append(("absolute", history_absolute_header(unit),
+                            max(80.0, width - 180.0)))
+        row_count = len(geometry.rows)
+        table_height = max(1, row_count) * HISTORY_TABLE_ROW_HEIGHT
+        scroll_height = min(HISTORY_TABLE_MAX_HEIGHT,
+                            table_height + 24)  # + header band
+        scroll = A.NSScrollView.alloc().initWithFrame_(
+            rect(T.PAGE_INSET + T.GUTTER, y, width, scroll_height))
+        scroll.setHasVerticalScroller_(True)
+        scroll.setBorderType_(A.NSNoBorder)
+        scroll.setDrawsBackground_(False)
+        table = A.NSTableView.alloc().initWithFrame_(rect(0, 0, width, table_height))
+        table.setIdentifier_(f"history-table-{kind}")
+        table.setRowHeight_(HISTORY_TABLE_ROW_HEIGHT)
+        table.setUsesAlternatingRowBackgroundColors_(True)
+        header = A.NSTableHeaderView.alloc().initWithFrame_(rect(0, 0, width, 24))
+        table.setHeaderView_(header)
+        for key, title, column_width in columns:
+            column = A.NSTableColumn.alloc().initWithIdentifier_(key)
+            column.setTitle_(title)
+            column.setWidth_(column_width)
+            column.setMinWidth_(40)
+            column.setDataCell_(A.NSTextFieldCell.alloc().init())
+            table.addTableColumn_(column)
+        source = HistoryTableDataSource.alloc().initWithRows_columns_(
+            geometry.rows, tuple(key for key, _, _ in columns))
+        # NSTableView does not retain its data source; the shell keeps it alive
+        # for as long as the document view lives.
+        self._history_table_sources.append(source)
+        table.setDataSource_(source)
+        scroll.setDocumentView_(table)
+        content.addSubview_(scroll)
+        return scroll_height
 
     def create_card(self):
         self.card = CardPanel.alloc().initWithContentRect_styleMask_backing_defer_(
@@ -1984,7 +2245,7 @@ class MonitorUI:
         F.NSNotificationCenter.defaultCenter().removeObserver_(self.actions)
         A.NSWorkspace.sharedWorkspace().notificationCenter().removeObserver_(self.actions)
         A.NSDistributedNotificationCenter.defaultCenter().removeObserver_(self.actions)
-        for window in (self.details, self.settings, self.card):
+        for window in (self.details, self.settings, self.card, self.history):
             if window:
                 window.orderOut_(None)
         if self.status_item:

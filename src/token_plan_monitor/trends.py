@@ -21,8 +21,12 @@ MIN_SPAN_SECONDS = 10 * 60
 #: Rates at or below this count as "no consumption lately", not a prediction.
 MIN_RATE_PERCENT_PER_HOUR = 0.01
 #: Walking back in time, usage should never rise; a rise bigger than this
-#: tolerance means a window reset happened between the two rows.
-_RESET_JUMP_TOLERANCE_PERCENT = 1.0
+#: tolerance means a window reset happened between the two rows. Shared with
+#: history_chart.py so the chart's cycle cuts and the trend's current-cycle
+#: slice can never disagree about what counts as a reset.
+RESET_JUMP_TOLERANCE_PERCENT = 1.0
+#: Legacy private name kept as an alias; internal callers use either.
+_RESET_JUMP_TOLERANCE_PERCENT = RESET_JUMP_TOLERANCE_PERCENT
 
 
 def _slope_per_hour(points: list[tuple[float, float]]) -> float | None:

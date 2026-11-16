@@ -237,3 +237,48 @@ def test_numeric_keeps_the_role_weight():
     semibold just because it contains digits."""
     face = theme.label_font(role="detail", numeric=True).fontName()
     assert "Rounded" in face and "Demi" not in face, face
+
+
+# --- History chart tokens ----------------------------------------------------
+
+@pytest.mark.parametrize("appearance_name", APPEARANCES)
+def test_chart_series_tone_clears_non_text_contrast_on_every_surface(appearance_name):
+    """The 2px series stroke reuses the info tone: a non-text mark needs >=3:1,
+    and the pair already clears the stricter 4.5:1 text rule on both cards."""
+    _, key = APPEARANCES[appearance_name]
+    foreground = theme.TONE_VALUES["info"][0 if key == "light" else 1]
+    for surface, background in theme.SURFACE_VALUES[key].items():
+        assert contrast(foreground, background) >= 3.0, (key, surface)
+        assert contrast(foreground, background) >= 4.5, (key, surface)
+
+
+@pytest.mark.parametrize("appearance_name", APPEARANCES)
+def test_chart_area_is_the_info_hue_at_ten_percent(in_appearance, appearance_name):
+    name, key = APPEARANCES[appearance_name]
+    in_appearance(name)
+    got = channel_values(theme.CHART_AREA)
+    expected = theme.TONE_VALUES["info"][0 if key == "light" else 1]
+    assert tuple(round(v, 2) for v in got[:3]) == tuple(round(v, 2) for v in expected)
+    assert got[3] == pytest.approx(theme.CHART_AREA_ALPHA)
+    assert theme.CHART_AREA_ALPHA == pytest.approx(0.10)
+
+
+@pytest.mark.parametrize("appearance_name", APPEARANCES)
+def test_chart_grid_is_recessive_but_visible(appearance_name):
+    """Grid hairlines sit one step off the surface: visible (>1:1) yet quiet
+    (<3:1) -- decorative chrome, deliberately exempt from the mark rule."""
+    _, key = APPEARANCES[appearance_name]
+    grid = theme.CHART_GRID_VALUES[0 if key == "light" else 1]
+    for surface, background in theme.SURFACE_VALUES[key].items():
+        ratio = contrast(flatten(grid, background), background)
+        assert 1.0 < ratio < 3.0, (key, surface, ratio)
+
+
+def test_chart_tokens_resolve_per_appearance(in_appearance):
+    resolved = {}
+    for name, _ in APPEARANCES.values():
+        in_appearance(name)
+        resolved[name] = (channel_values(theme.CHART_AREA), channel_values(theme.CHART_GRID))
+    light, dark = resolved.values()
+    assert light[0] != dark[0]
+    assert light[1] != dark[1]

@@ -4,7 +4,12 @@ import math
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    # history.py imports this module at runtime, so the reverse edge stays
+    # type-only: the annotation below is a string thanks to future annotations.
+    from .history import HistoryEntry
 
 SCHEMA_VERSION = 1
 WINDOW_ORDER = ("five_hour", "weekly", "monthly")
@@ -459,6 +464,12 @@ class MonitorViewState:
     #: (one history read per cycle, so UI rendering stays IO-free). Empty until
     #: the first successful refresh; retained across failed refreshes.
     trends: tuple[WindowTrend, ...] = ()
+    #: The same history read carried as raw rows so the history window can
+    #: build chart geometry without touching disk. Current account only;
+    #: seeded at startup, refreshed with trends, retained across failed
+    #: refreshes, cleared on account/provider change. The Windows shell
+    #: ignores this field.
+    history: tuple[HistoryEntry, ...] = ()
 
     @property
     def provider_label(self) -> str:

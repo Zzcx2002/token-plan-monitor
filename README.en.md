@@ -48,7 +48,7 @@ A standalone Windows tray / macOS menu-bar utility that shows **how much capacit
 | Desktop card | three columns (5-hour / weekly / monthly), floating card or desktop component | two columns (5-hour / weekly) |
 | Claude Code hookup | yes (bottom of the Settings window) | no |
 | Low-quota alerts | Notification Center, configurable threshold, click opens details | tray toast, configurable threshold |
-| Usage history & trends | yes (trend line in the details window) | history recorded, trend display later |
+| Usage history & trends | yes (trend line in the details window + usage-history window) | history recorded, trend display later |
 | Appearance | follows the system light/dark setting, no in-app switch | light / dark / system, switchable in-app |
 | Credential storage | macOS login keychain | Windows Credential Manager |
 
@@ -113,7 +113,7 @@ Click 保存设置 (Save settings). The program only contacts fixed official HTT
 | Action | Result |
 | --- | --- |
 | Left click the icon | opens the usage details window |
-| Right click / Control-click | menu: remaining and used percentages for all three windows, last successful update time, then 打开用量详情 (Open usage details) / 立即刷新 (Refresh now) / 桌面卡片 (Desktop card) / 显示模式 (Display mode) / 卡片置顶 (Keep on top) / 设置… (Settings…) / 退出 (Quit) |
+| Right click / Control-click | menu: remaining and used percentages for all three windows, last successful update time, then 打开用量详情 (Open usage details) / 用量历史 (Usage history) / 立即刷新 (Refresh now) / 桌面卡片 (Desktop card) / 显示模式 (Display mode) / 卡片置顶 (Keep on top) / 设置… (Settings…) / 退出 (Quit) |
 | Hover | tooltip summary, listing only the 5-hour and weekly windows |
 
 The round badge on the icon changes color and mark with the status: OK, warning (stale or low quota), error, or not configured. Closing a window only hides it — the process keeps running; use 退出 (Quit, ⌘Q) in the menu to end it.
@@ -148,8 +148,11 @@ Single-click the tray icon to open the usage popup (hover for a summary, right-c
 ### Usage history and low-quota alerts
 
 - **History**: every successful query appends one row to `history/<provider>.jsonl` (see the data directory below), containing only the percentages/amounts the API reported plus a one-way fingerprint of the AccessKey ID — never credentials. Unchanged values are recorded at most once per 15 minutes; any change is recorded immediately. Retention is 90 days and 10,000 rows per file with automatic rotation. Switching provider or account does **not** clear history (trends only use the current account and window cycle); delete the file to remove it.
+- **History window (macOS)**: the menu's 用量历史 (Usage history) opens a standalone window with one used-% line/area chart per quota window present in the current snapshot (fixed 0–100 axis). A single range selector at the top (24小时 / 7天 / 30天 / 90天 — 24 hours / 7 / 30 / 90 days, default 24 hours; 90 days is the retention cap) rescopes every chart at once. Each window cycle is its own line segment — **the line breaks at resets, never connects across them** — with a hairline and a 重置 (Reset) caption at the cut (captions drop out automatically when cycles are too dense); the alert threshold is a dashed reference line at the used-% where remaining drops below it. Hovering shows a crosshair and a value-first tooltip (used %, time, and absolutes only when the API reported them); each chart has a 数据列表 (Data list) disclosure table so every bucketed sample is readable without hovering. Only the **current account**'s history is shown; percent-only plans never display fabricated absolutes; thin evidence says so in words. History is seeded from disk at launch and retained across failed refreshes.
 - **Alerts**: the Settings "低额度告警" group toggles system notifications, sets the threshold (1–99%) and optionally reminds on window resets. A window notifies once per downward crossing; recovery above the threshold or a window reset re-arms it, so there is no repeat spam. Restarting the app while still low reminds once more.
 - **Channels**: macOS uses Notification Center (authorization is requested once; if denied it falls back to the legacy notification API, and if that is unavailable the Settings window says so honestly); clicking a notification opens the details window. Low-quota notifications are **time-sensitive**, so they can break through Focus/Do Not Disturb (requires the system "Allow Time-Sensitive Notifications" toggle, on by default). After an ad-hoc-signed rebuild macOS may ask for authorization again. Windows uses a tray toast whose click follows the tray's default action (open the usage popup). Source runs and `--preview` never send system notifications; the Settings window explains why.
+
+<img src="docs/images/history-ark.png" width="330" alt="Usage history window: five-hour cycle lines over 24 hours with reset breaks and the dashed alert threshold (offline preview render, fake data)">
 
 ## Appearance
 
@@ -262,6 +265,14 @@ Credentials live in Windows Credential Manager as `TokenPlanMonitor/volcengine_a
 | --- | --- |
 | 立即刷新 | Refresh now |
 | 打开用量详情 | Open usage details |
+| 用量历史 | Usage history |
+| 24小时 / 7天 / 30天 / 90天 | 24 hours / 7 days / 30 days / 90 days |
+| 已用% | Used % |
+| 告警线 | Alert threshold line |
+| 重置 | Reset |
+| 数据列表 / 收起数据列表 | Data list / Collapse data list |
+| 尚无历史记录：成功查询一次后开始记录。 | No history yet: recording starts after one successful query. |
+| 记录不足，持续使用后此处显示曲线。 | Not enough samples yet; the curve appears with continued use. |
 | 桌面卡片 | Desktop card |
 | 显示模式 | Display mode |
 | 悬浮卡片 / 桌面组件 | Floating card / Desktop component |

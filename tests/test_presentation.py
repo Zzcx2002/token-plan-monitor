@@ -165,3 +165,78 @@ def test_heading_and_labels_follow_the_active_provider():
     assert hover_summary(bailian).startswith("阿里云百炼 · 数据正常\n")
     # The default provider keeps the original branding.
     assert hover_summary(sample_state()).startswith("火山方舟 · 数据正常\n")
+
+
+# --- History window copy -----------------------------------------------------
+
+from token_plan_monitor.history_chart import ChartSample
+from token_plan_monitor.presentation import (
+    HISTORY_EMPTY_NO_DATA,
+    HISTORY_EMPTY_UNCONFIGURED,
+    HISTORY_RANGE_LABELS,
+    HISTORY_THIN,
+    history_absolute_header,
+    history_axis_time,
+    history_chart_accessibility,
+    history_chart_title,
+    history_context_line,
+    history_empty_text,
+    history_table_time,
+    history_threshold_label,
+    history_tooltip_lines,
+)
+
+HISTORY_MOMENT = datetime(2026, 11, 16, 8, 30, tzinfo=UTC)
+
+
+def test_history_tooltip_leads_with_value_and_never_invents_absolutes():
+    reported = ChartSample(HISTORY_MOMENT, 42.3, 5000.0, 2115.0, None)
+    lines = history_tooltip_lines(reported, "AFP")
+    assert lines[0] == "已用 42.3%"
+    assert lines[1] == history_table_time(HISTORY_MOMENT)
+    assert lines[2] == "AFP 2115 / 5000"
+    percent_only = ChartSample(HISTORY_MOMENT, 42.3, None, None, None)
+    lines = history_tooltip_lines(percent_only, "AFP")
+    assert len(lines) == 2
+    assert all("AFP" not in line for line in lines)
+    # A half-reported sample is still percent-only: no fabricated amount.
+    half = ChartSample(HISTORY_MOMENT, 42.3, 5000.0, None, None)
+    assert len(history_tooltip_lines(half, "额度")) == 2
+
+
+def test_history_axis_and_table_time_formats_follow_the_range():
+    assert HISTORY_RANGE_LABELS == {"24h": "24小时", "7d": "7天", "30d": "30天", "90d": "90天"}
+    day_axis = history_axis_time(HISTORY_MOMENT, "24h")
+    assert ":" in day_axis and "-" not in day_axis
+    for key in ("7d", "30d", "90d"):
+        label = history_axis_time(HISTORY_MOMENT, key)
+        assert "-" in label and ":" not in label
+    table = history_table_time(HISTORY_MOMENT)
+    assert "-" in table and ":" in table
+
+
+def test_history_titles_threshold_and_accessibility_copy():
+    assert history_chart_title("five_hour") == "5 小时 · 已用%"
+    assert history_chart_title("weekly") == "每周 · 已用%"
+    assert history_threshold_label(90.0) == "告警线 90%"
+    assert history_absolute_header("AFP") == "绝对值（AFP）"
+    latest = ChartSample(HISTORY_MOMENT, 28.0, None, None, None)
+    label = history_chart_accessibility("five_hour", latest, "24h")
+    assert "5 小时" in label and "24小时" in label and "最新已用 28.0%" in label
+    assert history_chart_accessibility("weekly", None, "7d").endswith("暂无记录")
+
+
+def test_history_empty_and_thin_copy_stay_honest():
+    ok = sample_state()
+    assert history_empty_text(ok, "no_history") == HISTORY_EMPTY_NO_DATA
+    assert history_empty_text(ok, "thin") == HISTORY_THIN
+    unconfigured = MonitorViewState(status="unconfigured")
+    assert history_empty_text(unconfigured, "no_history") == HISTORY_EMPTY_UNCONFIGURED
+    assert history_empty_text(unconfigured, None) == HISTORY_EMPTY_UNCONFIGURED
+
+
+def test_history_context_line_names_provider_plan_account_and_update():
+    line = history_context_line(sample_state())
+    assert line.startswith("火山方舟 · Agent Plan Large · 当前账号 · 更新于 ")
+    bare = MonitorViewState(status="empty", provider="bailian")
+    assert history_context_line(bare) == "阿里云百炼 · 当前账号 · 暂无数据"

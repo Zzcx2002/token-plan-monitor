@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from .alerts import AlertEvent
+from .history_chart import ChartSample
 from .models import MonitorViewState, QuotaWindow, WindowTrend, WINDOW_ORDER
 from .trends import MIN_RATE_PERCENT_PER_HOUR
 
@@ -163,3 +164,89 @@ def trend_line(trend: WindowTrend | None, window: QuotaWindow, unit_label: str) 
     if window.reset_at is not None:
         line += f"（早于 {_short_time(window.reset_at)} 重置）"
     return line
+
+
+# --- History window ----------------------------------------------------------
+# Single copy source for the 用量历史 window, same rules as trend_line: values
+# lead, predictions stay marked, and percent-only plans never gain a
+# fabricated absolute amount.
+
+HISTORY_WINDOW_TITLE = "用量历史"
+HISTORY_RANGE_LABELS = {"24h": "24小时", "7d": "7天", "30d": "30天", "90d": "90天"}
+HISTORY_EMPTY_UNCONFIGURED = "请先连接账号，成功查询后此处展示用量曲线。"
+HISTORY_EMPTY_NO_DATA = "尚无历史记录：成功查询一次后开始记录。"
+HISTORY_THIN = "记录不足，持续使用后此处显示曲线。"
+HISTORY_THRESHOLD_LABEL = "告警线"
+HISTORY_RESET_LABEL = "重置"
+HISTORY_TABLE_TITLE = "数据列表"
+HISTORY_TABLE_COLLAPSE = "收起数据列表"
+HISTORY_TABLE_HEADERS = {"time": "时间", "percent": "已用%", "absolute": "绝对值"}
+
+
+def history_chart_title(kind: str) -> str:
+    return f"{WINDOW_LABELS[kind]} · 已用%"
+
+
+def history_context_line(state: MonitorViewState) -> str:
+    parts = [state.provider_label]
+    if state.snapshot is not None:
+        parts.append(
+            state.snapshot.plan_name
+            or PLAN_LABELS.get(state.snapshot.plan_type, state.snapshot.plan_type)
+        )
+    parts.append("当前账号")
+    updated = state.last_attempt_at or (
+        state.snapshot.queried_at if state.snapshot is not None else None
+    )
+    parts.append(f"更新于 {format_datetime(updated)}" if updated else status_text(state))
+    return " · ".join(parts)
+
+
+def history_empty_text(state: MonitorViewState, empty_reason: str | None) -> str:
+    if state.status == "unconfigured":
+        return HISTORY_EMPTY_UNCONFIGURED
+    if empty_reason == "thin":
+        return HISTORY_THIN
+    return HISTORY_EMPTY_NO_DATA
+
+
+def history_axis_time(value: datetime, range_key: str) -> str:
+    local = value.astimezone()
+    return local.strftime("%H:%M" if range_key == "24h" else "%m-%d")
+
+
+def history_table_time(value: datetime) -> str:
+    return value.astimezone().strftime("%m-%d %H:%M")
+
+
+def history_threshold_label(used_percent: float) -> str:
+    return f"{HISTORY_THRESHOLD_LABEL} {used_percent:.0f}%"
+
+
+def history_absolute_header(unit_label: str) -> str:
+    return f"{HISTORY_TABLE_HEADERS['absolute']}（{unit_label}）"
+
+
+def history_tooltip_lines(sample: ChartSample, unit_label: str) -> tuple[str, ...]:
+    """Value leads, label follows; the absolute line appears ONLY when this
+    sample reported both quota and used -- never a fabricated amount."""
+    lines = [
+        f"已用 {sample.used_percent:.1f}%",
+        history_table_time(sample.queried_at),
+    ]
+    if sample.quota is not None and sample.used is not None:
+        lines.append(
+            f"{unit_label} {format_number(sample.used)} / {format_number(sample.quota)}"
+        )
+    return tuple(lines)
+
+
+def history_chart_accessibility(
+    kind: str, latest: ChartSample | None, range_key: str
+) -> str:
+    label = (
+        f"{WINDOW_LABELS[kind]}已用百分比曲线，范围{HISTORY_RANGE_LABELS[range_key]}"
+    )
+    if latest is None:
+        return label + "，暂无记录"
+    return label + f"，最新已用 {latest.used_percent:.1f}%"

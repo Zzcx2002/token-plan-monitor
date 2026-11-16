@@ -27,7 +27,10 @@ whole look is retunable here. Three rules the rest of the module obeys:
    to, so the quiet gray is a pair too.
 
 Nothing here draws: no ``drawRect_``, no ``NSBezierPath``. Shape is CALayer
-geometry on plain views, keeping the shell's existing all-native-controls rule.
+geometry on plain views -- including ``CAShapeLayer`` paths built from
+``CGPath`` for the history charts (macos/chart.py), which are declarative
+layer geometry, not custom drawing. The no-``drawRect_``/no-``NSBezierPath``
+rule still holds everywhere, keeping the shell's all-native-controls rule.
 """
 from __future__ import annotations
 
@@ -149,6 +152,24 @@ _TONES = {
                   A.NSColor.colorWithSRGBRed_green_blue_alpha_(*dark, 1))
     for role, (light, dark) in TONE_VALUES.items()
 }
+
+# --- History chart tokens ------------------------------------------------------
+# The series stroke reuses tone("info") -- no new registration: that pair
+# already clears 4.5:1 as text on both cards, which implies the >=3:1 a 2px
+# non-text mark needs. The area is the same hue as a 10% wash (never a
+# saturated block); the grid is deliberately recessive (~1.3:1 against the
+# card -- decorative chrome, exempt from the 3:1 mark rule). Plain triples
+# stay here so tests/test_macos_theme.py can verify them offline.
+CHART_AREA_ALPHA = 0.10
+CHART_GRID_VALUES = ((0.0, 0.0, 0.0, 0.10), (1.0, 1.0, 1.0, 0.14))
+CHART_AREA = dynamic(
+    "chart-area",
+    A.NSColor.colorWithSRGBRed_green_blue_alpha_(*TONE_VALUES["info"][0], CHART_AREA_ALPHA),
+    A.NSColor.colorWithSRGBRed_green_blue_alpha_(*TONE_VALUES["info"][1], CHART_AREA_ALPHA))
+CHART_GRID = dynamic(
+    "chart-grid",
+    A.NSColor.colorWithSRGBRed_green_blue_alpha_(*CHART_GRID_VALUES[0]),
+    A.NSColor.colorWithSRGBRed_green_blue_alpha_(*CHART_GRID_VALUES[1]))
 
 _WEIGHTS = {
     "regular": A.NSFontWeightRegular,

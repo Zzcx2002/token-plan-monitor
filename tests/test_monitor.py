@@ -433,6 +433,130 @@ def test_trends_come_from_history_and_survive_a_failed_refresh(tmp_path):
         monitor.stop()
 
 
+def test_history_rows_ride_the_state_filter_account_and_survive_failure(tmp_path):
+    storage = configured_storage(tmp_path, "AKLT-a")
+    account = account_fingerprint("AKLT-a")
+    other = account_fingerprint("AKLT-b")
+    base = datetime(2026, 11, 2, tzinfo=UTC)  # snapshot()'s queried_at
+    for acct, minutes in ((account, -30), (other, -20), (account, -15)):
+        storage.append_history(
+            HistoryEntry(
+                queried_at=base + timedelta(minutes=minutes),
+                account=acct,
+                plan_type="agent_plan",
+                windows=(QuotaWindow(kind="five_hour", used_percent=15),),
+            ),
+            "volcengine",
+        )
+
+    class FailAfterFirst:
+        calls = 0
+
+        def query(self):
+            self.calls += 1
+            if self.calls > 1:
+                raise NetworkError("网络暂时不可用")
+            return snapshot()
+
+    client = FailAfterFirst()
+    monitor = UsageMonitor(storage, client_factory=lambda *_: client)
+    try:
+        monitor.start()
+        wait_for(lambda: monitor.get_state().status == "ok")
+        rows = monitor.get_state().history
+        # Two seeded rows for this account plus the refresh's own append;
+        # the other account's row never rides along.
+        assert len(rows) == 3
+        assert all(entry.account == account for entry in rows)
+        monitor.request_refresh()
+        wait_for(lambda: monitor.get_state().status == "stale")
+        assert monitor.get_state().history == rows
+        monitor.update_configuration(Settings(), Credentials("AKLT-b", "secret"))
+        assert monitor.get_state().history == ()
+    finally:
+        monitor.stop()
+
+
+def test_history_is_seeded_at_startup_before_the_first_refresh(tmp_path):
+    storage = configured_storage(tmp_path, "AKLT-a")
+    storage.save_snapshot(snapshot())
+    account = account_fingerprint("AKLT-a")
+    storage.append_history(
+        HistoryEntry(
+            queried_at=datetime(2026, 11, 1, tzinfo=UTC),
+            account=account,
+            plan_type="agent_plan",
+            windows=(QuotaWindow(kind="five_hour", used_percent=10),),
+        ),
+        "volcengine",
+    )
+    release = threading.Event()
+
+    class BlockingClient:
+        def query(self):
+            if not release.wait(2):
+                raise TimeoutError("test release failed")
+            return snapshot()
+
+    monitor = UsageMonitor(storage, client_factory=lambda *_: BlockingClient())
+    try:
+        monitor.start()
+        state = monitor.get_state()
+        # Cached snapshot + seeded history: the history window has data at
+        # revision 0, without waiting for the blocked first refresh.
+        assert state.status == "ok"
+        assert len(state.history) == 1
+        assert state.history[0].account == account
+    finally:
+        release.set()
+        monitor.stop()
+
+
+def test_unconfigured_startup_carries_no_history(tmp_path):
+    storage = configured_storage(tmp_path, ak=None)
+    storage.append_history(
+        HistoryEntry(
+            queried_at=datetime(2026, 11, 1, tzinfo=UTC),
+            account="a1b2c3d4e5f6",
+            plan_type="agent_plan",
+            windows=(QuotaWindow(kind="five_hour", used_percent=10),),
+        ),
+        "volcengine",
+    )
+    monitor = UsageMonitor(
+        storage, client_factory=lambda *_: StaticClient(snapshot())
+    )
+    try:
+        monitor.start()
+        assert monitor.get_state().status == "unconfigured"
+        assert monitor.get_state().history == ()
+    finally:
+        monitor.stop()
+
+
+def test_history_read_failure_blanks_rows_but_not_the_refresh(tmp_path):
+    class BrokenReadStorage(Storage):
+        def load_history(self, provider, account=None, limit=2000):
+            raise CacheError("disk on fire")
+
+    storage = BrokenReadStorage(tmp_path, FakeKeyring())
+    storage.save_settings(Settings())
+    storage.save_credentials(Credentials("AKLT-a", "secret"))
+    monitor = UsageMonitor(
+        storage, client_factory=lambda *_: StaticClient(snapshot())
+    )
+    try:
+        monitor.start()
+        wait_for(lambda: monitor.get_state().status == "ok")
+        state = monitor.get_state()
+        assert state.snapshot is not None
+        assert state.history == ()
+        # Like a failed append, a failed read is logged, never a UI warning.
+        assert state.error is None
+    finally:
+        monitor.stop()
+
+
 def test_alert_threshold_reaches_every_view_state(tmp_path):
     storage = configured_storage(tmp_path)
     storage.save_settings(Settings(alert=AlertSettings(threshold_percent=30)))

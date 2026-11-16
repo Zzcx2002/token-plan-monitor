@@ -16,7 +16,7 @@ from .models import (
     Settings,
 )
 from .alerts import AlertEvent, evaluate
-from .history import account_fingerprint, entry_from_snapshot
+from .history import HISTORY_MAX_ROWS, account_fingerprint, entry_from_snapshot
 from .providers import create_client
 from .storage import Storage
 from .trends import trends_for_snapshot
@@ -70,6 +70,20 @@ class UsageMonitor:
                 if self._credentials is None
                 else "ok" if snapshot is not None else "empty"
             )
+            # Seed history from disk so a launch with a cached snapshot shows
+            # the history window immediately instead of waiting for the first
+            # refresh. One bounded read, consistent with the settings/snapshot/
+            # keychain reads start() already does on this thread.
+            history: tuple = ()
+            if self._credentials is not None:
+                try:
+                    history = tuple(self.storage.load_history(
+                        provider,
+                        account_fingerprint(self._credentials.access_key_id),
+                        limit=HISTORY_MAX_ROWS,
+                    ))
+                except CacheError as exc:
+                    logger.warning("Could not seed history at startup: %s", exc.message)
             self._state = MonitorViewState(
                 status=status,
                 snapshot=snapshot,
@@ -78,6 +92,7 @@ class UsageMonitor:
                 revision=0,
                 provider=provider,
                 alert_threshold_percent=self._settings.alert.threshold_percent,
+                history=history,
             )
             self._pending = self._credentials is not None
             if self._pending:
@@ -128,6 +143,7 @@ class UsageMonitor:
                 provider=settings.provider,
                 alert_threshold_percent=settings.alert.threshold_percent,
                 trends=() if account_changed else self._state.trends,
+                history=() if account_changed else self._state.history,
             )
             self._pending = True
             self._next_run = None
@@ -193,6 +209,7 @@ class UsageMonitor:
 
             cache_warning: str | None = None
             trends: tuple = ()
+            history_rows: tuple = ()
             if snapshot is not None:
                 with self._lock:
                     current = revision == self._state.revision
@@ -211,11 +228,18 @@ class UsageMonitor:
                         )
                     except CacheError as exc:
                         logger.warning("Could not append history: %s", exc.message)
-                    # One history read per successful refresh keeps trends in
-                    # the state, so UI rendering never touches the disk.
+                    # One history read per successful refresh keeps trends AND
+                    # the raw rows in the state, so UI rendering never touches
+                    # the disk. The full retention cap (not the 2000-row
+                    # default) because a 90-day chart at the 15-minute cadence
+                    # needs ~8640 rows; _read_history parses the whole file
+                    # regardless, so the larger limit costs no extra IO.
                     try:
-                        history = self.storage.load_history(settings.provider, account)
+                        history = self.storage.load_history(
+                            settings.provider, account, limit=HISTORY_MAX_ROWS
+                        )
                         trends = trends_for_snapshot(history, snapshot, self.clock())
+                        history_rows = tuple(history)
                     except CacheError as exc:
                         logger.warning("Could not load history for trends: %s", exc.message)
 
@@ -237,6 +261,7 @@ class UsageMonitor:
                         provider=settings.provider,
                         alert_threshold_percent=settings.alert.threshold_percent,
                         trends=trends,
+                        history=history_rows,
                     )
                     events, self._alert_armed = evaluate(
                         previous_snapshot, snapshot, settings.alert,
@@ -267,9 +292,10 @@ class UsageMonitor:
                         revision=revision,
                         provider=settings.provider,
                         alert_threshold_percent=settings.alert.threshold_percent,
-                        # Like the retained snapshot, trends survive a failed
-                        # refresh instead of blanking out.
+                        # Like the retained snapshot, trends and history rows
+                        # survive a failed refresh instead of blanking out.
                         trends=self._state.trends,
+                        history=self._state.history,
                     )
                 if self._credentials is None:
                     self._next_run = None
