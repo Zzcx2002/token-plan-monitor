@@ -29,7 +29,7 @@ A standalone Windows tray / macOS menu-bar utility that shows **how much capacit
 
 ## What it does / what it does not
 
-**Does**: queries the official APIs on a schedule (every 15 minutes by default, configurable 5–1440); shows the remaining percentage, a progress bar and the reset time for each window on hover and on click; keeps a draggable, resizable card on your desktop; shows absolute amounts when the provider reports them (AFP for Volcengine Ark Agent Plan, quota units for Model Studio Coding Plan); retains the last successful result when a query fails and labels it as stale.
+**Does**: queries the official APIs on a schedule (every 15 minutes by default, configurable 5–1440); shows the remaining percentage, a progress bar and the reset time for each window on hover and on click; keeps a draggable, resizable card on your desktop; shows absolute amounts when the provider reports them (AFP for Volcengine Ark Agent Plan, quota units for Model Studio Coding Plan); retains the last successful result when a query fails and labels it as stale; appends every successful query to a local history and estimates consumption rate and exhaustion time from it; sends one system notification (macOS Notification Center / Windows tray toast) when any window's remaining drops below a configurable threshold (default 10%), re-arming after a reset or recovery.
 
 **Does not**:
 
@@ -47,6 +47,8 @@ A standalone Windows tray / macOS menu-bar utility that shows **how much capacit
 | Providers | Volcengine Ark + Model Studio, switchable in Settings | Volcengine Ark only |
 | Desktop card | three columns (5-hour / weekly / monthly), floating card or desktop component | two columns (5-hour / weekly) |
 | Claude Code hookup | yes (bottom of the Settings window) | no |
+| Low-quota alerts | Notification Center, configurable threshold, click opens details | tray toast, configurable threshold |
+| Usage history & trends | yes (trend line in the details window) | history recorded, trend display later |
 | Appearance | follows the system light/dark setting, no in-app switch | light / dark / system, switchable in-app |
 | Credential storage | macOS login keychain | Windows Credential Manager |
 
@@ -127,7 +129,7 @@ The round badge on the icon changes color and mark with the status: OK, warning 
 | Round arrow, bottom right | refresh now; disabled while refreshing. Only the visible button area responds; the transparent outer ring still belongs to the card |
 | Esc | hides the card, and it stays hidden after restart |
 
-The card shows remaining capacity for 5-hour / weekly / monthly in three columns, marks the lowest one (ties included), and shows 额度偏低 (Low quota) when anything drops below 10%. Position, size, visibility and display mode are restored after restart. The card is placed against each display's available area, supports negative coordinates, self-corrects when a screen disappears, and never takes over another app's full-screen space.
+The card shows remaining capacity for 5-hour / weekly / monthly in three columns, marks the lowest one (ties included), and shows 额度偏低 (Low quota) when anything drops below the alert threshold (default 10%, configurable in Settings). Position, size, visibility and display mode are restored after restart. The card is placed against each display's available area, supports negative coordinates, self-corrects when a screen disappears, and never takes over another app's full-screen space.
 
 **显示模式 (Display mode)** switches between **悬浮卡片 (Floating card)** and **桌面组件 (Desktop component)**. A desktop component sits at the desktop layer on all normal Spaces: other app windows can cover it and it is hidden inside full-screen apps, but it still drags, resizes and refreshes. 卡片置顶 is unavailable in that mode; switching back restores your previous top-most choice. Quitting the app removes the component.
 
@@ -137,9 +139,17 @@ The card shows remaining capacity for 5-hour / weekly / monthly in three columns
 
 Numbers and progress bars always mean **remaining** capacity; the used percentage is secondary. Plans with absolute amounts show them too (AFP for Volcengine Ark, quota units for Model Studio Coding Plan; Model Studio Token Plan reports percentages only). The header holds status, last successful update and the error reason, the footer action bar stays pinned, and the middle section scrolls and re-flows with window width. Scroll position and keyboard focus survive background refreshes and resizing.
 
+Below each reset time there is a trend caption: consumption rate (about x%/hour, plus an absolute rate when the plan reports one) and an estimated exhaustion time computed from the local history; exhaustion before the reset is warning-colored. Thin evidence says "记录不足" (not enough records yet), idle consumption says "近期无消耗" (no consumption lately). Every prediction is marked as an estimate, and percent-only plans never gain invented absolute numbers.
+
 ### Windows
 
 Single-click the tray icon to open the usage popup (hover for a summary, right-click for the three-window detail and actions); 展开详情 expands it to show used percentages and absolute amounts. On the desktop card, a **single click opens the popup** (a drag never misfires), hover shows the summary, right click shows the menu, and edges and corners resize. The card starts top-most; you can un-pin or hide it and restore it from the tray menu 桌面卡片.
+
+### Usage history and low-quota alerts
+
+- **History**: every successful query appends one row to `history/<provider>.jsonl` (see the data directory below), containing only the percentages/amounts the API reported plus a one-way fingerprint of the AccessKey ID — never credentials. Unchanged values are recorded at most once per 15 minutes; any change is recorded immediately. Retention is 90 days and 10,000 rows per file with automatic rotation. Switching provider or account does **not** clear history (trends only use the current account and window cycle); delete the file to remove it.
+- **Alerts**: the Settings "低额度告警" group toggles system notifications, sets the threshold (1–99%) and optionally reminds on window resets. A window notifies once per downward crossing; recovery above the threshold or a window reset re-arms it, so there is no repeat spam. Restarting the app while still low reminds once more.
+- **Channels**: macOS uses Notification Center (authorization is requested once; if denied it falls back to the legacy notification API, and if that is unavailable the Settings window says so honestly); clicking a notification opens the details window. After an ad-hoc-signed rebuild macOS may ask for authorization again. Windows uses a tray toast whose click follows the tray's default action (open the usage popup). Source runs and `--preview` never send system notifications; the Settings window explains why.
 
 ## Appearance
 
@@ -192,9 +202,10 @@ Switching back and forth between providers remembers each one's model and Base U
 
 ```text
 ~/Library/Application Support/TokenPlanMonitor/
-  config.json         provider, region, refresh interval
+  config.json         provider, region, refresh interval, alert settings
   claude.json         Claude Code choices (model / base URL, never the key)
   snapshot.json       last successful usage cache
+  history/<provider>.jsonl   append-only usage history (percentages/amounts + AK fingerprint, 90-day / 10k-row rotation)
   widget.json         card position, size, visibility, top-most state, display mode
   instance-*.lock     single-instance lock; the file survives exit, the OS releases the lock
 ~/Library/Logs/TokenPlanMonitor/app.log     sanitized run log
@@ -210,14 +221,15 @@ AK/SK go only into the macOS login keychain under service `TokenPlanMonitor`, wi
 
 Switching providers never reads or overwrites the other provider's credentials, and control-plane AK/SK are never reused as inference keys. Denying keychain access surfaces an error — it does **not** fall back to a plaintext file.
 
-To remove everything: delete exactly the accounts above in Keychain Access, delete the data and log directories above, and delete what the hookup wrote under `~/.claude` — `settings.json` with its plaintext key and every `settings.json.bak.*` copy of it. Changing provider or credentials clears the old snapshot; nothing is migrated automatically from Windows.
+To remove everything: delete exactly the accounts above in Keychain Access, delete the data and log directories above, and delete what the hookup wrote under `~/.claude` — `settings.json` with its plaintext key and every `settings.json.bak.*` copy of it. Changing provider or credentials clears the old snapshot (history is kept per provider; delete the matching file under `history/` to remove it); nothing is migrated automatically from Windows.
 
 ### Windows
 
 ```text
 <project dir>\
-  data\config.json              provider, region, refresh interval, other non-secret config
+  data\config.json              provider, region, refresh interval, alert settings, other non-secret config
   data\snapshot.json            last successful usage cache
+  data\history\<provider>.jsonl append-only usage history (percentages/amounts + AK fingerprint, 90-day / 10k-row rotation)
   data\widget.json              card position, visibility, top-most state
   data\window_geometry.json     saved sizes for each window and the card
   data\appearance.json          light / dark / system
@@ -231,7 +243,7 @@ Credentials live in Windows Credential Manager as `TokenPlanMonitor/volcengine_a
 
 - Only fixed official HTTPS endpoints are contacted (Volcengine OpenAPI, Alibaba Cloud Model Studio and the Bailian console gateway). No custom scripts, no arbitrary request URLs, no telemetry.
 - Secrets go only into the OS credential store — never into config files, caches or logs. The Model Studio console access token is memory-only.
-- Usage data is displayed and cached locally only; nothing is uploaded to any third party.
+- Usage data is displayed and cached locally only; nothing is uploaded to any third party. History files contain only the percentages/amounts the API reported and a one-way fingerprint of the AccessKey ID (first 12 hex chars of sha256) — no Secret, no inference key, nothing credential-recoverable.
 - The app needs no write access for reading usage — the one exception is the Claude Code write, which happens only when you click it.
 
 ## FAQ

@@ -4,6 +4,20 @@
 
 开发/验证机器：Apple Silicon，macOS 26.6（25G72）。构建使用 python.org Python 3.13.9 framework、py2app 0.28.10；Python 及依赖都在项目隔离目录，未安装到系统 Python。依赖版本见 `requirements-macos-build.txt`。
 
+## v0.2.0 发布记录（2026-11-16，本地验证；尚未发布）
+
+分支 `release/v0.1.0`。功能提交五连：`ce41476`（可配置阈值收敛）、`bcb1d23`（追加式历史）、`94eb6ed`（趋势与耗尽预测）、`d39360b`（阈值告警 + macOS 系统通知）、`4bd796a`（Windows 告警设置与托盘通知）；bump 提交 `18d20bc`。标签与 GitHub Release 待发布时补。
+
+- 功能：① **可配置低额度阈值**——`AlertSettings`（开关 / 1–99 阈值 / 重置提醒）以加法字段进 `Settings`，**全程保持 `SCHEMA_VERSION = 1`**，旧 config.json 无 alert 键时逐字段默认、绝不触发静默重置（有专项回归测试）；阈值随 `MonitorViewState` 下发，presentation / macOS 状态行 / Windows 弹窗 / 桌面卡片四处硬编码 10% 全部收敛。② **追加式历史**——`history/<provider>.jsonl`，行内独立版本号、坏行跳过；值不变 15 分钟去重、有变化即记；90 天 + 1 万行双上限原子轮转；半行崩溃补换行；只含百分比/额度与 AK 的 sha256 前 12 位指纹；切换服务商/账号不清历史；写失败仅日志、不影响刷新。③ **趋势与耗尽预测**——纯函数周期切分（reset_at 变化 + 用量回跳双信号）、最小二乘速率、预计耗尽时刻与重置比较；详情窗每窗口一行 caption，耗尽早于重置才用警告色；样本不足/无消耗如实文案；百分比-only 套餐不产生绝对数字；失败刷新保留旧趋势。④ **阈值告警**——下穿触发一次、回升/重置重新武装、首查即低提醒一次、可选重置提醒；armed 内存态、换账号清空；monitor 注入 notifier，事件附趋势上下文。macOS 走 UNUserNotificationCenter（**bundle 守卫**：裸进程无 bundle proxy 会 crash，源码/preview 报 unavailable），denied 降级 NSUserNotification，再不可用设置窗如实说明；同窗口同标识替换不堆叠；点击回主线程开详情。新增依赖 `pyobjc-framework-UserNotifications`（pyproject / py2app includes / pinned build requirements / 第三方声明共用 PyObjC 许可证）。⑤ **Windows**——设置窗告警 panel + 字段级校验，托盘 `icon.notify` toast；趋势展示后置。
+- 构建环境：本机 `.venv` 已被重建为 uv standalone 解释器（构建 guard 正确拒绝），按 v0.1.2 惯例重建 `.venv-build/`（python.org Python 3.13.12 framework + pinned requirements + editable 安装），不影响开发用 `.venv`。
+- 离线 pytest：**372 passed、3 skipped**（新增 `tests/test_history.py`、`test_trends.py`、`test_alerts.py`，及 storage/monitor/presentation/macos 的兼容、阈值、趋势、告警端到端扩展）。原生 AppKit smoke 通过：新增 trend / trend_percent_only / alert_low 假状态（趋势走真实纯函数）、趋势文案与百分比-only 无绝对值断言、阈值 30 时 25% 剩余呈警告色、告警组控件/非法阈值聚焦/跨 provider 携带断言。
+- **bundle smoke 抓到一个真 bug**：首版通知模块用了不存在的 selector `getAuthorizationStatusWithCompletionHandler_`，包内初始化 UN 抛 AttributeError 静默降级 legacy；裸进程探针因守卫提前返回没暴露它。改为 `getNotificationSettingsWithCompletionHandler_`（授权状态在 settings 对象里）后重建复验。同时 smoke 改用 stub notifier——裸预览与包内 smoke 都**不会**弹真实授权弹窗（真实授权/投递走下方手工清单）。
+- 发布前产物验证：Info.plist `0.2.0` / build `5`；110 个 arm64 二进制、deployment target ≤14、许可证入包、ad-hoc 签名（`Signature=adhoc`、`TeamIdentifier=not set`）随构建全过；包内 `--smoke-test` 通过且**无 UN 降级日志**（MonitorUI 构造真实 MacNotifier，证明包内 UN 初始化成功）；`hdiutil verify` VALID；本地 DMG `TokenPlanMonitor-0.2.0-arm64.dmg`（34238952 字节）sha256 `fbab6d69fdafcf14…`。
+- 兼容性：v0.1.x 写出的 config.json / snapshot.json 喂新代码不重置、正常加载（离线测试覆盖）；历史与告警均为加法，旧版应用读新 config 会忽略 alert 键。
+- `README.md` / `README.en.md` 已增补历史/趋势/告警功能、数据目录与隐私边界说明；**下载与校验链接仍指向 v0.1.3**，待 v0.2.0 发布后更新并做发布后复验。
+
+仍未实机验证（发布前手工清单）：① 通知全链路—— bundle 首启授权弹窗→允许→调高阈值触发低额度通知→点击通知打开详情→系统设置拒绝后验证 legacy 降级与设置窗提示→重构建后授权状态复查；② 真实凭据下历史落盘/去重/轮转与趋势文案实机核对（或 `TOKEN_PLAN_MONITOR_LIVE=1`）；③ Windows 真机告警 panel 保存与托盘 toast（`tests/gui_material_smoke.py` 已扩展断言，需 Windows 跑）；④ 沿用历版清单：干净 macOS 14 与浏览器下载 Gatekeeper 流程、VoiceOver、多屏/Spaces、真实 `~/.claude/settings.json` 端到端写入。
+
 ## v0.1.3 发布记录（2026-11-16）
 
 分支 `release/v0.1.0`，功能提交 `0ee3107`、bump 提交 `71378c1`，附注标签 `v0.1.3`（指向 `71378c1`），GitHub Release id `446622546`。

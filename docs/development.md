@@ -14,8 +14,8 @@
 
 ## 环境与目录
 
-- 共享核心在 `src/token_plan_monitor/`：`models.py`（数据契约与输入校验）、`providers.py`（服务商注册表、凭据 account、Claude Code 元数据）、`storage.py`（数据目录与钥匙串/凭据管理器）、`monitor.py`（后台刷新调度）、`presentation.py`（屏上文案）、`claude_code.py`（写入 Claude 配置）、`model_catalog.py`（在线模型清单：推导 compatible-mode 地址、过滤对话模型、与内置清单合并）、`volcengine.py` / `bailian.py` / 两个 signer。
-- macOS 壳在 `src/token_plan_monitor/macos/`：`ui.py`（菜单栏、详情窗口、桌面卡片、设置窗口）、`layout.py`（纯规则：校验、恢复动作、最低项标记、几何）、`theme.py`（动态色、字阶、材质）、`preview.py`（离线预览与 `--smoke-test`）。
+- 共享核心在 `src/token_plan_monitor/`：`models.py`（数据契约与输入校验）、`providers.py`（服务商注册表、凭据 account、Claude Code 元数据）、`storage.py`（数据目录与钥匙串/凭据管理器、历史 JSONL 读写与轮转）、`monitor.py`（后台刷新调度、历史追加、趋势计算、告警评估与 notifier 注入）、`presentation.py`（屏上文案与通知文案）、`history.py`（历史行契约、采样去重、保留裁剪，纯规则）、`trends.py`（周期切分、最小二乘速率、耗尽预测，纯规则）、`alerts.py`（下穿触发/重新武装/重置提醒，纯规则）、`claude_code.py`（写入 Claude 配置）、`model_catalog.py`（在线模型清单：推导 compatible-mode 地址、过滤对话模型、与内置清单合并）、`volcengine.py` / `bailian.py` / 两个 signer。
+- macOS 壳在 `src/token_plan_monitor/macos/`：`ui.py`（菜单栏、详情窗口、桌面卡片、设置窗口）、`layout.py`（纯规则：校验、恢复动作、最低项标记、几何）、`theme.py`（动态色、字阶、材质）、`notifications.py`（UNUserNotificationCenter + bundle 守卫 + NSUserNotification 降级）、`preview.py`（离线预览与 `--smoke-test`）。
 - Windows 壳在 `src/token_plan_monitor/ui.py`、`desktop_widget.py`、`ui_graphics.py`、`window_chrome.py`、`window_geometry.py`、`appearance.py`。
 - 数据目录：macOS 用 `~/Library/Application Support/TokenPlanMonitor/` 与 `~/Library/Logs/TokenPlanMonitor/`；其他平台用项目内 `data/` 和 `logs/`（两者都在 `.gitignore` 里）。
 - `artifacts/`、`build/`、`dist/` 同样被忽略，都是可随时重生的输出目录。
@@ -36,6 +36,8 @@ python3.13 -m venv .venv
 ```sh
 .venv/bin/python scripts/build_macos.py
 ```
+
+构建脚本要求 framework Python（guard 会拒绝 uv 便携解释器）。若开发用 `.venv` 不是 framework 构建，另建 `.venv-build/`（已在 `.gitignore`）：`/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13 -m venv .venv-build`，装 `requirements-macos-build.txt` 与 `--no-deps -e .` 后用 `.venv-build/bin/python scripts/build_macos.py`。
 
 脚本替换生成的 `build/`、`dist/TokenPlanMonitor.app` 和 DMG 暂存目录，产出独立应用与 DMG。构建过程会检查所有 Mach-O 文件是 arm64、最低系统版本不高于 14、动态链接不依赖开发机路径，并验证项目及第三方许可证资源已入包、本地 ad-hoc 签名有效。Bundle ID 固定为 `com.zzcx2002.tokenplanmonitor`，应用数据不写进 `.app` 内。
 
