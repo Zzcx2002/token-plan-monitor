@@ -1,13 +1,13 @@
 """Pure helpers shared by the native shell and offline tests."""
 from __future__ import annotations
 
-import re
-
 from ..claude_code import ClaudeApplyRequest, normalize_base_url
 from ..models import (
     CARD_MAX_DIMENSION,
     CARD_MIN_HEIGHT,
     CARD_MIN_WIDTH,
+    HEAVY_ID_MARKS,
+    MODEL_ID_PATTERN,
     ConfigurationError,
     Credentials,
     MonitorViewState,
@@ -75,27 +75,21 @@ def validate_configuration(provider: str, ak: str, sk: str, region: str, interva
     return settings, credentials
 
 
-MODEL_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/+\-]{0,199}")
-
-#: Substrings that mark a free-form model id as heavy when it is not in the
-#: provider catalogue and carries no `lightweight` flag. Advisory only -- it
-#: feeds the warning copy, it never blocks a write.
-_HEAVY_ID_MARKS = ("-max", "-pro", "preview")
-
-
 def _looks_lightweight(model: str, spec) -> bool:
     options = {option.id: option for option in spec.claude_models}
     option = options.get(model)
     if option is not None:
         return option.lightweight
-    return not any(mark in model.lower() for mark in _HEAVY_ID_MARKS)
+    return not any(mark in model.lower() for mark in HEAVY_ID_MARKS)
 
 
 def validate_claude_configuration(provider: str, region: str, popup_model: str,
                                   custom_model: str, base_url_text: str,
                                   api_key_text: str,
                                   existing_key: str | None,
-                                  popup_auto: str = "", custom_auto: str = "") -> ClaudeApplyRequest:
+                                  popup_auto: str = "", custom_auto: str = "",
+                                  popup_subagent: str = "",
+                                  custom_subagent: str = "") -> ClaudeApplyRequest:
     """Turn the Claude section's raw text into an apply request, field-tagged.
 
     Mirrors `validate_configuration`: an empty key reuses what is already in the
@@ -139,6 +133,13 @@ def validate_claude_configuration(provider: str, region: str, popup_model: str,
     if auto_model and MODEL_ID_PATTERN.fullmatch(auto_model) is None:
         raise FieldValidationError("auto_model", "模型 ID 只能包含字母、数字和 . _ : / + -")
 
+    # Optional explicit subagent model; empty keeps the tier preserve/backfill
+    # rule. Custom beats popup, exactly like the pairs above. No lightweight
+    # warning here -- that concern is specific to the auto mode classifier.
+    subagent_model = (custom_subagent.strip() or popup_subagent.strip())
+    if subagent_model and MODEL_ID_PATTERN.fullmatch(subagent_model) is None:
+        raise FieldValidationError("subagent_model", "模型 ID 只能包含字母、数字和 . _ : / + -")
+
     return ClaudeApplyRequest(
         provider=provider,
         base_url=normalized,
@@ -149,11 +150,13 @@ def validate_claude_configuration(provider: str, region: str, popup_model: str,
         auto_mode_model=auto_model,
         auto_mode_model_lightweight=(
             _looks_lightweight(auto_model, spec) if auto_model else True),
+        subagent_model=subagent_model,
     )
 
 
 def resolve_claude_seed(spec, draft, prefs, live_base_url="", live_model="",
-                        live_auto_model=""):
+                        live_auto_model="", model_options=None,
+                        live_subagent_model=""):
     """Initial values: draft → **live config** → saved prefs → provider default.
 
     Why this order:
@@ -169,41 +172,59 @@ def resolve_claude_seed(spec, draft, prefs, live_base_url="", live_model="",
 
     `model` and `custom_model` are taken as a pair from one layer so a draft's
     popup choice is never merged with an older layer's free-form id; the auto
-    mode pair obeys the same rule and has no default -- "unset" is a value.
+    mode and subagent pairs obey the same rule and have no default -- "unset"
+    is a value.
+
+    `model_options` overrides the catalogue used to decide popup-vs-custom. The
+    UI passes the live-merged catalogue so a freshly fetched model lands in the
+    dropdown instead of being demoted to the free-form field; None keeps the
+    provider's static catalogue (the offline / pure-test default).
     """
     layers = []
     if draft is not None:
         layers.append((draft.model or "", draft.custom_model or "", draft.base_url or "",
-                       draft.auto_mode_model or "", draft.auto_mode_custom_model or ""))
+                       draft.auto_mode_model or "", draft.auto_mode_custom_model or "",
+                       draft.subagent_model or "", draft.subagent_custom_model or ""))
     # The live file has no free-form ids of its own, only ANTHROPIC_MODEL and
-    # the auto mode classifier variable.
-    layers.append((live_model or "", "", live_base_url or "", live_auto_model or "", ""))
+    # the auto mode / subagent variables.
+    layers.append((live_model or "", "", live_base_url or "", live_auto_model or "", "",
+                   live_subagent_model or "", ""))
     if prefs is not None:
         layers.append((prefs.model or "", prefs.custom_model or "", prefs.base_url or "",
-                       prefs.auto_mode_model or "", prefs.auto_mode_custom_model or ""))
+                       prefs.auto_mode_model or "", prefs.auto_mode_custom_model or "",
+                       prefs.subagent_model or "", prefs.subagent_custom_model or ""))
 
-    model = custom = base_url = auto = auto_custom = ""
-    for layer_model, layer_custom, layer_base, layer_auto, layer_auto_custom in layers:
+    model = custom = base_url = auto = auto_custom = subagent = subagent_custom = ""
+    for (layer_model, layer_custom, layer_base, layer_auto, layer_auto_custom,
+            layer_subagent, layer_subagent_custom) in layers:
         if not model and not custom and (layer_model or layer_custom):
             model, custom = layer_model, layer_custom
         if not auto and not auto_custom and (layer_auto or layer_auto_custom):
             auto, auto_custom = layer_auto, layer_auto_custom
+        if not subagent and not subagent_custom and (layer_subagent or layer_subagent_custom):
+            subagent, subagent_custom = layer_subagent, layer_subagent_custom
         if not base_url and layer_base:
             base_url = layer_base
-        if model and base_url and auto:
+        # Every pair must be resolved before stopping, or a draft that lacks one
+        # would hide a lower layer's value for it.
+        if model and base_url and auto and (subagent or subagent_custom):
             break
 
-    known = [option.id for option in spec.claude_models]
+    options = model_options if model_options is not None else spec.claude_models
+    known = [option.id for option in options]
     if model and model not in known:
         # An id outside the catalogue can only be expressed as free-form text.
         model, custom = "", model
     if not model and not custom:
         model = spec.claude_default_model
-    # The auto pair has no provider default: "nothing" is itself a valid state.
+    # The auto and subagent pairs have no provider default: "nothing" is a value.
     if auto and auto not in known:
         auto, auto_custom = "", auto
+    if subagent and subagent not in known:
+        subagent, subagent_custom = "", subagent
     return {"claude_model": model, "claude_custom": custom, "claude_base_url": base_url,
-            "claude_auto_model": auto, "claude_auto_custom": auto_custom}
+            "claude_auto_model": auto, "claude_auto_custom": auto_custom,
+            "claude_subagent_model": subagent, "claude_subagent_custom": subagent_custom}
 
 
 ScreenRect = tuple[float, float, float, float]

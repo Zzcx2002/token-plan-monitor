@@ -234,12 +234,16 @@ def test_inference_key_never_reaches_the_json_files(tmp_path):
 def test_claude_prefs_round_trip_without_cross_provider_clobbering(tmp_path):
     storage = Storage(tmp_path, FakeKeyring())
     storage.save_claude_prefs(
-        ClaudeProviderPrefs(model="qwen3.8-max", base_url="https://x/apps/anthropic"), "bailian")
+        ClaudeProviderPrefs(model="qwen3.8-max", base_url="https://x/apps/anthropic",
+                            subagent_model="qwen3.6-flash"), "bailian")
     assert storage.load_claude_prefs("bailian").model == "qwen3.8-max"
+    assert storage.load_claude_prefs("bailian").subagent_model == "qwen3.6-flash"
     assert storage.load_claude_prefs("volcengine") == ClaudeProviderPrefs()
     storage.save_claude_prefs(ClaudeProviderPrefs(custom_model="ep-abc"), "volcengine")
     assert storage.load_claude_prefs("bailian").base_url == "https://x/apps/anthropic"
+    assert storage.load_claude_prefs("bailian").subagent_model == "qwen3.6-flash"
     assert storage.load_claude_prefs("volcengine").custom_model == "ep-abc"
+    assert storage.load_claude_prefs("volcengine").subagent_model == ""
 
 
 @pytest.mark.parametrize("payload", [

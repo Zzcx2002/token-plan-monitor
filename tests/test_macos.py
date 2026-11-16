@@ -321,10 +321,12 @@ def test_ark_has_no_catalogue_so_every_model_is_custom():
 def test_empty_everywhere_uses_the_provider_default_and_no_url():
     assert resolve_claude_seed(get_provider("bailian"), None, None, "", "") == {
         "claude_model": "auto", "claude_custom": "", "claude_base_url": "",
-        "claude_auto_model": "", "claude_auto_custom": ""}
+        "claude_auto_model": "", "claude_auto_custom": "",
+        "claude_subagent_model": "", "claude_subagent_custom": ""}
     assert resolve_claude_seed(get_provider("volcengine"), None, None, "", "") == {
         "claude_model": "", "claude_custom": "", "claude_base_url": "",
-        "claude_auto_model": "", "claude_auto_custom": ""}
+        "claude_auto_model": "", "claude_auto_custom": "",
+        "claude_subagent_model": "", "claude_subagent_custom": ""}
 
 
 def test_auto_pair_seeds_from_live_then_prefs_and_demotes_uncatalogued_ids():
@@ -380,3 +382,53 @@ def test_auto_model_lightweight_flag_feeds_only_the_warning():
     assert validate_claude_configuration(
         "bailian", "cn-beijing", "auto", "", "", "", "key",
         "", "vendor-mini-fast").auto_mode_model_lightweight is True
+
+
+def test_subagent_pair_seeds_from_live_then_prefs_and_demotes_uncatalogued_ids():
+    prefs = ClaudeProviderPrefs(subagent_model="qwen3.6-flash")
+    # The live subagent variable outranks the cache, like every other field.
+    seed = resolve_claude_seed(get_provider("bailian"), None, prefs,
+                               "", "", "", live_subagent_model="qwen3.8-flash")
+    assert seed["claude_subagent_model"] == "qwen3.8-flash"
+    assert seed["claude_subagent_custom"] == ""
+    # Without a live value the cached pair is taken together.
+    seed = resolve_claude_seed(get_provider("bailian"), None, prefs, "", "", "")
+    assert seed["claude_subagent_model"] == "qwen3.6-flash"
+    # An id outside the catalogue lands in the free-form field; unset is a value.
+    seed = resolve_claude_seed(get_provider("bailian"), None,
+                               ClaudeProviderPrefs(subagent_model="brand-new-mini"),
+                               "", "", "")
+    assert seed["claude_subagent_model"] == ""
+    assert seed["claude_subagent_custom"] == "brand-new-mini"
+
+
+def test_seed_resolves_subagent_from_a_lower_layer_when_the_draft_lacks_it():
+    # The draft supplies model+base+auto but no subagent; the early-break must
+    # not stop before the live layer's subagent value is read.
+    draft = ClaudeProviderPrefs(model="auto", base_url="https://x/apps/anthropic",
+                                auto_mode_model="qwen3.6-flash")
+    seed = resolve_claude_seed(get_provider("bailian"), draft, None,
+                               "", "", "", live_subagent_model="qwen3.8-flash")
+    assert seed["claude_subagent_model"] == "qwen3.8-flash"
+    assert seed["claude_model"] == "auto"
+    assert seed["claude_auto_model"] == "qwen3.6-flash"
+
+
+def test_claude_validation_subagent_is_optional_and_field_tagged():
+    request = validate_claude_configuration(
+        "bailian", "cn-beijing", "auto", "", "", "", "key")
+    assert request.subagent_model == ""
+    # Custom beats popup, mirroring the main model and auto pairs.
+    request = validate_claude_configuration(
+        "bailian", "cn-beijing", "auto", "", "", "", "key",
+        "", "", "qwen3.6-flash", "glm-4-custom")
+    assert request.subagent_model == "glm-4-custom"
+    request = validate_claude_configuration(
+        "bailian", "cn-beijing", "auto", "", "", "", "key",
+        "", "", "qwen3.6-flash", "")
+    assert request.subagent_model == "qwen3.6-flash"
+    with pytest.raises(FieldValidationError) as failure:
+        validate_claude_configuration(
+            "bailian", "cn-beijing", "auto", "", "", "", "key",
+            "", "", "", "has space")
+    assert failure.value.field == "subagent_model"

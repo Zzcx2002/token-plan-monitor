@@ -14,7 +14,7 @@
 
 ## 环境与目录
 
-- 共享核心在 `src/token_plan_monitor/`：`models.py`（数据契约与输入校验）、`providers.py`（服务商注册表、凭据 account、Claude Code 元数据）、`storage.py`（数据目录与钥匙串/凭据管理器）、`monitor.py`（后台刷新调度）、`presentation.py`（屏上文案）、`claude_code.py`（写入 Claude 配置）、`volcengine.py` / `bailian.py` / 两个 signer。
+- 共享核心在 `src/token_plan_monitor/`：`models.py`（数据契约与输入校验）、`providers.py`（服务商注册表、凭据 account、Claude Code 元数据）、`storage.py`（数据目录与钥匙串/凭据管理器）、`monitor.py`（后台刷新调度）、`presentation.py`（屏上文案）、`claude_code.py`（写入 Claude 配置）、`model_catalog.py`（在线模型清单：推导 compatible-mode 地址、过滤对话模型、与内置清单合并）、`volcengine.py` / `bailian.py` / 两个 signer。
 - macOS 壳在 `src/token_plan_monitor/macos/`：`ui.py`（菜单栏、详情窗口、桌面卡片、设置窗口）、`layout.py`（纯规则：校验、恢复动作、最低项标记、几何）、`theme.py`（动态色、字阶、材质）、`preview.py`（离线预览与 `--smoke-test`）。
 - Windows 壳在 `src/token_plan_monitor/ui.py`、`desktop_widget.py`、`ui_graphics.py`、`window_chrome.py`、`window_geometry.py`、`appearance.py`。
 - 数据目录：macOS 用 `~/Library/Application Support/TokenPlanMonitor/` 与 `~/Library/Logs/TokenPlanMonitor/`；其他平台用项目内 `data/` 和 `logs/`（两者都在 `.gitignore` 里）。
@@ -107,7 +107,8 @@ py -3.13 -m venv .venv
 - 配置与缓存恢复、Secret 不进入 JSON、损坏或版本不匹配的 JSON 回退安全默认值。
 - 托盘摘要与三窗口菜单格式、原生 tooltip 长度上限，桌面卡片偏好恢复和损坏配置回退。
 - 后台刷新单 flight、手动刷新合并、旧设置结果丢弃、断网保留快照、切换服务商清缓存。
-- Claude Code 写入：键合并范围、备份及**备份文件自身**的 `0600` 权限、历史全局可读备份的收紧、JSONC 读取、损坏文件拒绝写入、幂等重放、推理 Key 不进入确认文本；Region 与服务商地域白名单、Base URL 拒绝含账号密码（`user:pass@host`）的地址；可选的 `CLAUDE_CODE_AUTO_MODE_MODEL`（不选完全不碰、选择才写、重型分类模型的超时警告文案）与偏好文件旧格式向后兼容。
+- Claude Code 写入：键合并范围、备份及**备份文件自身**的 `0600` 权限、历史全局可读备份的收紧、JSONC 读取、损坏文件拒绝写入、幂等重放、推理 Key 不进入确认文本；Region 与服务商地域白名单、Base URL 拒绝含账号密码（`user:pass@host`）的地址；可选的 `CLAUDE_CODE_AUTO_MODE_MODEL`（不选完全不碰、选择才写、重型分类模型的超时警告文案）与可选的 `CLAUDE_CODE_SUBAGENT_MODEL`（不选沿用 tier 规则：已有值保留、为空回填主模型；选择则覆盖写入并退出回填）、偏好文件旧格式向后兼容。
+- 在线模型清单：compatible-mode 地址推导（保留 region/代理主机）、图像/视频/语音/决策模型过滤、恶意模型 ID 形状拒绝、去重保序、非 200/断网/坏 JSON/空列表回退内置清单、合并保留内置标签与轻量标记并追加新模型、缓存按服务商隔离与损坏回退、新模型进下拉框而非自定义框；macOS smoke 以注入桩驱动「拉取→主线程排空→原地刷新下拉框」全链路并验证选中保留与下架模型降级。
 
 ## Windows：离线界面预览与交互检查
 

@@ -14,6 +14,7 @@ from .appearance import AppearancePreferences
 
 from .models import (
     DEFAULT_PROVIDER,
+    MODEL_ID_PATTERN,
     SCHEMA_VERSION,
     CacheError,
     ClaudeProviderPrefs,
@@ -43,6 +44,7 @@ class Storage:
         self.geometry_path = self.data_dir / "window_geometry.json"
         self.appearance_path = self.data_dir / "appearance.json"
         self.claude_path = self.data_dir / "claude.json"
+        self.models_path = self.data_dir / "models.json"
         # Explicitly select the OS backend: never silently use a plaintext plugin.
         if keyring_backend is None and sys.platform == "darwin":
             from keyring.backends.macOS import Keyring
@@ -203,6 +205,49 @@ class Storage:
         providers[provider] = prefs.to_dict()
         self._write_json(
             self.claude_path,
+            {"schema_version": SCHEMA_VERSION, "providers": providers},
+        )
+
+    def load_model_catalog(self, provider: str) -> tuple[str, ...]:
+        """Cached live model ids for a provider; empty when absent or corrupt.
+
+        Non-secret by construction (model ids only), so unlike the inference key
+        this lives in a plain JSON file. A malformed cache is ignored, never
+        repaired by writing: the caller refetches and overwrites it.
+        """
+        value = self._read_json(self.models_path)
+        if value is None:
+            return ()
+        try:
+            if value.get("schema_version") != SCHEMA_VERSION:
+                return ()
+            providers = value.get("providers")
+            if not isinstance(providers, dict):
+                return ()
+            entry = providers.get(provider)
+            if not isinstance(entry, dict):
+                return ()
+            ids = entry.get("ids")
+            if not isinstance(ids, list):
+                return ()
+        except (KeyError, TypeError, ValueError):
+            return ()
+        clean = []
+        for model_id in ids:
+            if (isinstance(model_id, str) and model_id
+                    and MODEL_ID_PATTERN.fullmatch(model_id) is not None
+                    and model_id not in clean):
+                clean.append(model_id)
+        return tuple(clean)
+
+    def save_model_catalog(self, provider: str, ids: tuple[str, ...]) -> None:
+        get_provider(provider)  # reject an unknown id before touching the file
+        stored = self._read_json(self.models_path) or {}
+        existing = stored.get("providers")
+        providers = dict(existing) if isinstance(existing, dict) else {}
+        providers[provider] = {"ids": list(ids)}
+        self._write_json(
+            self.models_path,
             {"schema_version": SCHEMA_VERSION, "providers": providers},
         )
 

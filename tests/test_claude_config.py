@@ -241,6 +241,81 @@ def test_prefs_from_dict_tolerates_files_without_the_auto_mode_fields():
     assert round_trip.auto_mode_model == "qwen3.6-flash"
 
 
+# ----------------------------------------------------------------------
+# Optional explicit subagent model (CLAUDE_CODE_SUBAGENT_MODEL).
+# Unlike auto mode, an empty selection keeps the tier rule: preserve an existing
+# value, backfill the main model when absent. A choice overrides both.
+# ----------------------------------------------------------------------
+
+
+def test_patch_unselected_subagent_keeps_the_tier_rule():
+    # LIVE_DOCUMENT already carries a subagent value: it must be preserved,
+    # neither rewritten nor backfilled.
+    patch = patch_for()
+    assert cc.ENV_SUBAGENT not in patch.set
+    assert cc.ENV_SUBAGENT not in patch.add_if_absent
+    assert patch.subagent_model == ""
+    # Absent subagent is backfilled with the main model, exactly as before.
+    absent = dict(LIVE_DOCUMENT, env={k: v for k, v in LIVE_DOCUMENT["env"].items()
+                                      if k != cc.ENV_SUBAGENT})
+    patch = patch_for(absent)
+    assert patch.add_if_absent[cc.ENV_SUBAGENT] == "qwen3.8-max"
+    assert cc.ENV_SUBAGENT not in patch.set
+
+
+def test_patch_selected_subagent_overrides_and_leaves_the_backfill():
+    patch = patch_for(subagent_model="qwen3.6-flash")
+    assert patch.set[cc.ENV_SUBAGENT] == "qwen3.6-flash"
+    assert patch.subagent_model == "qwen3.6-flash"
+    # Having been chosen, it no longer participates in the tier backfill.
+    assert cc.ENV_SUBAGENT not in patch.add_if_absent
+    # It remains a tier member so the unselected path keeps backfilling it.
+    assert cc.ENV_SUBAGENT in cc.ALL_TIER_KEYS
+
+
+def test_apply_writes_the_selected_subagent_over_an_existing_value(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps(LIVE_DOCUMENT), encoding="utf-8")
+    cc.apply_request(make_request(subagent_model="qwen3.6-flash"), path,
+                     clock=lambda: 602)
+    env = json.loads(path.read_text(encoding="utf-8"))["env"]
+    assert env[cc.ENV_SUBAGENT] == "qwen3.6-flash"
+    # The tier policy is unchanged by the extra key.
+    assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "qwen3.8-max"
+
+
+def test_apply_unselected_subagent_preserves_existing_and_backfills_absent(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps(LIVE_DOCUMENT), encoding="utf-8")
+    cc.apply_request(make_request(), path, clock=lambda: 603)
+    env = json.loads(path.read_text(encoding="utf-8"))["env"]
+    assert env[cc.ENV_SUBAGENT] == "auto"          # hand-set value survives
+    absent = dict(LIVE_DOCUMENT, env={k: v for k, v in LIVE_DOCUMENT["env"].items()
+                                      if k != cc.ENV_SUBAGENT})
+    path.write_text(json.dumps(absent), encoding="utf-8")
+    cc.apply_request(make_request(), path, clock=lambda: 604)
+    env = json.loads(path.read_text(encoding="utf-8"))["env"]
+    assert env[cc.ENV_SUBAGENT] == "qwen3.8-max"   # absent -> main model
+
+
+def test_describe_changes_reports_the_subagent_selection():
+    request = make_request(subagent_model="qwen3.6-flash")
+    lines = "\n".join(cc.describe_changes(
+        request, cc.compute_env_patch(request, LIVE_DOCUMENT), LIVE_DOCUMENT,
+        Path("/x/settings.json"), False))
+    assert cc.ENV_SUBAGENT in lines and "qwen3.6-flash" in lines
+    assert "subagent" in lines
+
+
+def test_prefs_from_dict_tolerates_files_without_the_subagent_fields():
+    prefs = ClaudeProviderPrefs.from_dict(
+        {"model": "auto", "custom_model": "", "base_url": "https://x/apps/anthropic"})
+    assert prefs.subagent_model == "" and prefs.subagent_custom_model == ""
+    round_trip = ClaudeProviderPrefs.from_dict(
+        ClaudeProviderPrefs(model="auto", subagent_model="qwen3.6-flash").to_dict())
+    assert round_trip.subagent_model == "qwen3.6-flash"
+
+
 def test_merge_preserves_unknown_keys_and_does_not_mutate_input():
     patch = patch_for()
     merged = cc.merge_settings(LIVE_DOCUMENT, patch)

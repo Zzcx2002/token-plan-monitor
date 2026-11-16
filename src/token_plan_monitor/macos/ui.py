@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import os
 import queue
+import threading
 from dataclasses import replace
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from objc import python_method, super
 from .. import claude_code
 from ..assets import make_tray_icon
 from ..claude_code import ClaudeConfigError
+from ..model_catalog import fetch_model_ids, merge_model_options
 from ..models import (
     CARD_MIN_HEIGHT,
     CARD_MIN_WIDTH,
@@ -496,6 +498,7 @@ class Actions(F.NSObject):
     def tick_(self, timer):
         self.owner.drain_events()
         self.owner.flush_settings_rebuild()
+        self.owner.drain_model_catalog()
 
     def wake_(self, notification):
         self.owner.monitor.refresh_if_due()
@@ -560,9 +563,23 @@ class MonitorUI:
         # Claude Code hookup: the model popup is read on apply, never observed.
         self.model_popup = None
         self.auto_popup = None
+        self.subagent_popup = None
         self.apply_claude_button = None
         self.inference_key = None
         self._applying_claude = False
+        # Live model catalogue: the effective options the popups were built from,
+        # a background-fetch result queue drained on the main tick, and per-provider
+        # status copy. The fetch never blocks the dialog; failure keeps the static
+        # catalogue. _claude_options is the single source for index<->id mapping so
+        # build and read can never disagree after an in-place refresh.
+        self._claude_options = ()
+        self._catalog_events = queue.SimpleQueue()
+        self._catalog_inflight = set()
+        self._catalog_status = {}
+        self.model_refresh_button = None
+        self.model_status_label = None
+        # Injectable transport so the offline smoke can stub the network call.
+        self._fetch_model_ids = fetch_model_ids
         # Offline smoke hook; production leaves this None and shows a real alert.
         self._confirm_override = None
         # Offline smoke hook for the write target: (settings.json, .claude.json).
@@ -689,6 +706,7 @@ class MonitorUI:
                     "credential-help": self.toggle_credential_help,
                     "provider": self.provider_changed,
                     "apply-claude": self.apply_claude_config,
+                    "refresh-models": self.refresh_models,
                     "cancel": lambda: self.settings.orderOut_(None),
                     "close-details": lambda: self.details.orderOut_(None),
                     "exit": lambda: self.app.terminate_(None)}
@@ -1101,6 +1119,7 @@ class MonitorUI:
         self.build_settings(current.provider, current.region,
                             str(current.refresh_minutes), **self.claude_seed(current.provider))
         self.activate(self.settings)
+        self._maybe_auto_fetch(current.provider)
 
     def claude_seed(self, provider):
         """Initial Claude section values for one provider: draft → prefs → live.
@@ -1114,7 +1133,7 @@ class MonitorUI:
             prefs = self.storage.load_claude_prefs(provider)
         except QueryError:
             prefs = ClaudeProviderPrefs()
-        live_base_url = live_model = live_auto_model = ""
+        live_base_url = live_model = live_auto_model = live_subagent_model = ""
         try:
             document, _ = claude_code.read_document_at(self.resolve_claude_paths()[0])
         except (ClaudeConfigError, QueryError):
@@ -1126,8 +1145,26 @@ class MonitorUI:
             live_base_url = str(env.get("ANTHROPIC_BASE_URL") or "").strip()
             live_model = str(env.get("ANTHROPIC_MODEL") or "").strip()
             live_auto_model = str(env.get(claude_code.ENV_AUTO_MODE) or "").strip()
+            live_subagent_model = str(env.get(claude_code.ENV_SUBAGENT) or "").strip()
         return resolve_claude_seed(get_provider(provider), self._claude_drafts.get(provider),
-                                   prefs, live_base_url, live_model, live_auto_model)
+                                   prefs, live_base_url, live_model, live_auto_model,
+                                   model_options=self._effective_claude_options(provider),
+                                   live_subagent_model=live_subagent_model)
+
+    def _effective_claude_options(self, provider):
+        """Static catalogue merged with any cached live models for this provider.
+
+        The cache is the source of truth for what was fetched; an empty cache
+        (offline / first run / fetch failed) keeps the static catalogue intact.
+        """
+        spec = get_provider(provider)
+        try:
+            fetched = self.storage.load_model_catalog(provider)
+        except QueryError:
+            fetched = ()
+        if fetched:
+            return merge_model_options(spec.claude_models, fetched)
+        return spec.claude_models
 
     def stored_inference_key(self, provider):
         """Best-known inference key for "leave blank to keep" semantics."""
@@ -1200,10 +1237,12 @@ class MonitorUI:
         # from its own draft/prefs, falling back to the live config.
         self.stash_claude_draft(self.settings_provider)
         self.build_settings(provider, region, interval, **self.claude_seed(provider))
+        self._maybe_auto_fetch(provider)
 
     def build_settings(self, provider, region, interval, claude_model="",
                        claude_custom="", claude_base_url="",
-                       claude_auto_model="", claude_auto_custom=""):
+                       claude_auto_model="", claude_auto_custom="",
+                       claude_subagent_model="", claude_subagent_custom=""):
         """(Re)create the settings form for one provider."""
         self.settings_provider = provider
         spec = get_provider(provider)
@@ -1318,11 +1357,29 @@ class MonitorUI:
                         "选择模型后点击下方按钮，把服务商接入信息写入 Claude Code 本地配置。")
         card_start = y
         y += T.GUTTER
-        known = [option.id for option in spec.claude_models]
+        # The effective catalogue is the static list merged with any cached live
+        # models, so a plan's newly shipped models appear without a hand edit.
+        options = self._effective_claude_options(provider)
+        self._claude_options = options
+        known = [option.id for option in options]
+        # Refresh row: a manual trigger plus live status. Auto-fetch also runs on
+        # open / provider switch, but the button lets the user force a re-pull
+        # (e.g. right after the vendor ships a model) without reopening the dialog.
+        self.model_refresh_button = _pin_left(button(
+            body, "刷新模型列表", T.PAGE_INSET, y, 130,
+            self.actions, "refresh-models", bezel="recessed", height=22))
+        self.model_refresh_button.setAccessibilityLabel_("在线刷新模型列表")
+        status_text, status_tone = self._catalog_status_for(provider)
+        status_color = SECONDARY if status_tone == "neutral" else T.tone(status_tone)
+        self.model_status_label = _stretch(text_label(
+            body, status_text, T.PAGE_INSET + 140, y + 3, field_width - 140, 12,
+            color=status_color))
+        self.model_status_label.setAccessibilityLabel_("模型列表状态")
+        y += 22 + T.ROW_GAP
         index = known.index(claude_model) if claude_model in known else len(known)
         y, model_popup = popup_row(
             body, "模型", y, field_width,
-            [option.label for option in spec.claude_models] + ["自定义模型 ID…"], index)
+            [option.label for option in options] + ["自定义模型 ID…"], index)
         model_popup.setAccessibilityLabel_("模型")
         self.model_popup = model_popup
         y += T.ROW_GAP
@@ -1333,7 +1390,7 @@ class MonitorUI:
         # Optional auto mode classifier. "不设置" leaves CLAUDE_CODE_AUTO_MODE_MODEL
         # entirely alone -- not written, not backfilled, not removed.
         auto_labels = (["不设置（保持现状）"]
-                       + [option.label for option in spec.claude_models]
+                       + [option.label for option in options]
                        + ["自定义模型 ID…"])
         if claude_auto_custom:
             auto_index = len(auto_labels) - 1
@@ -1353,6 +1410,27 @@ class MonitorUI:
         y, self.fields["auto_model"], self.field_wells["auto_model"] = form_row(
             body, "Auto mode 自定义模型 ID（优先于上方选择；留空且选「不设置」时不写入）",
             claude_auto_custom, False, y, field_width)
+        y += T.ROW_GAP
+        # Optional explicit subagent model. Unlike auto mode, "default" keeps the
+        # tier rule: an existing CLAUDE_CODE_SUBAGENT_MODEL is preserved and an
+        # absent one is backfilled with the main model; a choice overrides both.
+        subagent_labels = (["默认（保持现有值；为空时填入主模型）"]
+                           + [option.label for option in options]
+                           + ["自定义模型 ID…"])
+        if claude_subagent_custom:
+            subagent_index = len(subagent_labels) - 1
+        elif claude_subagent_model in known:
+            subagent_index = 1 + known.index(claude_subagent_model)
+        else:
+            subagent_index = 0
+        y, subagent_popup = popup_row(body, "Subagent 模型（可选）", y, field_width,
+                                      subagent_labels, subagent_index)
+        subagent_popup.setAccessibilityLabel_("Subagent 模型")
+        self.subagent_popup = subagent_popup
+        y += T.ROW_GAP
+        y, self.fields["subagent_model"], self.field_wells["subagent_model"] = form_row(
+            body, "Subagent 自定义模型 ID（优先于上方选择；留空且选「默认」时沿用现有规则）",
+            claude_subagent_custom, False, y, field_width)
         y += T.ROW_GAP
         # A remembered key changes the label but is never echoed into the field.
         key_title = ("推理 API Key（已保存，留空保持不变）" if self.stored_inference_key(provider)
@@ -1391,8 +1469,10 @@ class MonitorUI:
         # the help toggle, and the write button carries no key equivalent so an
         # accidental Enter can never trigger an external config change.
         ordered = [popup, self.fields["ak"], self.fields["sk"], self.fields["region"],
-                   self.fields["interval"], model_popup, self.fields["model"],
+                   self.fields["interval"], self.model_refresh_button,
+                   model_popup, self.fields["model"],
                    auto_popup, self.fields["auto_model"],
+                   subagent_popup, self.fields["subagent_model"],
                    self.fields["base_url"], self.fields["api_key"], self.help_button,
                    self.cancel_button, self.apply_claude_button, self.save_button]
         for current, following in zip(ordered, ordered[1:] + [popup]):
@@ -1499,8 +1579,7 @@ class MonitorUI:
 
         prefs deliberately exclude the inference key — that is vault-only.
         """
-        spec = get_provider(self.settings_provider)
-        known = [option.id for option in spec.claude_models]
+        known = [option.id for option in self._claude_options]
         index = self.model_popup.indexOfSelectedItem()
         popup = known[index] if 0 <= index < len(known) else ""
         custom = str(self.fields["model"].stringValue()).strip()
@@ -1510,13 +1589,182 @@ class MonitorUI:
         auto_popup = (known[auto_index - 1]
                       if 1 <= auto_index <= len(known) else "")
         auto_custom = str(self.fields["auto_model"].stringValue()).strip()
+        # The subagent popup shares the auto popup's leading-entry offset.
+        subagent_index = self.subagent_popup.indexOfSelectedItem()
+        subagent_popup = (known[subagent_index - 1]
+                          if 1 <= subagent_index <= len(known) else "")
+        subagent_custom = str(self.fields["subagent_model"].stringValue()).strip()
         base_url = str(self.fields["base_url"].stringValue()).strip()
         key = str(self.fields["api_key"].stringValue())
         prefs = ClaudeProviderPrefs(
             model="" if custom else popup, custom_model=custom, base_url=base_url,
             auto_mode_model="" if auto_custom else auto_popup,
-            auto_mode_custom_model=auto_custom)
+            auto_mode_custom_model=auto_custom,
+            subagent_model="" if subagent_custom else subagent_popup,
+            subagent_custom_model=subagent_custom)
         return popup, custom, base_url, key, prefs
+
+    # --- Live model catalogue -------------------------------------------------
+    # Fetching runs on a daemon thread and only ever hands results back through
+    # _catalog_events; every Cocoa mutation happens in drain_model_catalog on the
+    # main tick. A failure keeps the static catalogue, so the dialog never blocks
+    # on the network and never loses its model list.
+
+    def _catalog_status_for(self, provider):
+        if provider in self._catalog_status:
+            return self._catalog_status[provider]
+        try:
+            fetched = self.storage.load_model_catalog(provider)
+        except QueryError:
+            fetched = ()
+        if fetched:
+            return (f"已缓存 {len(fetched)} 个在线模型", "neutral")
+        return ("使用内置模型清单，可在线刷新", "neutral")
+
+    def _set_catalog_status(self, provider, text, tone):
+        self._catalog_status[provider] = (text, tone)
+        if (self.settings is not None and self.settings.isVisible()
+                and self.settings_provider == provider
+                and self.model_status_label is not None):
+            color = SECONDARY if tone == "neutral" else T.tone(tone)
+            self.model_status_label.setTextColor_(color)
+            self.model_status_label.setStringValue_(text)
+
+    def _catalog_fetch_target(self, provider):
+        """Resolve (base_url, key) for a fetch from the live form, then defaults."""
+        spec = get_provider(provider)
+        base_url = key = ""
+        on_this_provider = (self.settings is not None
+                            and self.settings_provider == provider)
+        if on_this_provider and "base_url" in self.fields:
+            base_url = str(self.fields["base_url"].stringValue()).strip()
+            key = str(self.fields["api_key"].stringValue()).strip()
+        if not base_url:
+            region = ""
+            if on_this_provider and "region" in self.fields:
+                region = str(self.fields["region"].stringValue()).strip()
+            base_url = spec.default_claude_base_url(region or spec.default_region)
+        if not key:
+            key = self.stored_inference_key(provider) or ""
+        return base_url, key
+
+    def _maybe_auto_fetch(self, provider):
+        """Auto-pull on open / provider switch, only when a key and URL exist."""
+        if provider in self._catalog_inflight:
+            return
+        base_url, key = self._catalog_fetch_target(provider)
+        if not key or claude_code.ANTHROPIC_PATH not in base_url:
+            return
+        self._start_model_fetch(provider, base_url, key)
+
+    def refresh_models(self):
+        """Manual refresh button: force a re-pull with the current form values."""
+        provider = self.settings_provider
+        if provider in self._catalog_inflight:
+            return
+        base_url, key = self._catalog_fetch_target(provider)
+        if not key:
+            self._set_catalog_status(provider, "请先填写推理 API Key", "warning")
+            return
+        if claude_code.ANTHROPIC_PATH not in base_url:
+            self._set_catalog_status(provider, "该 Base URL 不支持在线获取模型", "warning")
+            return
+        self._start_model_fetch(provider, base_url, key)
+
+    def _start_model_fetch(self, provider, base_url, key):
+        self._catalog_inflight.add(provider)
+        self._set_catalog_status(provider, "正在在线获取模型列表…", "neutral")
+        threading.Thread(
+            target=self._fetch_models_worker,
+            args=(provider, base_url, key),
+            name=f"model-catalog-{provider}",
+            daemon=True,
+        ).start()
+
+    def _fetch_models_worker(self, provider, base_url, key):
+        try:
+            ids = self._fetch_model_ids(base_url, key)
+            self._catalog_events.put((provider, ids, None))
+        except QueryError as exc:
+            self._catalog_events.put((provider, None, exc.message))
+        except Exception:
+            logger.exception("Unexpected model catalogue fetch failure")
+            self._catalog_events.put((provider, None, "模型列表获取失败"))
+
+    def drain_model_catalog(self):
+        while True:
+            try:
+                provider, ids, error = self._catalog_events.get_nowait()
+            except queue.Empty:
+                return
+            self._catalog_inflight.discard(provider)
+            if error is not None:
+                self._set_catalog_status(
+                    provider, f"在线获取失败：{error}，已用内置清单", "warning")
+                continue
+            try:
+                self.storage.save_model_catalog(provider, ids)
+            except QueryError:
+                pass
+            self._set_catalog_status(
+                provider, f"已在线更新模型列表（{len(ids)} 个）", "ok")
+            if (self.settings is not None and self.settings.isVisible()
+                    and self.settings_provider == provider
+                    and not self._applying_claude):
+                options = merge_model_options(get_provider(provider).claude_models, ids)
+                self._apply_catalog_options(options)
+
+    def _apply_catalog_options(self, options):
+        """Rebuild just the model popups in place, preserving the selection.
+
+        A full form rebuild would discard typing in the credential fields and
+        bounce focus, so only the popups are touched. A selected model the plan
+        no longer offers is demoted to the custom field rather than lost.
+        """
+        if (self.model_popup is None or self.auto_popup is None
+                or self.subagent_popup is None):
+            return
+        popup, custom, _base, _key, prefs = self.claude_form_values()
+        current_auto = prefs.auto_mode_custom_model or prefs.auto_mode_model
+        current_subagent = prefs.subagent_custom_model or prefs.subagent_model
+        known = [option.id for option in options]
+        labels = [option.label for option in options]
+        self.model_popup.removeAllItems()
+        self.model_popup.addItemsWithTitles_(labels + ["自定义模型 ID…"])
+        if custom:
+            self.model_popup.selectItemAtIndex_(len(known))
+        elif popup in known:
+            self.model_popup.selectItemAtIndex_(known.index(popup))
+        elif popup:
+            self.fields["model"].setStringValue_(popup)
+            self.model_popup.selectItemAtIndex_(len(known))
+        else:
+            self.model_popup.selectItemAtIndex_(0)
+        self.auto_popup.removeAllItems()
+        self.auto_popup.addItemsWithTitles_(
+            ["不设置（保持现状）"] + labels + ["自定义模型 ID…"])
+        if prefs.auto_mode_custom_model:
+            self.auto_popup.selectItemAtIndex_(len(known) + 1)
+        elif current_auto in known:
+            self.auto_popup.selectItemAtIndex_(1 + known.index(current_auto))
+        elif current_auto:
+            self.fields["auto_model"].setStringValue_(current_auto)
+            self.auto_popup.selectItemAtIndex_(len(known) + 1)
+        else:
+            self.auto_popup.selectItemAtIndex_(0)
+        self.subagent_popup.removeAllItems()
+        self.subagent_popup.addItemsWithTitles_(
+            ["默认（保持现有值；为空时填入主模型）"] + labels + ["自定义模型 ID…"])
+        if prefs.subagent_custom_model:
+            self.subagent_popup.selectItemAtIndex_(len(known) + 1)
+        elif current_subagent in known:
+            self.subagent_popup.selectItemAtIndex_(1 + known.index(current_subagent))
+        elif current_subagent:
+            self.fields["subagent_model"].setStringValue_(current_subagent)
+            self.subagent_popup.selectItemAtIndex_(len(known) + 1)
+        else:
+            self.subagent_popup.selectItemAtIndex_(0)
+        self._claude_options = options
 
     def show_form_message(self, text, tone="error"):
         """Inline form feedback, tinted by tone role.
@@ -1576,7 +1824,8 @@ class MonitorUI:
             try:
                 request = validate_claude_configuration(
                     provider, region, popup, custom, base_url, key_text, existing_key,
-                    prefs.auto_mode_model, prefs.auto_mode_custom_model)
+                    prefs.auto_mode_model, prefs.auto_mode_custom_model,
+                    prefs.subagent_model, prefs.subagent_custom_model)
             except FieldValidationError as exc:
                 self.show_form_message(exc.message, "error")
                 self.settings.makeFirstResponder_(self.fields[exc.field])

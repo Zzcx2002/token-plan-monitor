@@ -25,6 +25,18 @@ PROVIDER_REGIONS: dict[str, tuple[str, ...] | None] = {
     PROVIDER_BAILIAN: ("cn-beijing", "ap-southeast-1"),
 }
 
+#: A model id safe to write into Claude Code config: the character set the
+#: vendors actually use, bounded so a hostile server response cannot smuggle
+#: control characters or unbounded text into a settings document. Shared by the
+#: form validator and the online catalogue so both reject the same shapes.
+MODEL_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/+\-]{0,199}")
+
+#: Substrings that mark a model id as heavy when it carries no explicit
+#: `lightweight` flag. Advisory only -- it feeds the auto-mode classifier
+#: warning copy, it never blocks a write. Shared by the form validator and the
+#: online catalogue so a newly fetched model is judged by the same rule.
+HEAVY_ID_MARKS = ("-max", "-pro", "preview")
+
 
 class QueryError(Exception):
     """An expected failure with a message safe to show in the UI."""
@@ -158,6 +170,10 @@ class ClaudeProviderPrefs:
     #: Optional auto mode classifier choice; both empty = "do not write the key".
     auto_mode_model: str = ""
     auto_mode_custom_model: str = ""
+    #: Optional explicit subagent choice; both empty = keep the tier rule
+    #: (preserve an existing value, backfill the main model when absent).
+    subagent_model: str = ""
+    subagent_custom_model: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -166,6 +182,8 @@ class ClaudeProviderPrefs:
             "base_url": self.base_url,
             "auto_mode_model": self.auto_mode_model,
             "auto_mode_custom_model": self.auto_mode_custom_model,
+            "subagent_model": self.subagent_model,
+            "subagent_custom_model": self.subagent_custom_model,
         }
 
     @classmethod
@@ -174,7 +192,8 @@ class ClaudeProviderPrefs:
             raise ValueError("Claude preferences must be an object")
         strings = {}
         for key in ("model", "custom_model", "base_url",
-                    "auto_mode_model", "auto_mode_custom_model"):
+                    "auto_mode_model", "auto_mode_custom_model",
+                    "subagent_model", "subagent_custom_model"):
             item = value.get(key, "")
             if not isinstance(item, str) or len(item) > 500:
                 raise ValueError(f"Claude preference {key} must be a short string")

@@ -64,6 +64,10 @@ class ClaudeApplyRequest:
     #: Set by the layout layer from the provider catalogue; only feeds warning
     #: copy -- a heavy classifier model can time out and block tool calls.
     auto_mode_model_lightweight: bool = True
+    #: Optional explicit subagent model. "" keeps the tier rule (preserve an
+    #: existing value, backfill the main model when absent) -- unlike auto mode,
+    #: whose empty selection never touches its key at all.
+    subagent_model: str = ""
 
 
 @dataclass(frozen=True)
@@ -78,6 +82,8 @@ class EnvPatch:
     tier_for_alias: str | None = None
     #: Selected auto mode classifier model, "" when the user chose nothing.
     auto_mode_model: str = ""
+    #: Selected subagent model, "" when the user chose nothing (tier rule applies).
+    subagent_model: str = ""
 
     @property
     def touched_env_keys(self) -> tuple[str, ...]:
@@ -180,6 +186,12 @@ def compute_env_patch(
     if alias_tier is not None:
         set_keys[alias_tier] = request.model
 
+    # An explicit subagent choice overrides the tier rule: written unconditionally
+    # and, because it lands in set_keys, it drops out of the backfill below. An
+    # empty choice leaves ENV_SUBAGENT in ALL_TIER_KEYS' preserve/backfill path.
+    if request.subagent_model:
+        set_keys[ENV_SUBAGENT] = request.subagent_model
+
     add_if_absent = {
         key: request.model
         for key in ALL_TIER_KEYS
@@ -198,6 +210,7 @@ def compute_env_patch(
         top_level_model=request.model,
         tier_for_alias=alias_tier,
         auto_mode_model=request.auto_mode_model,
+        subagent_model=request.subagent_model,
     )
 
 
@@ -365,6 +378,13 @@ def describe_changes(
     elif not is_absent(env.get(ENV_AUTO_MODE)):
         lines.append(
             f"{ENV_AUTO_MODE} 未选择，保留文件中现有的 {env[ENV_AUTO_MODE]}，不改动")
+
+    # An explicit subagent choice is in patch.set, so the tier preserve/backfill
+    # lists above already exclude it; unselected, those lists describe it instead.
+    if patch.subagent_model:
+        lines.append(
+            f"{ENV_SUBAGENT}：{_shown(env.get(ENV_SUBAGENT))} → {patch.subagent_model}"
+            "（subagent/子代理的默认模型）")
 
     lines.append(f"顶层 model 将从 {_shown(document.get('model'))} 改为具体模型名 {patch.top_level_model}")
 

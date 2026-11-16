@@ -14,6 +14,7 @@ import Foundation as F
 import Quartz
 from PyObjCTools import AppHelper
 
+from ..model_catalog import ModelCatalogError
 from ..models import Credentials, MonitorViewState, QuotaWindow, UsageSnapshot
 from ..providers import get_provider
 from ..storage import Storage
@@ -551,6 +552,13 @@ def main(argv=None):
         claude_home = Path(temporary) / "claude-home"
         ui.claude_paths_override = (claude_home / "settings.json",
                                     claude_home / ".claude.json")
+        # Hermetic model catalogue: never hit the network. The default stub
+        # simulates offline so the static catalogue is preserved throughout the
+        # existing checks; the dedicated catalogue section below swaps in a stub
+        # that returns new models to prove the in-place refresh.
+        def _offline_fetch(base_url, api_key):
+            raise ModelCatalogError("离线（smoke 桩）")
+        ui._fetch_model_ids = _offline_fetch
         ui.setup()
         ui.show_details()
         failure = []
@@ -730,6 +738,9 @@ def main(argv=None):
                 assert written["model"] == "qwen3.8-max"
                 # No alias existed on a fresh file, so every tier got filled.
                 assert written["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "qwen3.8-max"
+                # Unselected subagent on a fresh file backfills the main model.
+                assert written["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "qwen3.8-max"
+                assert ui.subagent_popup.indexOfSelectedItem() == 0
                 assert storage.load_inference_key("bailian") == "sk-sp-preview"
                 assert "sk-sp-preview" not in storage.claude_path.read_text(encoding="utf-8")
                 assert json.loads((claude_home / ".claude.json").read_text("utf-8"))[
@@ -768,6 +779,24 @@ def main(argv=None):
                 assert merged["permissions"] == {"deny": ["WebSearch"]}
                 assert merged["env"]["ANTHROPIC_BASE_URL"].endswith("qianwenaiapi.com/apps/anthropic")
                 assert any(p.name.startswith("settings.json.bak.") for p in claude_home.iterdir())
+                # hand_tuned carried no subagent key, so it was backfilled too.
+                assert merged["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "qwen3.8-max"
+
+                # An explicit subagent choice overrides the backfill/preserve rule.
+                known_ids = [o.id for o in ui._claude_options]
+                ui.subagent_popup.selectItemAtIndex_(1 + known_ids.index("qwen3.6-flash"))
+                ui._confirm_override = True
+                ui.apply_claude_config()
+                ui._confirm_override = None
+                chosen = json.loads(settings_target.read_text(encoding="utf-8"))
+                assert chosen["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "qwen3.6-flash"
+                # Returning to "default" preserves the now hand-set value.
+                ui.subagent_popup.selectItemAtIndex_(0)
+                ui._confirm_override = True
+                ui.apply_claude_config()
+                ui._confirm_override = None
+                kept = json.loads(settings_target.read_text(encoding="utf-8"))
+                assert kept["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "qwen3.6-flash"
 
                 # A pending provider switch must not tear down the form mid-write.
                 ui._applying_claude = True
@@ -808,6 +837,58 @@ def main(argv=None):
                 assert "Anthropic" in ui.setting_error.stringValue()
                 assert settings_target.read_bytes() == before_bytes
                 capture(ui.settings, args.artifacts / "settings-ark.png")
+
+                # --- Live model catalogue, driven offline through the real path ---
+                # Rebuild for Bailian directly (build_settings does not auto-fetch),
+                # so no background thread races the deterministic checks below.
+                ui.build_settings("bailian", "cn-beijing", "15", **ui.claude_seed("bailian"))
+                assert ui.settings_provider == "bailian"
+                assert ui.model_refresh_button is not None
+                static_titles = [item.title() for item in ui.model_popup.itemArray()]
+                assert "qwen4-max" not in static_titles
+                # Select a curated model so we can prove the selection survives.
+                known_static = [o.id for o in ui._claude_options]
+                ui.model_popup.selectItemAtIndex_(known_static.index("qwen3.8-max"))
+                # A successful fetch adds new models. Drive the worker synchronously
+                # (it uses the injectable transport) so the smoke never depends on
+                # thread timing, then drain on the main thread exactly as tick_ does.
+                ui._fetch_model_ids = lambda base_url, api_key: (
+                    "auto", "qwen3.8-max", "qwen3.8-flash", "qwen4-max", "qwen4-flash")
+                ui._fetch_models_worker(
+                    "bailian",
+                    "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
+                    "sk-sp-preview")
+                ui.drain_model_catalog()
+                titles = [item.title() for item in ui.model_popup.itemArray()]
+                assert "qwen4-max" in titles and "qwen4-flash" in titles
+                assert ui.model_status_label.stringValue().startswith("已在线更新")
+                known_now = [o.id for o in ui._claude_options]
+                assert known_now[ui.model_popup.indexOfSelectedItem()] == "qwen3.8-max"
+                assert "qwen4-max" in storage.load_model_catalog("bailian")
+                # Bring the model dropdown into view so the capture proves the new
+                # models render, not just the refresh row above the fold.
+                ui.settings_scroll.contentView().scrollToPoint_(
+                    F.NSMakePoint(0, max(0, ui.model_popup.frame().origin.y - 60)))
+                ui.settings.displayIfNeeded()
+                capture(ui.settings, args.artifacts / "settings-models-live.png")
+                # A selected model the plan retires is demoted to the custom field.
+                ui.model_popup.selectItemAtIndex_(known_now.index("qwen3.8-flash"))
+                ui._fetch_model_ids = lambda base_url, api_key: ("auto", "qwen3.8-max", "qwen4-max")
+                ui._fetch_models_worker(
+                    "bailian",
+                    "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
+                    "sk-sp-preview")
+                ui.drain_model_catalog()
+                assert ui.fields["model"].stringValue() == "qwen3.8-flash"
+                # Manual refresh with no key warns instead of fetching.
+                saved_key = ui.inference_key
+                ui.inference_key = None
+                ui._claude_key_drafts.clear()
+                ui.fields["api_key"].setStringValue_("")
+                ui.refresh_models()
+                assert "API Key" in ui.model_status_label.stringValue()
+                ui.inference_key = saved_key
+                ui._fetch_model_ids = _offline_fetch
 
                 # --- window geometry: capped height, width that actually follows ---
                 height = ui.settings.contentView().bounds().size.height
