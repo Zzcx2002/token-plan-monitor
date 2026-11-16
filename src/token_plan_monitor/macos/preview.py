@@ -1288,13 +1288,16 @@ def main(argv=None):
                 assert not ui.actions.windowShouldClose_(ui.details)
                 assert not ui.details.isVisible()
                 assert "winreg" not in __import__("sys").modules
+                # Explicit UTF-8: inside the py2app bundle the preferred
+                # encoding is ASCII, and the report carries non-ASCII copy.
                 (args.artifacts / "smoke-result.txt").write_text(
                     f"PASS: appearance={args.appearance} (captures never include blur, window shadows or the stock focus ring)\n"
                     + f"NOTE: focus-ring end-to-end branch exercised = {sorted(set(focus_modes)) or 'none'}"
                       " (key-window lighting needs the on-display check)\n"
                     + f"PASS: {len(states())} fake states across both providers, capped/scrollable settings window with width-following footer, default/small/wide responsive windows, remaining progress and AX labels, focus/scroll preservation, settings validation/help, card refresh button, click/move/resize gestures and no details buttons, geometry preferences, desktop/floating modes and menus, hidden/visible restart, shutdown\n"
                     + "PASS: history window — menu entry/exclusion, per-cycle line+area layers against the real pure rules, grid/threshold/endpoint/crosshair by layer name, tooltip value-first honesty (percent-only never gains absolutes), 24h/90d range rescope, table twin rows/columns and collapse, empty/thin/unconfigured copy, width-following charts, scroll preservation, refresh hold, close/reopen\n"
-                    + ("PASS: bundled runtime, certificates and Keychain backend imports\n" if getattr(sys, "frozen", False) else ""))
+                    + ("PASS: bundled runtime, certificates and Keychain backend imports\n" if getattr(sys, "frozen", False) else ""),
+                    encoding="utf-8")
                 print("Native macOS smoke checks passed", flush=True)
             except BaseException as exc:
                 import traceback

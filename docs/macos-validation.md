@@ -13,6 +13,7 @@
 - 离线 pytest：**405 passed、3 skipped**（新增 `tests/test_history_chart.py` 16 项，及 monitor/storage/presentation/macos_theme 的历史携带、上限、文案、图表 token 对比扩展）。
 - 原生 AppKit smoke 双外观通过：新增 history_agent / history_percent_only / history_empty / history_thin 假状态（36 小时合成锯齿经真实纯规则）；断言走 **CALayer name/计数/纯几何**（绝不读 NSViewBackingLayer 颜色）：line/area 层数 == 真实 `build_chart` 周期数、grid/threshold/endpoint/crosshair 齐、UI 几何与独立 `build_chart` 调用逐字段相等、tooltip 数值领先且 percent-only 无绝对值、90d 范围切换、表格行数/列数/折叠、空薄文案、宽度跟随、滚动保持、刷新 hold、关闭/重开。截图 `history-agent/-90d/-table/-percent-only/-empty.png` 双外观入 artifacts。
 - **反向验证**（按本仓库惯例）：移除 threshold 层、跨重置合并周期、去掉 min-max 桶规则三处变异分别被 smoke/smoke/pytest 断言捕获（exit 1），恢复后复绿。
+- **bundle smoke 抓到一个真 bug**：smoke-result.txt 用 `write_text` 默认编码，bundle 内 preferred encoding 是 ASCII，新增报告行的破折号触发 UnicodeEncodeError（断言全过、倒在写报告）。改为显式 `encoding="utf-8"` 后重建复验。后续给 smoke 报告加非 ASCII 文案不会再踩。
 - 配色：序列复用 info 色调对、告警线 warning、面积 10% 晕染、网格退后灰；dataviz 校验脚本 info↔warning 对 CVD ΔE 22.7/21.5、常视觉 24.9/24.4、对表面 ≥3:1 双外观通过；theme 测试新增非文本对比与 token 双外观解析断言。截图人工目视确认无标签碰撞（重置字幕右对齐于细线左侧、端点值标签置于点上方）。
 - 文档：README/README.en 支持矩阵、菜单行、历史节与截图、术语表；development.md 模块图与截图表。构建脚本无需改（整包打包已含 Quartz）。
 - 仍需实机/手工：真实鼠标悬停十字线与 tooltip 跟随、VoiceOver 朗读图表 accessibilityLabel、开窗状态下系统浅深切换、真实账号 90 天历史的密度门控观感、macOS 14 实机。Windows 壳忽略 history 字段，趋势/历史展示继续后置（沿用 2026-11-16 范围决定）。
