@@ -33,7 +33,8 @@ def state_tone(state: MonitorViewState) -> str:
     if state.status == "stale":
         return "warning"
     if state.snapshot and any(
-        window.remaining_percent < 10 for window in state.snapshot.windows
+        window.remaining_percent < state.alert_threshold_percent
+        for window in state.snapshot.windows
     ):
         return "warning"
     return "ok"

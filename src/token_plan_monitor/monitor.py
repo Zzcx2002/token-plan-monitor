@@ -70,6 +70,7 @@ class UsageMonitor:
                 error_category="configuration" if error else None,
                 revision=0,
                 provider=provider,
+                alert_threshold_percent=self._settings.alert.threshold_percent,
             )
             self._pending = self._credentials is not None
             if self._pending:
@@ -118,6 +119,7 @@ class UsageMonitor:
                 error_category=None,
                 revision=self._state.revision + 1,
                 provider=settings.provider,
+                alert_threshold_percent=settings.alert.threshold_percent,
             )
             self._pending = True
             self._next_run = None
@@ -203,6 +205,7 @@ class UsageMonitor:
                         last_attempt_at=self.clock(),
                         revision=revision,
                         provider=settings.provider,
+                        alert_threshold_percent=settings.alert.threshold_percent,
                     )
                 else:
                     assert error is not None
@@ -216,6 +219,7 @@ class UsageMonitor:
                         last_attempt_at=self.clock(),
                         revision=revision,
                         provider=settings.provider,
+                        alert_threshold_percent=settings.alert.threshold_percent,
                     )
                 if self._credentials is None:
                     self._next_run = None

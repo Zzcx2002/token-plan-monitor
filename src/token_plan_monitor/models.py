@@ -81,12 +81,69 @@ class CacheError(QueryError):
 
 
 @dataclass(frozen=True)
+class AlertSettings:
+    """Low-quota alert choices, persisted inside Settings.
+
+    ``from_dict`` never raises: a malformed alert sub-dict falls back field by
+    field so one bad value cannot reset the whole settings document through
+    ``Storage.load_settings``'s compatibility fallback.
+    """
+
+    enabled: bool = True
+    threshold_percent: int = 10
+    notify_on_reset: bool = False
+
+    def __post_init__(self) -> None:
+        if type(self.enabled) is not bool or type(self.notify_on_reset) is not bool:
+            raise ConfigurationError("告警开关必须是布尔值")
+        if isinstance(self.threshold_percent, bool) or not isinstance(
+            self.threshold_percent, int
+        ):
+            raise ConfigurationError("告警阈值必须是整数")
+        if not 1 <= self.threshold_percent <= 99:
+            raise ConfigurationError("告警阈值必须在 1–99 之间")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "threshold_percent": self.threshold_percent,
+            "notify_on_reset": self.notify_on_reset,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Any) -> AlertSettings:
+        if not isinstance(value, dict):
+            return cls()
+        enabled = value.get("enabled", True)
+        if type(enabled) is not bool:
+            enabled = True
+        threshold = value.get("threshold_percent", 10)
+        if (
+            isinstance(threshold, bool)
+            or not isinstance(threshold, int)
+            or not 1 <= threshold <= 99
+        ):
+            threshold = 10
+        notify_on_reset = value.get("notify_on_reset", False)
+        if type(notify_on_reset) is not bool:
+            notify_on_reset = False
+        return cls(
+            enabled=enabled,
+            threshold_percent=threshold,
+            notify_on_reset=notify_on_reset,
+        )
+
+
+@dataclass(frozen=True)
 class Settings:
     region: str = DEFAULT_REGION
     refresh_minutes: int = 15
     provider: str = DEFAULT_PROVIDER
+    alert: AlertSettings = AlertSettings()
 
     def __post_init__(self) -> None:
+        if not isinstance(self.alert, AlertSettings):
+            raise ConfigurationError("告警配置格式无效")
         if not isinstance(self.provider, str):
             raise ConfigurationError("服务商必须是字符串")
         provider = self.provider.strip()
@@ -107,6 +164,7 @@ class Settings:
             "provider": self.provider,
             "region": self.region,
             "refresh_minutes": self.refresh_minutes,
+            "alert": self.alert.to_dict(),
         }
 
     @classmethod
@@ -117,6 +175,7 @@ class Settings:
             provider=value.get("provider", DEFAULT_PROVIDER),
             region=value.get("region", DEFAULT_REGION),
             refresh_minutes=value.get("refresh_minutes", 15),
+            alert=AlertSettings.from_dict(value.get("alert")),
         )
 
 
@@ -373,6 +432,10 @@ class MonitorViewState:
     revision: int = 0
     error_category: str | None = None
     provider: str = DEFAULT_PROVIDER
+    #: The configured low-quota threshold, carried in the state so every
+    #: surface (tray, card, details) compares against the same number without
+    #: reaching back into storage. Default keeps legacy states at 10%.
+    alert_threshold_percent: int = 10
 
     @property
     def provider_label(self) -> str:

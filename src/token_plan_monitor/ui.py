@@ -651,7 +651,7 @@ class MonitorUI:
         for kind, row in self.rows.items():
             window = windows.get(kind)
             if window is not None:
-                self._render_window(row, window, unit)
+                self._render_window(row, window, unit, state.alert_threshold_percent)
 
         empty_key: tuple[str, str, str] | None = None
         if not visible_kinds:
@@ -726,8 +726,8 @@ class MonitorUI:
             return f"{int(age//60)} 分钟前更新"
         return f"更新于 {value.astimezone():%m-%d %H:%M}"
 
-    def _render_window(self,row:dict[str,Any],window:QuotaWindow,unit:str="AFP") -> None:
-        warning=window.remaining_percent<10
+    def _render_window(self,row:dict[str,Any],window:QuotaWindow,unit:str="AFP",threshold:int=10) -> None:
+        warning=window.remaining_percent<threshold
         row["remaining"].configure(text=f"{window.remaining_percent:.1f}%",
             style="WarningRemaining.TLabel" if warning else "Remaining.TLabel")
         row["used"].configure(text=f"已用 {window.used_percent:.1f}%")

@@ -118,7 +118,7 @@ class QuotaCard(tk.Canvas):
             x=18*s+index*(column_width+12*s)
             self.create_text(x,49*s+extra*.35,text=label,font=self.label_font,fill=c["muted"],anchor="w")
             window=windows.get(kind)
-            warning=window is not None and window.remaining_percent<10
+            warning=window is not None and window.remaining_percent<state.alert_threshold_percent
             self.create_text(x,76*s+extra*.65,text=compact_remaining(state,kind),font=self.value_font,
                              fill=c["warning"] if warning else c["text"],anchor="w")
             bar_width,bar_height=max(1,round(column_width)),max(3,round(4*s))

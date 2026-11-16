@@ -59,7 +59,9 @@ def status_presentation(state):
     """Status line text plus its tone color (a dynamic color, so it follows the
     system appearance wherever it is assigned)."""
     text = status_text(state)
-    low = state.snapshot and any(w.remaining_percent < 10 for w in state.snapshot.windows)
+    low = state.snapshot and any(
+        w.remaining_percent < state.alert_threshold_percent for w in state.snapshot.windows
+    )
     if low:
         text += " · 额度偏低"
     if state.status == "error":

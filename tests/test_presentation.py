@@ -78,6 +78,21 @@ def test_low_quota_and_unconfigured_tones():
     assert state_tone(MonitorViewState(status="unconfigured")) == "unconfigured"
 
 
+def test_low_quota_tone_follows_the_configured_threshold():
+    # sample_state's monthly window has 8.6% remaining.
+    state = sample_state()
+    assert state_tone(replace(state, alert_threshold_percent=5)) == "ok"
+    assert state_tone(replace(state, alert_threshold_percent=50)) == "warning"
+    healthy = replace(
+        state,
+        snapshot=replace(
+            state.snapshot, windows=(QuotaWindow(kind="five_hour", used_percent=10),)
+        ),
+    )
+    assert state_tone(healthy) == "ok"
+    assert state_tone(replace(healthy, alert_threshold_percent=95)) == "warning"
+
+
 def test_native_tooltip_is_bounded_without_splitting_surrogate_pairs():
     assert len(tray_tooltip(sample_state()).encode("utf-16-le")) // 2 <= 127
     assert truncate_utf16("A😀B", max_units=2) == "A"

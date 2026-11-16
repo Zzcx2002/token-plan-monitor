@@ -4,6 +4,7 @@ import pytest
 from datetime import UTC, datetime
 
 from token_plan_monitor.models import (
+    AlertSettings,
     Credentials,
     AuthenticationError,
     ConfigurationError,
@@ -273,5 +274,30 @@ def test_resaving_the_same_provider_keeps_the_cached_snapshot(tmp_path):
         monitor.update_configuration(Settings(), Credentials("AKLT-a", "secret"))
         assert monitor.get_state().snapshot is not None
         assert storage.load_snapshot() is not None
+    finally:
+        monitor.stop()
+
+
+def test_alert_threshold_reaches_every_view_state(tmp_path):
+    storage = configured_storage(tmp_path)
+    storage.save_settings(Settings(alert=AlertSettings(threshold_percent=30)))
+    monitor = UsageMonitor(
+        storage, client_factory=lambda settings, credentials: StaticClient(snapshot())
+    )
+    try:
+        monitor.start()
+        # The startup state already carries the persisted threshold.
+        assert monitor.get_state().alert_threshold_percent == 30
+        wait_for(lambda: monitor.get_state().status == "ok")
+        assert monitor.get_state().alert_threshold_percent == 30
+        # A settings change updates the threshold immediately, before the
+        # refreshed snapshot arrives.
+        monitor.update_configuration(
+            Settings(alert=AlertSettings(threshold_percent=45)),
+            Credentials("AKLT-a", "secret"),
+        )
+        assert monitor.get_state().alert_threshold_percent == 45
+        wait_for(lambda: monitor.get_state().status == "ok")
+        assert monitor.get_state().alert_threshold_percent == 45
     finally:
         monitor.stop()

@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 import pytest
 
 from token_plan_monitor.models import (
+    AlertSettings,
     ClaudeProviderPrefs,
     ConfigurationError,
     Credentials,
@@ -86,6 +87,97 @@ def test_corrupt_or_incompatible_json_falls_back_safely(tmp_path):
         encoding="utf-8",
     )
     assert storage.load_snapshot() is None
+
+
+def test_legacy_config_without_alert_key_keeps_existing_settings(tmp_path):
+    # A config.json written by v0.1.x has no "alert" key. Loading it must keep
+    # every existing choice and simply default the alert section -- never fall
+    # into the schema-incompatible reset path.
+    storage = Storage(tmp_path, FakeKeyring())
+    storage.config_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "settings": {
+                    "provider": "bailian",
+                    "region": "cn-beijing",
+                    "refresh_minutes": 30,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = storage.load_settings()
+    assert loaded.provider == "bailian"
+    assert loaded.region == "cn-beijing"
+    assert loaded.refresh_minutes == 30
+    assert loaded.alert == AlertSettings()
+
+
+def test_alert_settings_round_trip(tmp_path):
+    storage = Storage(tmp_path, FakeKeyring())
+    settings = Settings(
+        alert=AlertSettings(enabled=False, threshold_percent=25, notify_on_reset=True)
+    )
+    storage.save_settings(settings)
+    assert storage.load_settings() == settings
+
+
+def test_malformed_alert_section_falls_back_field_by_field(tmp_path):
+    storage = Storage(tmp_path, FakeKeyring())
+    storage.config_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "settings": {
+                    "provider": "bailian",
+                    "region": "cn-beijing",
+                    "refresh_minutes": 30,
+                    "alert": {
+                        "enabled": False,
+                        "threshold_percent": 250,
+                        "notify_on_reset": "yes",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = storage.load_settings()
+    # The surrounding settings survive; only the bad alert fields default.
+    assert loaded.provider == "bailian"
+    assert loaded.refresh_minutes == 30
+    assert loaded.alert == AlertSettings(enabled=False)
+    # A wholly non-object alert section defaults without touching anything else.
+    storage.config_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "settings": {"refresh_minutes": 30, "alert": [1, 2]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = storage.load_settings()
+    assert loaded.refresh_minutes == 30
+    assert loaded.alert == AlertSettings()
+
+
+def test_alert_settings_constructor_rejects_invalid_values():
+    with pytest.raises(ConfigurationError):
+        AlertSettings(threshold_percent=0)
+    with pytest.raises(ConfigurationError):
+        AlertSettings(threshold_percent=100)
+    with pytest.raises(ConfigurationError):
+        AlertSettings(threshold_percent=True)
+    with pytest.raises(ConfigurationError):
+        AlertSettings(enabled="yes")
+    with pytest.raises(ConfigurationError):
+        Settings(alert={"threshold_percent": 20})
+    # from_dict is the tolerant path: it never raises, whatever it is fed.
+    assert AlertSettings.from_dict(None) == AlertSettings()
+    assert AlertSettings.from_dict("bad") == AlertSettings()
+    assert AlertSettings.from_dict({"threshold_percent": "20"}) == AlertSettings()
 
 
 def test_credentials_use_only_authorized_entries_and_never_enter_json(tmp_path):
