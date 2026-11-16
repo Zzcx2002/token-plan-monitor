@@ -1,10 +1,12 @@
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from token_plan_monitor.history import HistoryEntry, account_fingerprint
 from token_plan_monitor.models import (
     AlertSettings,
+    CacheError,
     ClaudeProviderPrefs,
     ConfigurationError,
     Credentials,
@@ -356,3 +358,98 @@ def test_saving_prefs_for_an_unknown_provider_is_rejected(tmp_path):
     storage = Storage(tmp_path, FakeKeyring())
     with pytest.raises(ConfigurationError):
         storage.save_claude_prefs(ClaudeProviderPrefs(), "openai")
+
+
+def history_entry(minutes=0, percent=25.0, account="a1b2c3d4e5f6"):
+    return HistoryEntry(
+        queried_at=datetime(2026, 11, 16, 8, tzinfo=UTC) + timedelta(minutes=minutes),
+        account=account,
+        plan_type="agent_plan",
+        windows=(QuotaWindow(kind="five_hour", used_percent=percent),),
+    )
+
+
+def test_history_append_and_load_round_trip(tmp_path):
+    storage = Storage(tmp_path, FakeKeyring())
+    entry = history_entry()
+    storage.append_history(entry, "volcengine")
+    assert storage.history_path("volcengine") == tmp_path / "history" / "volcengine.jsonl"
+    assert storage.load_history("volcengine") == [entry]
+    assert storage.load_history("bailian") == []
+    with pytest.raises(ConfigurationError):
+        storage.append_history(entry, "openai")
+    with pytest.raises(ConfigurationError):
+        storage.load_history("openai")
+
+
+def test_history_dedupes_unchanged_values_but_records_changes(tmp_path):
+    storage = Storage(tmp_path, FakeKeyring())
+    storage.append_history(history_entry(), "volcengine")
+    storage.append_history(history_entry(minutes=5), "volcengine")  # identical, within gap
+    assert len(storage.load_history("volcengine")) == 1
+    storage.append_history(history_entry(minutes=6, percent=26.0), "volcengine")
+    assert len(storage.load_history("volcengine")) == 2
+    storage.append_history(history_entry(minutes=30, percent=26.0), "volcengine")
+    assert len(storage.load_history("volcengine")) == 3
+    # A different account's identical values never suppress this account's row.
+    storage.append_history(history_entry(minutes=31, account="ffffffffffff"), "volcengine")
+    assert len(storage.load_history("volcengine")) == 4
+
+
+def test_history_repairs_a_torn_tail_and_skips_bad_rows(tmp_path):
+    storage = Storage(tmp_path, FakeKeyring())
+    path = storage.history_path("volcengine")
+    path.parent.mkdir(parents=True)
+    # A garbage row, then a crash that left half a row without a trailing newline.
+    path.write_text('not json\n{"v":1,"t":"2026-11-16T07:00:00Z","accou', encoding="utf-8")
+    entry = history_entry()
+    storage.append_history(entry, "volcengine")
+    assert storage.load_history("volcengine") == [entry]
+    assert path.read_text(encoding="utf-8").endswith("\n")
+
+
+def test_history_rotation_enforces_the_row_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr("token_plan_monitor.storage.HISTORY_MAX_ROWS", 3)
+    storage = Storage(tmp_path, FakeKeyring())
+    for index in range(6):
+        storage.append_history(history_entry(minutes=index, percent=20.0 + index), "volcengine")
+    kept = storage.load_history("volcengine")
+    assert len(kept) == 3
+    assert [entry.windows[0].used_percent for entry in kept] == [23.0, 24.0, 25.0]
+
+
+def test_history_rotation_drops_rows_past_the_age_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr("token_plan_monitor.storage.HISTORY_MAX_ROWS", 3)
+    storage = Storage(tmp_path, FakeKeyring())
+    ancient = history_entry(minutes=-100 * 24 * 60)
+    storage.append_history(ancient, "volcengine")
+    for index in range(4):
+        storage.append_history(history_entry(minutes=index, percent=20.0 + index), "volcengine")
+    kept = storage.load_history("volcengine")
+    assert ancient not in kept
+    assert len(kept) == 3
+
+
+def test_history_is_isolated_per_provider_and_filterable_per_account(tmp_path):
+    storage = Storage(tmp_path, FakeKeyring())
+    mine = history_entry(account=account_fingerprint("AKLT-a"))
+    other = history_entry(minutes=1, account=account_fingerprint("AKLT-b"))
+    storage.append_history(mine, "volcengine")
+    storage.append_history(other, "volcengine")
+    storage.append_history(history_entry(minutes=2), "bailian")
+    # Switching provider keeps the old file: history is an observation log.
+    assert storage.history_path("volcengine").exists()
+    assert storage.history_path("bailian").exists()
+    assert storage.load_history("volcengine", account=mine.account) == [mine]
+    assert storage.load_history("volcengine", account=other.account) == [other]
+    assert storage.load_history("volcengine", limit=1) == [other]
+
+
+def test_history_io_errors_surface_as_cache_error(tmp_path):
+    storage = Storage(tmp_path, FakeKeyring())
+    # A regular file where the history directory should be: mkdir fails.
+    (tmp_path / "history").write_text("blocker", encoding="utf-8")
+    with pytest.raises(CacheError):
+        storage.append_history(history_entry(), "volcengine")
+    with pytest.raises(CacheError):
+        storage.load_history("volcengine")

@@ -15,6 +15,7 @@ from .models import (
     QueryError,
     Settings,
 )
+from .history import account_fingerprint, entry_from_snapshot
 from .providers import create_client
 from .storage import Storage
 
@@ -189,6 +190,18 @@ class UsageMonitor:
                         self.storage.save_snapshot(snapshot)
                     except CacheError as exc:
                         cache_warning = exc.message
+                    # History is best-effort: a failed append is logged, never
+                    # surfaced as a cache warning and never fails the refresh.
+                    try:
+                        self.storage.append_history(
+                            entry_from_snapshot(
+                                snapshot,
+                                account_fingerprint(credentials.access_key_id),
+                            ),
+                            settings.provider,
+                        )
+                    except CacheError as exc:
+                        logger.warning("Could not append history: %s", exc.message)
 
             with self._lock:
                 self._in_flight = False

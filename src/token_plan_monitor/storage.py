@@ -11,6 +11,13 @@ import keyring
 from .paths import PROJECT_ROOT, data_directory
 
 from .appearance import AppearancePreferences
+from .history import (
+    HISTORY_MAX_ROWS,
+    HistoryEntry,
+    parse_line,
+    prune,
+    should_append,
+)
 
 from .models import (
     DEFAULT_PROVIDER,
@@ -127,6 +134,93 @@ class Storage:
             self.snapshot_path.unlink(missing_ok=True)
         except OSError as exc:
             raise CacheError("无法清除旧用量缓存") from exc
+
+    def history_path(self, provider: str) -> Path:
+        get_provider(provider)  # reject an unknown id before touching the file
+        return self.data_dir / "history" / f"{provider}.jsonl"
+
+    def append_history(self, entry: HistoryEntry, provider: str) -> None:
+        """Append one observation, deduping unchanged values and rotating at
+        the retention caps. History is an observation log, not the UI's source
+        of truth: callers treat CacheError here as a warning, never as a
+        refresh failure. Switching provider or account never clears it.
+        """
+        path = self.history_path(provider)
+        try:
+            entries = self._read_history(path)
+            last = next(
+                (item for item in reversed(entries) if item.account == entry.account),
+                None,
+            )
+            if not should_append(last, entry):
+                return
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a+b") as handle:
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() > 0:
+                    handle.seek(-1, os.SEEK_END)
+                    if handle.read(1) != b"\n":
+                        # A previous append died mid-row: terminate the torn
+                        # line so the new row never glues onto it.
+                        handle.write(b"\n")
+                handle.write((entry.to_line() + "\n").encode("utf-8"))
+                handle.flush()
+                os.fsync(handle.fileno())
+            if len(entries) + 1 > HISTORY_MAX_ROWS:
+                # Pass the cap explicitly: prune's default binds at definition
+                # time in history.py and would ignore this module's value.
+                kept = prune(entries + [entry], entry.queried_at, max_rows=HISTORY_MAX_ROWS)
+                self._write_history(path, kept)
+        except OSError as exc:
+            raise CacheError(f"无法写入用量历史：{path.name}") from exc
+
+    def load_history(
+        self, provider: str, account: str | None = None, limit: int = 2000
+    ) -> list[HistoryEntry]:
+        """Newest observations for a provider, optionally one account only.
+
+        Malformed rows are skipped, never fatal: a torn tail from a crash must
+        not hide the healthy rows before it.
+        """
+        path = self.history_path(provider)
+        try:
+            entries = self._read_history(path)
+        except OSError as exc:
+            raise CacheError(f"无法读取用量历史：{path.name}") from exc
+        if account is not None:
+            entries = [entry for entry in entries if entry.account == account]
+        return entries[-limit:] if limit > 0 else []
+
+    def _read_history(self, path: Path) -> list[HistoryEntry]:
+        try:
+            # errors="replace": invalid UTF-8 bytes become replacement chars
+            # and parse_line skips that row, instead of poisoning the read.
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                lines = handle.readlines()
+        except FileNotFoundError:
+            return []
+        entries = []
+        for line in lines:
+            entry = parse_line(line)
+            if entry is not None:
+                entries.append(entry)
+        return entries
+
+    def _write_history(self, path: Path, entries: list[HistoryEntry]) -> None:
+        temporary = path.with_name(f"{path.name}.tmp")
+        try:
+            with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+                for entry in entries:
+                    handle.write(entry.to_line() + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        except OSError as exc:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise CacheError(f"无法写入用量历史：{path.name}") from exc
 
     def load_credentials(self, provider: str = DEFAULT_PROVIDER) -> Credentials | None:
         ak_name, sk_name = self._credential_entries(provider)

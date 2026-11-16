@@ -3,8 +3,10 @@ import time
 import pytest
 from datetime import UTC, datetime
 
+from token_plan_monitor.history import account_fingerprint
 from token_plan_monitor.models import (
     AlertSettings,
+    CacheError,
     Credentials,
     AuthenticationError,
     ConfigurationError,
@@ -274,6 +276,49 @@ def test_resaving_the_same_provider_keeps_the_cached_snapshot(tmp_path):
         monitor.update_configuration(Settings(), Credentials("AKLT-a", "secret"))
         assert monitor.get_state().snapshot is not None
         assert storage.load_snapshot() is not None
+    finally:
+        monitor.stop()
+
+
+def test_successful_refresh_appends_history_for_the_active_account(tmp_path):
+    storage = configured_storage(tmp_path, "AKLT-a")
+    monitor = UsageMonitor(
+        storage, client_factory=lambda settings, credentials: StaticClient(snapshot())
+    )
+    try:
+        monitor.start()
+        wait_for(lambda: monitor.get_state().status == "ok")
+        entries = storage.load_history("volcengine")
+        assert len(entries) == 1
+        assert entries[0].account == account_fingerprint("AKLT-a")
+        assert entries[0].windows == snapshot().windows
+        # An identical manual refresh within the gap adds no row.
+        monitor.request_refresh()
+        wait_for(lambda: not monitor.get_state().is_refreshing)
+        assert len(storage.load_history("volcengine")) == 1
+    finally:
+        monitor.stop()
+
+
+def test_history_append_failure_never_fails_the_refresh(tmp_path):
+    class BrokenHistoryStorage(Storage):
+        def append_history(self, entry, provider):
+            raise CacheError("disk on fire")
+
+    keyring = FakeKeyring()
+    storage = BrokenHistoryStorage(tmp_path, keyring)
+    storage.save_settings(Settings())
+    storage.save_credentials(Credentials("AKLT-a", "secret"))
+    monitor = UsageMonitor(
+        storage, client_factory=lambda settings, credentials: StaticClient(snapshot())
+    )
+    try:
+        monitor.start()
+        wait_for(lambda: monitor.get_state().status == "ok")
+        state = monitor.get_state()
+        assert state.snapshot is not None
+        # Unlike a snapshot cache failure, history loss is not a UI warning.
+        assert state.error is None
     finally:
         monitor.stop()
 
