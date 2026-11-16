@@ -16,7 +16,7 @@ from PyObjCTools import AppHelper
 
 from ..history import HistoryEntry, account_fingerprint
 from ..model_catalog import ModelCatalogError
-from ..models import Credentials, MonitorViewState, QuotaWindow, UsageSnapshot
+from ..models import AlertSettings, Credentials, MonitorViewState, QuotaWindow, UsageSnapshot
 from ..providers import get_provider
 from ..storage import Storage
 from ..trends import trends_for_snapshot
@@ -716,6 +716,19 @@ def main(argv=None):
                 ui.open_settings()
                 assert ui.settings.isVisible()
                 capture(ui.settings, args.artifacts / "settings.png")
+                # Alert group: controls exist, the bundle guard reports honestly
+                # in preview, and a bad threshold is a field error that keeps
+                # the dialog open with focus on the offending row.
+                assert ui.alert_enabled_button is not None
+                assert "alert_threshold" in ui.fields
+                texts = collect_texts(ui.settings_root)
+                assert any("当前运行方式不支持系统通知" in t for t in texts), texts
+                ui.fields["alert_threshold"].setStringValue_("0")
+                ui.save_settings()
+                assert ui.settings.isVisible()
+                assert ui.setting_error.stringValue() == "阈值必须在 1–99 之间"
+                assert ui.settings.firstResponder() == ui.fields["alert_threshold"].currentEditor()
+                ui.fields["alert_threshold"].setStringValue_("10")
                 ui.toggle_credential_help()
                 assert not ui.help_text.isHidden()
                 capture(ui.settings, args.artifacts / "settings-help.png")
@@ -762,12 +775,18 @@ def main(argv=None):
                 assert ui.settings_provider == "volcengine"
                 assert ui.fields["region"].stringValue() == "cn-beijing"
                 ui.fields["region"].setStringValue_("cn-shanghai")
+                # Alert choices are provider-independent and must survive the
+                # rebuild exactly like region and interval do.
+                ui.fields["alert_threshold"].setStringValue_("25")
+                ui.alert_reset_button.setState_(A.NSControlStateValueOn)
                 ui.provider_popup.selectItemAtIndex_(1)
                 ui.provider_changed()
                 assert ui.settings_provider == "volcengine", "rebuild must not be synchronous"
                 ui.flush_settings_rebuild()
                 assert ui.settings_provider == "bailian"
                 assert ui.fields["region"].stringValue() == "cn-beijing"
+                assert ui.fields["alert_threshold"].stringValue() == "25"
+                assert ui.alert_reset_button.state() == A.NSControlStateValueOn
                 assert ui.fields["ak"].accessibilityLabel() == "阿里云 AccessKey ID"
                 assert ui.existing is None and ui.fields["ak"].stringValue() == ""
                 capture(ui.settings, args.artifacts / "settings-bailian.png")
@@ -776,6 +795,7 @@ def main(argv=None):
                 ui.save_settings()
                 saved = storage.load_settings()
                 assert (saved.provider, saved.region) == ("bailian", "cn-beijing")
+                assert saved.alert == AlertSettings(threshold_percent=25, notify_on_reset=True)
                 assert storage.load_credentials("bailian") == Credentials("LTAI-preview", "bailian-secret")
                 # Saving Bailian credentials must not touch the Volcengine entries.
                 assert {name for _, name in storage._keyring.values} == {

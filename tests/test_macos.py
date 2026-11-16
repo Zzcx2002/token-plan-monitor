@@ -16,6 +16,7 @@ from token_plan_monitor.macos.layout import (
     validate_configuration,
 )
 from token_plan_monitor.models import (
+    AlertSettings,
     ClaudeProviderPrefs,
     ConfigurationError,
     Credentials,
@@ -81,6 +82,37 @@ def test_bailian_settings_default_region_and_reject_unsupported_one():
 def test_unknown_provider_is_a_configuration_error():
     with pytest.raises(ConfigurationError):
         validate_configuration("openai", "ak", "sk", "cn-beijing", "15", None)
+
+
+def test_alert_fields_validate_and_default_without_touching_legacy_calls():
+    settings, _ = validate_configuration("volcengine", "ak", "sk", "cn-beijing", "15", None)
+    assert settings.alert == AlertSettings()
+    settings, _ = validate_configuration(
+        "volcengine", "ak", "sk", "cn-beijing", "15", None,
+        alert_enabled=False, alert_threshold="25", alert_reset=True)
+    assert settings.alert == AlertSettings(enabled=False, threshold_percent=25,
+                                           notify_on_reset=True)
+    for bad in ("0", "100", "abc", "1.5", ""):
+        with pytest.raises(FieldValidationError) as failure:
+            validate_configuration("volcengine", "ak", "sk", "cn-beijing", "15", None,
+                                   alert_threshold=bad)
+        assert failure.value.field == "alert_threshold"
+
+
+def test_notification_guard_and_delivery_path_are_pure():
+    from token_plan_monitor.macos.notifications import delivery_path, un_available
+
+    # A bare interpreter (source run / preview) has no bundle proxy: never UN.
+    assert un_available(None, "/x/.venv/bin") is False
+    assert un_available("com.example.app", "/x/.venv/bin") is False
+    assert un_available("com.example.app", "/Applications/TokenPlanMonitor.app") is True
+    assert un_available("", "/Applications/TokenPlanMonitor.app") is False
+    center, legacy = object(), object()
+    assert delivery_path(center, legacy, "authorized") == "un"
+    assert delivery_path(center, legacy, "not_determined") == "un"
+    assert delivery_path(center, legacy, "denied") == "legacy"
+    assert delivery_path(None, legacy, "unavailable") == "legacy"
+    assert delivery_path(None, None, "unavailable") == "silent"
 
 
 @pytest.mark.parametrize("status,category,expected", [

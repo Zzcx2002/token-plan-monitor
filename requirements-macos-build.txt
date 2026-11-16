@@ -18,6 +18,7 @@ Pygments==2.21.0
 pyobjc-core==12.2.2
 pyobjc-framework-Cocoa==12.2.2
 pyobjc-framework-Quartz==12.2.2
+pyobjc-framework-UserNotifications==12.2.2
 pytest==9.2.0
 requests==2.34.2
 setuptools==80.10.2

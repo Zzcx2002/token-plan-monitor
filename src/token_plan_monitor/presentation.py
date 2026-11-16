@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from .alerts import AlertEvent
 from .models import MonitorViewState, QuotaWindow, WindowTrend, WINDOW_ORDER
 from .trends import MIN_RATE_PERCENT_PER_HOUR
 
@@ -121,6 +122,24 @@ def _short_time(value: datetime) -> str:
     if local.date() != datetime.now().astimezone().date():
         return local.strftime("%m-%d %H:%M")
     return local.strftime("%H:%M")
+
+
+def alert_notification(event: AlertEvent, provider_name: str) -> tuple[str, str]:
+    """Title and body for a system notification; the single copy source for
+    every platform's notifier."""
+    label = WINDOW_LABELS.get(event.kind, event.kind)
+    if event.category == "reset":
+        title = f"{provider_name} · {label}窗口已重置"
+        body = f"剩余回到 {event.remaining_percent:.1f}%，新周期开始。"
+    else:
+        title = f"{provider_name} · {label}额度偏低"
+        body = f"剩余 {event.remaining_percent:.1f}%，低于阈值 {event.threshold_percent}%。"
+    if event.exhausted_at is not None:
+        body += f" 预计 {_short_time(event.exhausted_at)} 耗尽"
+        if event.resets_before_exhaustion is False:
+            body += "（早于重置）"
+        body += "。"
+    return title, body
 
 
 def trend_line(trend: WindowTrend | None, window: QuotaWindow, unit_label: str) -> str:

@@ -43,6 +43,7 @@ from .layout import (
     validate_configuration,
 )
 from . import theme as T
+from .notifications import MacNotifier
 
 logger = logging.getLogger(__name__)
 # Provider-neutral app title; window titles that show quota data are prefixed
@@ -272,6 +273,17 @@ def text_field(parent, value, secure, y, width, label_text):
     field.setAccessibilityLabel_(label_text)
     parent.addSubview_(_stretch(field))
     return field, well
+
+
+def checkbox(parent, title, on, y, width):
+    box = A.NSButton.alloc().initWithFrame_(rect(T.PAGE_INSET, y, width, 22))
+    box.setButtonType_(A.NSButtonTypeSwitch)
+    box.setTitle_(title)
+    box.setFont_(T.font("body"))
+    box.setState_(A.NSControlStateValueOn if on else A.NSControlStateValueOff)
+    box.setAccessibilityLabel_(title)
+    parent.addSubview_(box)
+    return box
 
 
 def form_row(parent, title, value, secure, y, width):
@@ -591,6 +603,12 @@ class MonitorUI:
         # key drafts stay in memory only and are cleared on shutdown.
         self._claude_drafts = {}
         self._claude_key_drafts = {}
+        # Quota alert delivery. The bundle guard inside MacNotifier makes this
+        # safe in source runs and preview (it reports "unavailable" there);
+        # clicks route back to the details window on the main thread.
+        self.notifier = MacNotifier(on_click=self.show_details)
+        if getattr(self.monitor, "notifier", None) is None:
+            self.monitor.notifier = self.notifier.notify
 
     def run(self):
         self.setup()
@@ -1250,19 +1268,67 @@ class MonitorUI:
         if allowed is not None and region not in allowed:
             region = spec.default_region
         interval = str(self.fields["interval"].stringValue()).strip() or "15"
+        # Alert choices are provider-independent: carry the typed values across
+        # the rebuild exactly like region and interval.
+        alert_enabled = self.alert_enabled_button.state() == A.NSControlStateValueOn
+        alert_threshold = str(self.fields["alert_threshold"].stringValue()).strip() or "10"
+        alert_reset = self.alert_reset_button.state() == A.NSControlStateValueOn
         # Stash the outgoing provider's Claude form *before* rebuilding, or the
         # rebuild discards whatever was typed. The new provider is then seeded
         # from its own draft/prefs, falling back to the live config.
         self.stash_claude_draft(self.settings_provider)
-        self.build_settings(provider, region, interval, **self.claude_seed(provider))
+        self.build_settings(provider, region, interval,
+                            alert_enabled=alert_enabled, alert_threshold=alert_threshold,
+                            alert_reset=alert_reset, **self.claude_seed(provider))
         self._maybe_auto_fetch(provider)
+
+    def _alert_status_copy(self):
+        status = self.notifier.authorization_status()
+        if status == "authorized":
+            return "系统通知已授权。", SECONDARY
+        if status == "legacy":
+            return "系统通知可用（兼容模式）。", SECONDARY
+        if status == "denied":
+            return "系统通知被拒绝：请在 系统设置 → 通知 中允许本应用。", T.tone("warning")
+        if status == "not_determined":
+            return "首次告警时会请求系统通知权限。", SECONDARY
+        return "当前运行方式不支持系统通知（打包为 .app 后可用）。", SECONDARY
+
+    def _build_alert_group(self, body, y, field_width, width, enabled, threshold, reset):
+        """The alert group as its own builder: build_settings stays a sequence
+        of group calls instead of growing another inline form section."""
+        y = group_title(body, "低额度告警", y, field_width,
+                        "任一窗口剩余低于阈值时发送一次系统通知；剩余回到阈值以上或窗口重置后自动重新启用。")
+        card_start = y
+        y += T.GUTTER
+        self.alert_enabled_button = checkbox(body, "启用系统通知", enabled, y, field_width)
+        y += 22 + T.ROW_GAP
+        y, self.fields["alert_threshold"], self.field_wells["alert_threshold"] = form_row(
+            body, "低额度阈值（%，1–99）", threshold, False, y, field_width)
+        y += T.ROW_GAP
+        self.alert_reset_button = checkbox(body, "窗口重置时提醒", reset, y, field_width)
+        y += 22 + T.ROW_GAP
+        text, color = self._alert_status_copy()
+        self.alert_status_label = _stretch(text_label(
+            body, text, T.PAGE_INSET, y, field_width, 12, color=color))
+        self.alert_status_label.setAccessibilityLabel_("系统通知状态")
+        y += self.alert_status_label.frame().size.height + T.ROW_GAP
+        return end_group(body, card_start, y, width)
 
     def build_settings(self, provider, region, interval, claude_model="",
                        claude_custom="", claude_base_url="",
                        claude_auto_model="", claude_auto_custom="",
-                       claude_subagent_model="", claude_subagent_custom=""):
+                       claude_subagent_model="", claude_subagent_custom="",
+                       alert_enabled=None, alert_threshold=None, alert_reset=None):
         """(Re)create the settings form for one provider."""
         self.settings_provider = provider
+        stored_alert = self.storage.load_settings().alert
+        if alert_enabled is None:
+            alert_enabled = stored_alert.enabled
+        if alert_threshold is None:
+            alert_threshold = str(stored_alert.threshold_percent)
+        if alert_reset is None:
+            alert_reset = stored_alert.notify_on_reset
         spec = get_provider(provider)
         try:
             self.existing = self.storage.load_credentials(provider)
@@ -1370,7 +1436,11 @@ class MonitorUI:
             y += T.ROW_GAP
         y = end_group(body, card_start, y, width)
 
-        # --- Group 2: Claude Code hookup --------------------------------------
+        # --- Group 2: low-quota alerts ----------------------------------------
+        y = self._build_alert_group(body, y, field_width, width,
+                                    alert_enabled, alert_threshold, alert_reset)
+
+        # --- Group 3: Claude Code hookup --------------------------------------
         y = group_title(body, "Claude Code 接入", y, field_width,
                         "选择模型后点击下方按钮，把服务商接入信息写入 Claude Code 本地配置。")
         card_start = y
@@ -1487,7 +1557,9 @@ class MonitorUI:
         # the help toggle, and the write button carries no key equivalent so an
         # accidental Enter can never trigger an external config change.
         ordered = [popup, self.fields["ak"], self.fields["sk"], self.fields["region"],
-                   self.fields["interval"], self.model_refresh_button,
+                   self.fields["interval"],
+                   self.alert_enabled_button, self.fields["alert_threshold"],
+                   self.alert_reset_button, self.model_refresh_button,
                    model_popup, self.fields["model"],
                    auto_popup, self.fields["auto_model"],
                    subagent_popup, self.fields["subagent_model"],
@@ -1570,7 +1642,10 @@ class MonitorUI:
             settings, credentials = validate_configuration(
                 self.settings_provider,
                 *(str(self.fields[key].stringValue()) for key in ("ak", "sk", "region", "interval")),
-                self.existing)
+                self.existing,
+                alert_enabled=self.alert_enabled_button.state() == A.NSControlStateValueOn,
+                alert_threshold=str(self.fields["alert_threshold"].stringValue()),
+                alert_reset=self.alert_reset_button.state() == A.NSControlStateValueOn)
             self.storage.save_credentials(credentials, settings.provider)
             self.storage.save_settings(settings)
         except FieldValidationError as exc:
@@ -1587,6 +1662,9 @@ class MonitorUI:
             self.show_form_message(exc.message, "error")
             return
         self.monitor.update_configuration(settings, credentials)
+        if settings.alert.enabled:
+            # Ask while the user is looking at the dialog, not mid-alert.
+            self.notifier.request_authorization()
         # Remember whatever Claude choices are typed (the key stays in memory).
         self.stash_claude_draft(settings.provider)
         self.settings.orderOut_(None)

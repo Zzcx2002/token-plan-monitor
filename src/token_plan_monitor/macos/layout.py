@@ -8,6 +8,7 @@ from ..models import (
     CARD_MIN_WIDTH,
     HEAVY_ID_MARKS,
     MODEL_ID_PATTERN,
+    AlertSettings,
     ConfigurationError,
     Credentials,
     MonitorViewState,
@@ -51,7 +52,9 @@ def _field_prompt(verb: str, field_label: str) -> str:
 
 
 def validate_configuration(provider: str, ak: str, sk: str, region: str, interval: str,
-                           existing: Credentials | None) -> tuple[Settings, Credentials]:
+                           existing: Credentials | None,
+                           alert_enabled: bool = True, alert_threshold: str = "10",
+                           alert_reset: bool = False) -> tuple[Settings, Credentials]:
     spec = get_provider(provider)
     if not ak.strip():
         raise FieldValidationError("ak", _field_prompt("请填写", spec.access_key_label))
@@ -66,9 +69,18 @@ def validate_configuration(provider: str, ak: str, sk: str, region: str, interva
     if not 5 <= minutes <= 1440:
         raise FieldValidationError("interval", "刷新间隔必须在 5–1440 分钟之间")
     try:
+        threshold = int(alert_threshold.strip())
+    except ValueError as exc:
+        raise FieldValidationError("alert_threshold", "阈值必须是 1–99 的整数") from exc
+    if not 1 <= threshold <= 99:
+        raise FieldValidationError("alert_threshold", "阈值必须在 1–99 之间")
+    try:
         # An empty region falls back to the provider default rather than failing.
         settings = Settings(provider=provider, region=region.strip() or spec.default_region,
-                            refresh_minutes=minutes)
+                            refresh_minutes=minutes,
+                            alert=AlertSettings(enabled=alert_enabled,
+                                                threshold_percent=threshold,
+                                                notify_on_reset=alert_reset))
     except ConfigurationError as exc:
         raise FieldValidationError("region", exc.message) from exc
     credentials = Credentials(ak, sk.strip() or (existing.secret_access_key if existing else ""))

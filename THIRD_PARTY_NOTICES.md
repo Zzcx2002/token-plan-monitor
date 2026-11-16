@@ -246,7 +246,7 @@ directory, which is shipped inside the signed application under
 - Pillow 12.3.0 (`Pillow-12.3.0-and-native-libraries.txt`). This upstream
   notice also covers the bundled Brotli, FreeType, HarfBuzz, JPEG, LCMS2,
   XZ/liblzma, OpenJPEG, libpng, libtiff, Xau, and XCB library notices.
-- PyObjC Core, Cocoa, and Quartz 12.2.2, which share
+- PyObjC Core, Cocoa, Quartz, and UserNotifications 12.2.2, which share
   `PyObjC-12.2.2.txt`.
 - Setuptools 80.10.2 and its vendored dependencies. The vendored notices are
   preserved by distribution name under `licenses/setuptools-vendored/`.

@@ -1,6 +1,7 @@
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
+from token_plan_monitor.alerts import AlertEvent
 from token_plan_monitor.models import (
     MonitorViewState,
     QuotaWindow,
@@ -14,6 +15,7 @@ from token_plan_monitor.presentation import (
     menu_lines,
     state_tone,
     tray_tooltip,
+    alert_notification,
     trend_line,
     truncate_utf16,
 )
@@ -127,6 +129,24 @@ def test_trend_line_is_honest_about_evidence_and_predictions():
     no_reset = QuotaWindow("five_hour", 70)
     assert "早于" not in trend_line(replace(burning, resets_before_exhaustion=None),
                                     no_reset, "AFP")
+
+
+def test_alert_notification_copy_names_provider_window_and_threshold():
+    event = AlertEvent("low_quota", "five_hour", "volcengine", 8.0, 10, "Agent Plan")
+    title, body = alert_notification(event, "火山方舟")
+    assert title == "火山方舟 · 5 小时额度偏低"
+    assert "剩余 8.0%" in body and "阈值 10%" in body
+    reset = AlertEvent("reset", "weekly", "bailian", 100.0, 10)
+    title, body = alert_notification(reset, "阿里云百炼")
+    assert title == "阿里云百炼 · 每周窗口已重置"
+    assert "100.0%" in body
+    burning = replace(
+        event,
+        exhausted_at=datetime.now(UTC) + timedelta(hours=1),
+        resets_before_exhaustion=False,
+    )
+    _, body = alert_notification(burning, "火山方舟")
+    assert "预计" in body and "耗尽" in body and "早于重置" in body
 
 
 def test_native_tooltip_is_bounded_without_splitting_surrogate_pairs():

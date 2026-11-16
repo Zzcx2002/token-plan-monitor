@@ -15,6 +15,7 @@ from .models import (
     QueryError,
     Settings,
 )
+from .alerts import AlertEvent, evaluate
 from .history import account_fingerprint, entry_from_snapshot
 from .providers import create_client
 from .storage import Storage
@@ -30,11 +31,15 @@ class UsageMonitor:
         client_factory: Callable[..., Any] = create_client,
         on_state: Callable[[MonitorViewState], None] | None = None,
         clock: Callable[[], datetime] | None = None,
+        notifier: Callable[[AlertEvent], None] | None = None,
     ):
         self.storage = storage
         self.client_factory = client_factory
         self.on_state = on_state
         self.clock = clock or (lambda: datetime.now(UTC))
+        self.notifier = notifier
+        # Per-window alert arming, in memory only (see alerts.py).
+        self._alert_armed: dict[str, bool] = {}
 
         self._lock = threading.RLock()
         self._wake = threading.Event()
@@ -127,6 +132,8 @@ class UsageMonitor:
             self._pending = True
             self._next_run = None
             should_clear_cache = account_changed
+            if account_changed:
+                self._alert_armed = {}
             self._wake.set()
         if should_clear_cache:
             try:
@@ -169,6 +176,7 @@ class UsageMonitor:
                 revision = self._state.revision
                 settings = self._settings
                 credentials = self._credentials
+                previous_snapshot = self._state.snapshot
                 self._state = replace(self._state, is_refreshing=True)
             self._publish()
 
@@ -211,6 +219,7 @@ class UsageMonitor:
                     except CacheError as exc:
                         logger.warning("Could not load history for trends: %s", exc.message)
 
+            events: list[AlertEvent] = []
             with self._lock:
                 self._in_flight = False
                 if revision != self._state.revision:
@@ -229,6 +238,22 @@ class UsageMonitor:
                         alert_threshold_percent=settings.alert.threshold_percent,
                         trends=trends,
                     )
+                    events, self._alert_armed = evaluate(
+                        previous_snapshot, snapshot, settings.alert,
+                        self._alert_armed, settings.provider,
+                    )
+                    if events:
+                        # Attach the fresh trend context so the notification
+                        # can say when the quota is estimated to run out.
+                        by_kind = {trend.kind: trend for trend in trends}
+                        events = [
+                            replace(
+                                event,
+                                exhausted_at=by_kind[event.kind].exhausted_at,
+                                resets_before_exhaustion=by_kind[event.kind].resets_before_exhaustion,
+                            ) if event.kind in by_kind else event
+                            for event in events
+                        ]
                 else:
                     assert error is not None
                     previous = self._state.snapshot
@@ -255,6 +280,15 @@ class UsageMonitor:
                 if self._pending:
                     self._wake.set()
             self._publish()
+            # Notifications go out after the state publish, off the lock, and
+            # a broken notifier can never take the refresh loop down.
+            for event in events:
+                if self.notifier is None:
+                    break
+                try:
+                    self.notifier(event)
+                except Exception:
+                    logger.exception("Alert notifier failed")
 
     def _publish(self) -> None:
         if self.on_state is None:

@@ -26,7 +26,8 @@ setup(
         "iconfile": "build/assets/app.icns",
         "resources": ["LICENSE", "THIRD_PARTY_NOTICES.md", "licenses"],
         "packages": ["token_plan_monitor", "requests", "certifi", "keyring"],
-        "includes": ["keyring.backends.macOS", "AppKit", "Foundation", "Quartz", "objc"],
+        "includes": ["keyring.backends.macOS", "AppKit", "Foundation", "Quartz", "objc",
+                     "UserNotifications"],
         "excludes": ["tkinter", "_tkinter", "pystray", "winreg", "pytest",
                      "token_plan_monitor.ui", "token_plan_monitor.ui_graphics", "token_plan_monitor.desktop_widget"],
         "plist": {

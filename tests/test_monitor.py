@@ -323,6 +323,72 @@ def test_history_append_failure_never_fails_the_refresh(tmp_path):
         monitor.stop()
 
 
+def test_notifier_fires_once_per_crossing_and_survives_its_own_failure(tmp_path):
+    storage = configured_storage(tmp_path)
+    events = []
+
+    class SequenceClient:
+        def __init__(self):
+            # healthy -> low -> still low -> recovered -> low again
+            self.results = [snapshot(percent=p) for p in (25, 95, 96, 20, 97)]
+            self.index = 0
+
+        def query(self):
+            result = self.results[min(self.index, len(self.results) - 1)]
+            self.index += 1
+            return result
+
+    client = SequenceClient()
+
+    def notifier(event):
+        events.append(event)
+        if len(events) == 1:
+            raise RuntimeError("notifier exploded")
+
+    monitor = UsageMonitor(
+        storage, client_factory=lambda *_: client, notifier=notifier
+    )
+    try:
+        monitor.start()
+        wait_for(lambda: monitor.get_state().status == "ok")
+        assert events == []
+        monitor.request_refresh()
+        wait_for(lambda: len(events) == 1)  # crossed; the raise did not kill the loop
+        assert events[0].category == "low_quota"
+        assert events[0].kind == "five_hour"
+        monitor.request_refresh()
+        wait_for(lambda: client.index >= 3 and not monitor.get_state().is_refreshing)
+        assert len(events) == 1  # still low: no repeat notification
+        monitor.request_refresh()
+        wait_for(lambda: client.index >= 4 and not monitor.get_state().is_refreshing)
+        assert len(events) == 1  # recovery only re-arms
+        # A new account starts with fresh arming, so being low fires again.
+        monitor.update_configuration(Settings(), Credentials("AKLT-b", "secret"))
+        wait_for(lambda: len(events) == 2)
+        assert monitor.get_state().status == "ok"
+    finally:
+        monitor.stop()
+
+
+def test_disabled_alerts_never_reach_the_notifier(tmp_path):
+    storage = configured_storage(tmp_path)
+    storage.save_settings(Settings(alert=AlertSettings(enabled=False)))
+    events = []
+    monitor = UsageMonitor(
+        storage,
+        client_factory=lambda *_: StaticClient(snapshot(percent=95)),
+        notifier=events.append,
+    )
+    try:
+        monitor.start()
+        wait_for(lambda: monitor.get_state().snapshot is not None)
+        monitor.request_refresh()
+        wait_for(lambda: not monitor.get_state().is_refreshing)
+        assert events == []
+    finally:
+        monitor.stop()
+
+
 def test_trends_come_from_history_and_survive_a_failed_refresh(tmp_path):
     storage = configured_storage(tmp_path, "AKLT-a")
     account = account_fingerprint("AKLT-a")
