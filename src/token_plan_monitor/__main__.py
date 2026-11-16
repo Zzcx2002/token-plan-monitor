@@ -57,6 +57,11 @@ def main() -> None:
         from .macos.preview import main as preview
         preview([arg for arg in sys.argv[1:] if arg != "--preview"])
         return
+    if sys.platform == "darwin" and "--notify-probe" in sys.argv:
+        # Dev entry, same class as --preview: needs a LaunchServices launch
+        # (open -W ... --args --notify-probe) for authorization prompts to work.
+        from .macos.notify_probe import run as notify_probe
+        raise SystemExit(notify_probe())
     if sys.platform == "darwin":
         from .macos.ui import MonitorUI, show_already_running
     elif sys.platform == "win32":
