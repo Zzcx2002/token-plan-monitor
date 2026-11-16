@@ -4,6 +4,19 @@
 
 开发/验证机器：Apple Silicon，macOS 26.6（25G72）。构建使用 python.org Python 3.13.9 framework、py2app 0.28.10；Python 及依赖都在项目隔离目录，未安装到系统 Python。依赖版本见 `requirements-macos-build.txt`。
 
+## v0.1.3 发布记录（2026-11-16）
+
+分支 `release/v0.1.0`，功能提交 `0ee3107`、bump 提交 `71378c1`，附注标签 `v0.1.3`（指向 `71378c1`），GitHub Release id `446622546`。
+
+- 功能：① Claude Code 接入的模型下拉改为「内置清单 + 在线合并」——用已存推理 Key 后台拉取 token-plan 主机 compatible-mode `/v1/models`（打开面板/切换服务商自动、另有手动刷新按钮），过滤图像/视频/语音/决策模型、形状校验模型 ID、按服务商落盘缓存、任何失败静默回退内置清单；② 新增可选 Subagent 模型选择项（`CLAUDE_CODE_SUBAGENT_MODEL`）——不选沿用 tier 规则（已有值保留、为空回填主模型），选择则覆盖写入并退出回填。两者均镜像 auto-mode 选择项的 prefs/seed/校验/原地刷新机制。
+- 构建环境：沿用 `.venv-build/`（python.org Python 3.13.9 framework，editable 安装读到 `__version__=0.1.3`），不影响开发用 `.venv`。
+- 离线 pytest：**327 passed、3 skipped**（新增 `tests/test_model_catalog.py` 39 项；subagent 新增 `test_claude_config.py` 6 项、`test_macos.py` 3 项、`test_storage.py` 断言扩展）。原生 AppKit smoke 通过，含密闭的在线清单「拉取→排空→原地刷新」与 subagent 回填/覆盖/回到默认保留断言，全程临时目录。
+- 发布前产物验证：Info.plist `0.1.3` / build `4`；构建脚本内置 arm64 thin（109 个二进制）、deployment target ≤14、许可证入包与 ad-hoc 签名检查随构建全过；包内 `--smoke-test` 通过；本地 `shasum -a 256 -c` 与 `hdiutil verify` 均 OK。
+- 发布后按使用者路径复验：从 Release 资产链接重新下载 DMG 与 `.sha256`（34052710 / 99 字节），`shasum -a 256 -c` 通过，`hdiutil verify` VALID，挂载后 plist `0.1.3`/`4` 且 `codesign --verify --deep --strict` 通过，随后弹出。本地与重下载摘要一致（`c9cfa9bcbd0577c9…`）。
+- `README.md` / `README.en.md` 的下载与校验链接已指向 v0.1.3；v0.1.2 及更早的 Release 与资产未做任何改动。
+
+仍未实机验证：干净 macOS 14 与浏览器下载后的 Gatekeeper「仍要打开」流程、VoiceOver、多屏/Spaces；在线清单与 subagent 新选项在**真实** `~/.claude/settings.json` 上点击写入并重开会话确认生效（离线 smoke 全程走临时目录；开发期间仅以只读 GET 实测过 compatible-mode 模型列表接口）。
+
 ## v0.1.2 发布记录（2026-11-12）
 
 分支 `release/v0.1.0`，提交 `815db53`（功能提交 `665dbb2`），附注标签 `v0.1.2`。
