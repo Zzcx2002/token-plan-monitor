@@ -12,6 +12,7 @@ may reset the authorization, so the status is re-checked before every send.
 from __future__ import annotations
 
 import logging
+import time
 
 import AppKit as A
 import Foundation as F
@@ -56,6 +57,8 @@ class _NotificationDelegate(A.NSObject):
     def userNotificationCenter_didReceiveNotificationResponse_withCompletionHandler_(
         self, center, response, handler
     ):
+        if self._owner.on_response is not None:
+            self._owner.on_response()
         self._owner._click_on_main_thread()
         handler()
 
@@ -64,6 +67,8 @@ class _NotificationDelegate(A.NSObject):
     ):
         import UserNotifications as UN
 
+        if self._owner.on_present is not None:
+            self._owner.on_present()
         handler(UN.UNNotificationPresentationOptionBanner | UN.UNNotificationPresentationOptionSound)
 
     # NSUserNotificationCenterDelegate (legacy fallback)
@@ -76,9 +81,14 @@ class MacNotifier:
 
     def __init__(self, on_click=None):
         self.on_click = on_click
+        # Diagnostic hooks (notify probe): system-level present/response
+        # callbacks, independent of the main-thread click dispatch.
+        self.on_present = None
+        self.on_response = None
         self._center = None
         self._legacy_center = None
         self._status = "unavailable"
+        self.authorization_error: str | None = None
         self._delegate = _NotificationDelegate.alloc().initWithOwner_(self)
         bundle = F.NSBundle.mainBundle()
         if not un_available(bundle.bundleIdentifier(), bundle.bundlePath()):
@@ -126,6 +136,11 @@ class MacNotifier:
 
         def handler(granted, error):
             self._status = "authorized" if granted else "denied"
+            if error is not None:
+                # Surfaced by the notify probe; a denied-with-error request is
+                # a system policy answer, not a user decision.
+                self.authorization_error = str(error)
+                logger.warning("Notification authorization error: %s", error)
 
         try:
             self._center.requestAuthorizationWithOptions_completionHandler_(
@@ -155,12 +170,29 @@ class MacNotifier:
                 content.setTitle_(title)
                 content.setBody_(body)
                 content.setSound_(self._UN.UNNotificationSound.defaultSound())
+                if event.category == "low_quota":
+                    # Running out of quota mid-session is time-sensitive: under
+                    # Focus/DND a default-level alert is silently stored (seen
+                    # in unc:dnd logs as "not intelligentlyBrokethrough"), which
+                    # defeats the point of the alert. Time-sensitive breaks
+                    # through when the user allows it (default on).
+                    content.setInterruptionLevel_(
+                        self._UN.UNNotificationInterruptionLevelTimeSensitive
+                    )
+                # Unique identifier per delivery: re-adding a delivered
+                # identifier is treated by UNC as a silent update (observed:
+                # canDisplayWhileCenterIsClosed=false, no banner), which would
+                # swallow exactly the alerts this feature exists for. Alerts
+                # are rare events; keeping each in history is the right trade.
                 request = self._UN.UNNotificationRequest.requestWithIdentifier_content_trigger_(
-                    # Same identifier per window+category: a repeat replaces
-                    # the previous banner instead of stacking duplicates.
-                    f"{event.category}-{event.kind}", content, None,
+                    f"{event.category}-{event.kind}-{int(time.time())}", content, None,
                 )
-                self._center.addNotificationRequest_withCompletionHandler_(request, None)
+
+                def delivered(error):
+                    if error is not None:
+                        logger.warning("Notification delivery error: %s", error)
+
+                self._center.addNotificationRequest_withCompletionHandler_(request, delivered)
             except Exception:
                 logger.exception("Could not deliver UN notification")
             return
