@@ -12,11 +12,29 @@
 - 构建环境：本机 `.venv` 已被重建为 uv standalone 解释器（构建 guard 正确拒绝），按 v0.1.2 惯例重建 `.venv-build/`（python.org Python 3.13.12 framework + pinned requirements + editable 安装），不影响开发用 `.venv`。
 - 离线 pytest：**372 passed、3 skipped**（新增 `tests/test_history.py`、`test_trends.py`、`test_alerts.py`，及 storage/monitor/presentation/macos 的兼容、阈值、趋势、告警端到端扩展）。原生 AppKit smoke 通过：新增 trend / trend_percent_only / alert_low 假状态（趋势走真实纯函数）、趋势文案与百分比-only 无绝对值断言、阈值 30 时 25% 剩余呈警告色、告警组控件/非法阈值聚焦/跨 provider 携带断言。
 - **bundle smoke 抓到一个真 bug**：首版通知模块用了不存在的 selector `getAuthorizationStatusWithCompletionHandler_`，包内初始化 UN 抛 AttributeError 静默降级 legacy；裸进程探针因守卫提前返回没暴露它。改为 `getNotificationSettingsWithCompletionHandler_`（授权状态在 settings 对象里）后重建复验。同时 smoke 改用 stub notifier——裸预览与包内 smoke 都**不会**弹真实授权弹窗（真实授权/投递走下方手工清单）。
-- 发布前产物验证：Info.plist `0.2.0` / build `5`；110 个 arm64 二进制、deployment target ≤14、许可证入包、ad-hoc 签名（`Signature=adhoc`、`TeamIdentifier=not set`）随构建全过；包内 `--smoke-test` 通过且**无 UN 降级日志**（MonitorUI 构造真实 MacNotifier，证明包内 UN 初始化成功）；`hdiutil verify` VALID；本地 DMG `TokenPlanMonitor-0.2.0-arm64.dmg`（34238952 字节）sha256 `fbab6d69fdafcf14…`。
+- 发布前产物验证：Info.plist `0.2.0` / build `5`；110 个 arm64 二进制、deployment target ≤14、许可证入包、ad-hoc 签名（`Signature=adhoc`、`TeamIdentifier=not set`）随构建全过；包内 `--smoke-test` 通过且**无 UN 降级日志**（MonitorUI 构造真实 MacNotifier，证明包内 UN 初始化成功）；`hdiutil verify` VALID；最终本地 DMG `TokenPlanMonitor-0.2.0-arm64.dmg`（33490954 字节）sha256 `8d6dcfd8813dd18e…`（含通知呈现修复与探针；早期中间构建为 `fbab6d69fdafcf14…`，仅作过程记录）。挂载核对 Resources 无杂物混入。
 - 兼容性：v0.1.x 写出的 config.json / snapshot.json 喂新代码不重置、正常加载（离线测试覆盖）；历史与告警均为加法，旧版应用读新 config 会忽略 alert 键。
 - `README.md` / `README.en.md` 已增补历史/趋势/告警功能、数据目录与隐私边界说明；**下载与校验链接仍指向 v0.1.3**，待 v0.2.0 发布后更新并做发布后复验。
 
-仍未实机验证（发布前手工清单）：① 通知全链路—— bundle 首启授权弹窗→允许→调高阈值触发低额度通知→点击通知打开详情→系统设置拒绝后验证 legacy 降级与设置窗提示→重构建后授权状态复查；② 真实凭据下历史落盘/去重/轮转与趋势文案实机核对（或 `TOKEN_PLAN_MONITOR_LIVE=1`）；③ Windows 真机告警 panel 保存与托盘 toast（`tests/gui_material_smoke.py` 已扩展断言，需 Windows 跑）；④ 沿用历版清单：干净 macOS 14 与浏览器下载 Gatekeeper 流程、VoiceOver、多屏/Spaces、真实 `~/.claude/settings.json` 端到端写入。
+### 通知链路实机验证（2026-11-16，macOS 26.6）
+
+主链路**已验证通过**（探针 exit 0）：authorized → UN 投递 → 系统呈现横幅（`unc:application` 日志 `displaying as banner`）→ 用户点击 → `didReceiveNotificationResponse` → 主线程 on_click 回环。编排：`scripts/verify_macos_notifications.py` 经 `open -W` 以 LaunchServices 启动 bundle 的 `--notify-probe` 开发入口（与 `--preview` 同类），transcript 落 `<log dir>/notify-probe.txt`。
+
+验证抓到并修复的三个真问题（后两个是产品代码修复，非探针问题）：
+
+1. **同标识复用 = 静默更新**：macOS 26 的 UNC 对已投递过的 identifier 重新 add 时按 update 处理（`canDisplayWhileCenterIsClosed: false`），横幅永不弹——原「同窗口同标识替换不堆叠」设计恰好吞掉告警本身。改为**每次投递唯一标识**（告警是低频事件，保留历史记录是正确取舍）。
+2. **专注/勿扰吞掉默认级通知**：DND 开启时 UNC 以「intelligent breakthrough」判定（`unc:dnd … is not intelligentlyBrokethrough`）静默入库不呈现，legacy 横幅同样被吞。low_quota 事件改设 `interruptionLevel = timeSensitive`（系统「允许时效性通知」默认开时可突破）；关 DND 后四组对照（sound × timeSensitive）全部呈现，确认呈现层无其他变量。
+3. **授权身份漂移**：直接覆盖 `/Applications` 安装版后通知授权持续 denied（设置里拨允许不生效），`lsregister -f` 强制刷新注册 + 重拨开关后恢复 authorized。ad-hoc 应用换构建后出现 denied  persists 时按此处理。
+
+环境坑（记入开发指南）：探针必须 `open -W` 启动——直接 exec bundle 解释器时授权请求被系统取消（granted=False 且状态回 not_determined）；探针需 `app.finishLaunching()`（真实 app 由 `app.run()` 提供）；PyObjC 不能把 `list.append` 这类 builtin method 包成 ObjC block（bound method 可以）。
+
+未测项（用户决定跳过）：denied → legacy NSUserNotification 降级横幅与点击——legacy 为已废弃 API 的 best-effort 路径，设置窗 denied 提示文案已覆盖该状态。重构建后授权复查未单独做：验证期间多次重构建 + lsregister 后重授权已间接覆盖身份漂移场景。
+
+安装版替换：`/Applications/TokenPlanMonitor.app` 0.1.3/build4 → 0.2.0/build5（旧版备份至废纸篓 `TokenPlanMonitor-0.1.3-build4.app`），开发路径替换，同 v0.1.2 先例；不替代发布后的镜像复验。
+
+仍未实机验证（发布前手工清单）：① 真实凭据下历史落盘/去重/轮转与趋势文案实机核对（或 `TOKEN_PLAN_MONITOR_LIVE=1`）；② 沿用历版清单：干净 macOS 14 与浏览器下载 Gatekeeper 流程、VoiceOver、多屏/Spaces、真实 `~/.claude/settings.json` 端到端写入。
+
+范围决定（2026-11-16，用户）：本期只验收 macOS。Windows 真机告警 panel / 托盘 toast 验证**挂起**——代码与 `tests/gui_material_smoke.py` 断言已随 v0.2.0 提交，留待后续 Windows 周期执行，不阻塞本期发布。
 
 ## v0.1.3 发布记录（2026-11-16）
 
