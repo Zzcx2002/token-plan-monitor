@@ -6,7 +6,7 @@
 
 ## v0.2.0 发布记录（2026-11-16，本地验证；尚未发布）
 
-分支 `release/v0.1.0`。功能提交五连：`ce41476`（可配置阈值收敛）、`bcb1d23`（追加式历史）、`94eb6ed`（趋势与耗尽预测）、`d39360b`（阈值告警 + macOS 系统通知）、`4bd796a`（Windows 告警设置与托盘通知）；bump 提交 `18d20bc`。标签与 GitHub Release 待发布时补。
+分支 `release/v0.1.0`。功能提交五连：`ce41476`（可配置阈值收敛）、`bcb1d23`（追加式历史）、`94eb6ed`（趋势与耗尽预测）、`d39360b`（阈值告警 + macOS 系统通知）、`4bd796a`（Windows 告警设置与托盘通知）；bump 提交 `18d20bc`；呈现修复与探针 `3ea2819` / `e390cdb`。附注标签 `v0.2.0` 指向 `2b86b6c`（其树与最终构建一致），GitHub Release id `446752591`。推送经系统代理 127.0.0.1:7897（直连 github.com 超时）。
 
 - 功能：① **可配置低额度阈值**——`AlertSettings`（开关 / 1–99 阈值 / 重置提醒）以加法字段进 `Settings`，**全程保持 `SCHEMA_VERSION = 1`**，旧 config.json 无 alert 键时逐字段默认、绝不触发静默重置（有专项回归测试）；阈值随 `MonitorViewState` 下发，presentation / macOS 状态行 / Windows 弹窗 / 桌面卡片四处硬编码 10% 全部收敛。② **追加式历史**——`history/<provider>.jsonl`，行内独立版本号、坏行跳过；值不变 15 分钟去重、有变化即记；90 天 + 1 万行双上限原子轮转；半行崩溃补换行；只含百分比/额度与 AK 的 sha256 前 12 位指纹；切换服务商/账号不清历史；写失败仅日志、不影响刷新。③ **趋势与耗尽预测**——纯函数周期切分（reset_at 变化 + 用量回跳双信号）、最小二乘速率、预计耗尽时刻与重置比较；详情窗每窗口一行 caption，耗尽早于重置才用警告色；样本不足/无消耗如实文案；百分比-only 套餐不产生绝对数字；失败刷新保留旧趋势。④ **阈值告警**——下穿触发一次、回升/重置重新武装、首查即低提醒一次、可选重置提醒；armed 内存态、换账号清空；monitor 注入 notifier，事件附趋势上下文。macOS 走 UNUserNotificationCenter（**bundle 守卫**：裸进程无 bundle proxy 会 crash，源码/preview 报 unavailable），denied 降级 NSUserNotification，再不可用设置窗如实说明；同窗口同标识替换不堆叠；点击回主线程开详情。新增依赖 `pyobjc-framework-UserNotifications`（pyproject / py2app includes / pinned build requirements / 第三方声明共用 PyObjC 许可证）。⑤ **Windows**——设置窗告警 panel + 字段级校验，托盘 `icon.notify` toast；趋势展示后置。
 - 构建环境：本机 `.venv` 已被重建为 uv standalone 解释器（构建 guard 正确拒绝），按 v0.1.2 惯例重建 `.venv-build/`（python.org Python 3.13.12 framework + pinned requirements + editable 安装），不影响开发用 `.venv`。
@@ -14,7 +14,9 @@
 - **bundle smoke 抓到一个真 bug**：首版通知模块用了不存在的 selector `getAuthorizationStatusWithCompletionHandler_`，包内初始化 UN 抛 AttributeError 静默降级 legacy；裸进程探针因守卫提前返回没暴露它。改为 `getNotificationSettingsWithCompletionHandler_`（授权状态在 settings 对象里）后重建复验。同时 smoke 改用 stub notifier——裸预览与包内 smoke 都**不会**弹真实授权弹窗（真实授权/投递走下方手工清单）。
 - 发布前产物验证：Info.plist `0.2.0` / build `5`；110 个 arm64 二进制、deployment target ≤14、许可证入包、ad-hoc 签名（`Signature=adhoc`、`TeamIdentifier=not set`）随构建全过；包内 `--smoke-test` 通过且**无 UN 降级日志**（MonitorUI 构造真实 MacNotifier，证明包内 UN 初始化成功）；`hdiutil verify` VALID；最终本地 DMG `TokenPlanMonitor-0.2.0-arm64.dmg`（33490954 字节）sha256 `8d6dcfd8813dd18e…`（含通知呈现修复与探针；早期中间构建为 `fbab6d69fdafcf14…`，仅作过程记录）。挂载核对 Resources 无杂物混入。
 - 兼容性：v0.1.x 写出的 config.json / snapshot.json 喂新代码不重置、正常加载（离线测试覆盖）；历史与告警均为加法，旧版应用读新 config 会忽略 alert 键。
-- `README.md` / `README.en.md` 已增补历史/趋势/告警功能、数据目录与隐私边界说明；**下载与校验链接仍指向 v0.1.3**，待 v0.2.0 发布后更新并做发布后复验。
+- `README.md` / `README.en.md` 已增补历史/趋势/告警功能、数据目录与隐私边界说明；发布后下载与校验链接已指向 v0.2.0。
+- **发布后按使用者路径复验**：从 Release 资产链接重下载 DMG 与 `.sha256`（33490954 / 99 字节），`shasum -a 256 -c` OK，`hdiutil verify` VALID，挂载后 plist `0.2.0`/`5`、`codesign --verify --deep --strict` 通过，从挂载副本 ditto 出的 app 跑 `--smoke-test` 通过；重下载摘要与本地一致（`8d6dcfd8813dd18e…`）。上传时发现首版 `.sha256` 带 `dist/` 路径前缀（104 字节，使用者在下载目录 `shasum -c` 必失败），已删除重传为纯文件名版（99 字节，与历版一致）。
+- **本地安装**：`/Applications/TokenPlanMonitor.app` 最终从**发布资产挂载副本** ditto 替换（清掉本地构建 + bundle smoke 带入的 `Resources/artifacts` 杂物；该杂物是 bundle smoke chdir 到 Resources 的既有行为，只影响本地副本，DMG  staging 于 smoke 之前故发布资产干净），签名复验通过并启动确认进程在跑；被替换的本地构建备份至废纸篓 `TokenPlanMonitor-0.2.0-local-build.app`。
 
 ### 通知链路实机验证（2026-11-16，macOS 26.6）
 
