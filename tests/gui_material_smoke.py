@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from gui_preview import ARTIFACTS, FakeMonitor, snapshot
-from token_plan_monitor.models import MonitorViewState
+from token_plan_monitor.models import MonitorViewState, Settings
 from token_plan_monitor.storage import Storage
 from token_plan_monitor.ui import MonitorUI
 from token_plan_monitor.ui_graphics import native_handle
@@ -164,6 +164,8 @@ def main():
             assert app.storage.load_credentials().access_key_id == 'offline-test-access-key'
             # Alert panel: a bad threshold is a field error that keeps the
             # dialog; a valid one persists and reaches update_configuration.
+            # The Windows dialog has no provider selector: saving must preserve it.
+            app.storage.save_settings(Settings(provider="bailian"))
             app.open_settings()
             app.root.after(80, app.root.quit)
             app.root.mainloop()
@@ -186,6 +188,8 @@ def main():
             saved_alert = app.storage.load_settings().alert
             assert saved_alert.threshold_percent == 25 and saved_alert.notify_on_reset
             assert monitor.saved[0].alert == saved_alert
+            assert app.storage.load_settings().provider == "bailian"
+            assert monitor.saved[0].provider == "bailian"
             # Tray toast channel: copy comes from the shared presentation layer.
             from token_plan_monitor.alerts import AlertEvent
             recorded = []

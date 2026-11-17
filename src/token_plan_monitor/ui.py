@@ -907,7 +907,7 @@ class MonitorUI:
                 show_validation_error("阈值必须在 1–99 之间","alert_threshold")
                 return
             try:
-                new_settings=Settings(region=entries["region"].get(),refresh_minutes=int(entries["refresh"].get().strip()),
+                new_settings=Settings(provider=settings.provider,region=entries["region"].get(),refresh_minutes=int(entries["refresh"].get().strip()),
                                       alert=AlertSettings(enabled=self._settings_alert_enabled.get(),
                                                           threshold_percent=threshold,
                                                           notify_on_reset=self._settings_alert_reset.get()))
