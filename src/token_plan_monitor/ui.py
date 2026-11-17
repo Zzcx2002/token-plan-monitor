@@ -25,6 +25,7 @@ from .models import (
     QueryError,
     QuotaWindow,
     Settings,
+    WindowTrend,
     provider_label,
 )
 from .monitor import UsageMonitor
@@ -39,6 +40,7 @@ from .presentation import (
     menu_window_line,
     state_tone,
     status_text as presentation_status_text,
+    trend_line,
     tray_tooltip,
 )
 from .storage import Storage
@@ -151,6 +153,9 @@ class MonitorUI:
         style.configure("Plan.TLabel", font=(self.latin_font, 10), foreground=self.colors["muted"])
         style.configure(
             "CardMuted.TLabel", background=self.colors["card"], foreground=self.colors["muted"]
+        )
+        style.configure(
+            "CardWarning.TLabel", background=self.colors["card"], foreground=self.colors["warning"]
         )
         style.configure("Success.TLabel", foreground=self.colors["success"])
         style.configure("Error.TLabel", foreground=self.colors["error"])
@@ -528,10 +533,13 @@ class MonitorUI:
             absolute.pack(anchor="w",pady=(4,0))
             full_reset=ttk.Label(details,text="",style="CardMuted.TLabel")
             full_reset.pack(anchor="w",pady=(4,0))
+            trend=ttk.Label(details,text="",style="CardMuted.TLabel",
+                            wraplength=round(320*dpi_scale(parent)),justify="left")
+            trend.pack(anchor="w",pady=(4,0))
             separator=tk.Frame(self.quota_panel.content,bg=self.colors["border"],height=1)
             self.rows[kind]={"frame":frame,"remaining":remaining,"used":used,"progress":progress,
                               "absolute":absolute,"reset":reset,"full_reset":full_reset,
-                              "details":details,"separator":separator}
+                              "trend":trend,"details":details,"separator":separator}
         self.details_button=ttk.Button(parent,text="▸ 展开详情",style="Secondary.TButton",command=self._toggle_details)
         self.details_button.pack(anchor="w",pady=(SECTION_GAP,0))
 
@@ -662,10 +670,12 @@ class MonitorUI:
         windows = {window.kind: window for window in snapshot.windows} if snapshot else {}
         visible_kinds = tuple(kind for kind in WINDOW_LABELS if kind in windows)
         unit = get_provider(state.provider).unit_label
+        trends = {item.kind: item for item in state.trends}
         for kind, row in self.rows.items():
             window = windows.get(kind)
             if window is not None:
-                self._render_window(row, window, unit, state.alert_threshold_percent)
+                self._render_window(row, window, unit, state.alert_threshold_percent,
+                                    trends.get(kind))
 
         empty_key: tuple[str, str, str] | None = None
         if not visible_kinds:
@@ -751,7 +761,8 @@ class MonitorUI:
         except Exception:
             logger.exception("Tray notification failed")
 
-    def _render_window(self,row:dict[str,Any],window:QuotaWindow,unit:str="AFP",threshold:int=10) -> None:
+    def _render_window(self,row:dict[str,Any],window:QuotaWindow,unit:str="AFP",threshold:int=10,
+                       trend:WindowTrend|None=None) -> None:
         warning=window.remaining_percent<threshold
         row["remaining"].configure(text=f"{window.remaining_percent:.1f}%",
             style="WarningRemaining.TLabel" if warning else "Remaining.TLabel")
@@ -777,6 +788,20 @@ class MonitorUI:
             summary,full="重置时间暂无","暂无"
         row["reset"].configure(text=("剩余偏低 · " if warning else "")+summary)
         row["full_reset"].configure(text=f"完整重置时间：{full}")
+        caption = trend_line(trend, window, unit)
+        if caption:
+            exhausting = (
+                trend is not None
+                and trend.exhausted_at is not None
+                and trend.resets_before_exhaustion is False
+            )
+            row["trend"].configure(
+                text=caption,
+                style="CardWarning.TLabel" if exhausting else "CardMuted.TLabel",
+            )
+            row["trend"].pack(anchor="w",pady=(4,0))
+        else:
+            row["trend"].pack_forget()
         if self._details_expanded:
             row["details"].grid(row=3,column=0,columnspan=2,sticky="ew",pady=(10,0))
         else:

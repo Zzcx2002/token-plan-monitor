@@ -1,14 +1,16 @@
 """Exercise isolated Windows UI behaviour without touching the running monitor."""
 import ctypes
 import tempfile
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from dataclasses import replace
+import tkinter as tk
 from tkinter import ttk
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from gui_preview import ARTIFACTS, FakeMonitor, snapshot
-from token_plan_monitor.models import MonitorViewState, Settings
+from token_plan_monitor.models import MonitorViewState, Settings, WindowTrend
 from token_plan_monitor.storage import Storage
 from token_plan_monitor.ui import MonitorUI
 from token_plan_monitor.ui_graphics import native_handle
@@ -47,6 +49,14 @@ def descendants(widget):
         yield from descendants(child)
 
 
+def is_packed(label):
+    # pack_info raises TclError on a forgotten widget instead of returning {}.
+    try:
+        return bool(label.pack_info())
+    except tk.TclError:
+        return False
+
+
 def main():
     with tempfile.TemporaryDirectory(dir=ARTIFACTS) as temporary:
         monitor = Monitor()
@@ -78,6 +88,42 @@ def main():
             assert app._state.snapshot is state.snapshot
             assert app.storage.snapshot_path.read_bytes()==cache_before
             assert monitor.refreshes==0 and monitor.configuration_updates==0
+            # Trend captions in the expanded details pane: no trend hides the
+            # label, a normal rate shows the muted caption with absolute units,
+            # exhaustion before reset switches to the warning style, and thin
+            # evidence still gets an honest caption.
+            for row in app.rows.values():
+                assert not is_packed(row["trend"])
+            normal = WindowTrend(kind="five_hour", sample_count=6,
+                                 span_seconds=10800, percent_per_hour=2.5,
+                                 absolute_per_hour=123.4)
+            exhausting = WindowTrend(
+                kind="weekly", sample_count=6, span_seconds=10800,
+                percent_per_hour=4.0,
+                exhausted_at=datetime.now(UTC) + timedelta(hours=5),
+                resets_before_exhaustion=False,
+            )
+            thin = WindowTrend(kind="monthly", sample_count=2,
+                               span_seconds=60, percent_per_hour=None)
+            trending = replace(state, trends=(normal, exhausting, thin))
+            app._render_state(trending)
+            five_hour = app.rows["five_hour"]["trend"]
+            assert is_packed(five_hour)
+            assert "消耗约 2.5%/小时" in five_hour.cget("text")
+            assert "约 123.4 AFP/小时" in five_hour.cget("text")
+            assert five_hour.cget("style") == "CardMuted.TLabel"
+            weekly = app.rows["weekly"]["trend"]
+            assert is_packed(weekly)
+            assert "耗尽" in weekly.cget("text")
+            assert weekly.cget("style") == "CardWarning.TLabel"
+            monthly = app.rows["monthly"]["trend"]
+            assert is_packed(monthly)
+            assert monthly.cget("text") == "记录不足，持续使用后可预测"
+            assert monthly.cget("style") == "CardMuted.TLabel"
+            # A later render without trends hides every caption again.
+            app._render_state(state)
+            for row in app.rows.values():
+                assert not is_packed(row["trend"])
             app.open_settings()
             app.root.after(80,app.root.quit)
             app.root.mainloop()
@@ -223,7 +269,7 @@ def main():
             card.close()
             app.root.after(80, app.root.quit)
             app.root.mainloop()
-            print('PASS: theme switching, system changes, persistence, rollback, no quota/keyring writes, details retention, click, drag, topmost, hover, no outer shadow, Escape, validation, save, cancel, alert panel, tray toast')
+            print('PASS: theme switching, system changes, persistence, rollback, no quota/keyring writes, details retention, trend captions, click, drag, topmost, hover, no outer shadow, Escape, validation, save, cancel, alert panel, tray toast')
         finally:
             app.shutdown()
         restarted=MonitorUI(Monitor(),Storage(Path(temporary),MemoryKeyring()))
