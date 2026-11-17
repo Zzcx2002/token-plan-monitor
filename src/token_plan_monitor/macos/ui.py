@@ -518,17 +518,31 @@ class Actions(F.NSObject):
         command = sender.representedObject() if isinstance(sender, A.NSMenuItem) else sender.identifier()
         self.owner.command(str(command))
 
+    def windowWillStartLiveResize_(self, notification):
+        # A drag posts windowDidResize_ on every tick; rebuilding the document
+        # each time (all labels re-measured, up to 3 fresh ChartViews) is a
+        # redraw storm. During the drag only geometry is laid out.
+        self.owner._live_resizing = True
+
+    def windowDidEndLiveResize_(self, notification):
+        self.owner._live_resizing = False
+        # One rebuild at the final width.
+        self.windowDidResize_(notification)
+
     def windowDidResize_(self, notification):
+        live = getattr(self.owner, "_live_resizing", False)
         if notification.object() == self.owner.details:
             self.owner.layout_details()
-            self.owner.render_details_document()
+            if not live:
+                self.owner.render_details_document()
         elif notification.object() == getattr(self.owner, "settings", None):
             # Never rebuild the settings form here: that would discard typing.
             self.owner.layout_settings()
         elif notification.object() == getattr(self.owner, "history", None):
             # Safe to rebuild wholesale: the history window holds no typed input.
             self.owner.layout_history()
-            self.owner.render_history_document()
+            if not live:
+                self.owner.render_history_document()
 
     def tick_(self, timer):
         self.owner.drain_events()
@@ -598,6 +612,9 @@ class MonitorUI:
         self._history_table_sources = []
         self.timer = None
         self.closed = False
+        # Set between windowWillStartLiveResize_ and windowDidEndLiveResize_;
+        # resize ticks during a drag lay out geometry only.
+        self._live_resizing = False
         self.materials = []
         self.status_image = None
         # tone -> NSImage. state_tone has only four discrete values, so the
@@ -800,8 +817,14 @@ class MonitorUI:
                 self.status_image = image
                 self.status_item.button().setImage_(image)
             self.status_item.button().setToolTip_(hover_summary(state))
-        self.render_card()
-        if self.details is not None:
+        # Hidden windows must not render: an orderOut_'d details window used
+        # to rebuild every NSTextField + measurement on each refresh, and the
+        # card repainted even while hidden. The show paths (show_details,
+        # show_history, sync_card_visibility) render explicitly before
+        # ordering front, so nothing stale is ever presented.
+        if self.card is not None and self.card.isVisible():
+            self.render_card()
+        if self.details is not None and self.details.isVisible():
             self.render_details()
         if self.history is not None and self.history.isVisible():
             self.render_history()
@@ -1389,6 +1412,8 @@ class MonitorUI:
         self.card.setCollectionBehavior_(behavior)
         if self.preferences.visible:
             self.card.orderFrontRegardless()
+            # Catch up on any state published while the card was hidden.
+            self.render_card()
         else:
             self.card.orderOut_(None)
 

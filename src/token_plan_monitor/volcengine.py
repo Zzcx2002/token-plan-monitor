@@ -67,6 +67,12 @@ class VolcengineClient:
         self.timeout = timeout
         self.clock = clock or (lambda: datetime.now(UTC))
 
+    def close(self) -> None:
+        """Release the HTTP session when the monitor retires this client."""
+        close = getattr(self.session, "close", None)
+        if callable(close):
+            close()
+
     def query(self) -> UsageSnapshot:
         agent_body = self._call("GetAFPUsage")
         agent_windows = parse_agent_windows(_result(agent_body))
@@ -260,3 +266,5 @@ def _safe_error(code: str, message: str) -> str:
     code = re.sub(r"[\x00-\x1f\x7f]", "", code)[:80]
     message = re.sub(r"[\x00-\x1f\x7f]", " ", message)[:240]
     return f"{code}: {message}" if code else message or "未知错误"
+
+

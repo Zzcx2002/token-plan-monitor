@@ -546,6 +546,31 @@ def test_second_apply_produces_identical_output_and_a_fresh_backup(tmp_path):
     assert (tmp_path / "settings.json.bak.200").is_file()
 
 
+def test_old_backups_are_pruned_to_the_keep_count_and_foreign_ones_spared(tmp_path):
+    # Review P0-6: every backup after the first apply holds a plaintext key;
+    # they must not pile up forever. Only the app's own epoch naming is pruned.
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps(LIVE_DOCUMENT), encoding="utf-8")
+    for epoch in range(100, 107):  # seven earlier app-named backups
+        (tmp_path / f"settings.json.bak.{epoch}").write_text("{}", encoding="utf-8")
+    foreign = tmp_path / "settings.json.bak.20261110-160522"
+    foreign.write_text('{"not":"ours"}', encoding="utf-8")
+    unrelated = tmp_path / "notes.txt"
+    unrelated.write_text("x", encoding="utf-8")
+
+    cc.apply_request(make_request(), path, clock=lambda: 200)
+
+    kept = sorted(
+        p.name
+        for p in tmp_path.glob("settings.json.bak.*")
+        if p.name.rsplit(".bak.", 1)[-1].isdigit()
+    )
+    # The newest five epoch-named copies survive, including the fresh one.
+    assert kept == [f"settings.json.bak.{epoch}" for epoch in (103, 104, 105, 106, 200)]
+    assert foreign.is_file(), "hand-made backups are not ours to delete"
+    assert unrelated.is_file()
+
+
 def test_malformed_settings_aborts_without_touching_the_file(tmp_path):
     path = tmp_path / "settings.json"
     path.write_text("{ not json", encoding="utf-8")

@@ -198,6 +198,32 @@ def test_query_uses_token_plan_windows_when_present():
     assert len(session.calls) == 2
 
 
+def test_second_query_reuses_the_cached_bearer_token():
+    # Review P1-7: the token cache is per-instance. While the monitor rebuilt
+    # the client every refresh this reuse was dead code and every refresh paid
+    # an extra GenerateCLIAccessToken round-trip.
+    client, session = make_client(
+        token_response(),
+        gateway({"per5HourPercentage": 0.43, "per5HourResetTime": RESET_MS}),
+        gateway({"per5HourPercentage": 0.44, "per5HourResetTime": RESET_MS}),
+    )
+    client.query()
+    second = client.query()
+    assert second.windows[0].used_percent == 44.0
+    assert len(session.calls) == 3  # one token mint + two gateway calls
+    assert session.calls[1]["headers"]["Authorization"] == "Bearer token-1"
+    assert session.calls[2]["headers"]["Authorization"] == "Bearer token-1"
+
+
+def test_close_releases_the_session_and_tolerates_fakes_without_close():
+    client, session = make_client()
+    client.close()  # FakeSession has no close(): the guard must not raise
+    closed = []
+    session.close = lambda: closed.append(1)
+    client.close()
+    assert closed == [1]
+
+
 def test_token_request_is_signed_against_model_studio_with_empty_body():
     client, session = make_client(token_response(), gateway({"per1MonthPercentage": 0.1}))
     client.query()

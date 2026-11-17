@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 import re
 from dataclasses import dataclass, field
@@ -10,6 +11,8 @@ if TYPE_CHECKING:
     # history.py imports this module at runtime, so the reverse edge stays
     # type-only: the annotation below is a string thanks to future annotations.
     from .history import HistoryEntry
+
+logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 WINDOW_ORDER = ("five_hour", "weekly", "monthly")
@@ -174,12 +177,43 @@ class Settings:
 
     @classmethod
     def from_dict(cls, value: Any) -> Settings:
+        """Never raises: a malformed field defaults on its own, field by field.
+
+        Mirrors ``AlertSettings.from_dict``. One bad value used to reset the
+        whole document through ``Storage.load_settings``'s compatibility
+        fallback -- the user only saw "the provider changed back by itself".
+        The constructor stays strict for direct misuse.
+        """
         if not isinstance(value, dict):
-            raise ConfigurationError("配置格式无效")
+            logger.warning("Settings document is not a dict; using defaults")
+            return cls()
+        provider = value.get("provider", DEFAULT_PROVIDER)
+        if isinstance(provider, str) and provider.strip() in PROVIDER_IDS:
+            provider = provider.strip()
+        else:
+            logger.warning("Invalid provider in config; falling back to %s", DEFAULT_PROVIDER)
+            provider = DEFAULT_PROVIDER
+        region = value.get("region", DEFAULT_REGION)
+        try:
+            region = validate_region(provider, region)
+        except ConfigurationError as exc:
+            logger.warning(
+                "Invalid region in config (%s); falling back to %s",
+                exc.message, DEFAULT_REGION,
+            )
+            region = DEFAULT_REGION
+        refresh = value.get("refresh_minutes", 15)
+        if (
+            isinstance(refresh, bool)
+            or not isinstance(refresh, int)
+            or not 5 <= refresh <= 1440
+        ):
+            logger.warning("Invalid refresh_minutes in config; falling back to 15")
+            refresh = 15
         return cls(
-            provider=value.get("provider", DEFAULT_PROVIDER),
-            region=value.get("region", DEFAULT_REGION),
-            refresh_minutes=value.get("refresh_minutes", 15),
+            provider=provider,
+            region=region,
+            refresh_minutes=refresh,
             alert=AlertSettings.from_dict(value.get("alert")),
         )
 

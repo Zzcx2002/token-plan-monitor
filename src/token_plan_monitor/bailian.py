@@ -111,6 +111,12 @@ class BailianClient:
         # Bearer tokens live in memory only: never cached to disk or logged.
         self._token: str | None = None
 
+    def close(self) -> None:
+        """Release the HTTP session when the monitor retires this client."""
+        close = getattr(self.session, "close", None)
+        if callable(close):
+            close()
+
     def query(self) -> UsageSnapshot:
         token_plan = parse_token_plan_windows(
             self._console_call(TOKEN_PLAN_USAGE_API, {})
@@ -446,3 +452,5 @@ def _safe_error(code: str, message: str) -> str:
     code = re.sub(r"[\x00-\x1f\x7f]", "", code)[:80]
     message = re.sub(r"[\x00-\x1f\x7f]", " ", message)[:240]
     return f"{code}: {message}" if code else message or "未知错误"
+
+

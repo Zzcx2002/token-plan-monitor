@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import sys
@@ -32,6 +33,8 @@ from .models import (
     WidgetPreferences,
 )
 from .providers import get_provider
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_DATA_DIR = data_directory()
 KEYRING_SERVICE = "TokenPlanMonitor"
@@ -86,7 +89,8 @@ class Storage:
             if value.get("schema_version") != SCHEMA_VERSION:
                 raise ConfigurationError("配置版本不兼容")
             return Settings.from_dict(value.get("settings"))
-        except (ConfigurationError, KeyError, TypeError, ValueError):
+        except (ConfigurationError, KeyError, TypeError, ValueError) as exc:
+            logger.warning("Could not load settings (%s); using defaults", exc)
             return Settings()
 
     def save_settings(self, settings: Settings) -> None:
@@ -139,11 +143,17 @@ class Storage:
         get_provider(provider)  # reject an unknown id before touching the file
         return self.data_dir / "history" / f"{provider}.jsonl"
 
-    def append_history(self, entry: HistoryEntry, provider: str) -> None:
-        """Append one observation, deduping unchanged values and rotating at
-        the retention caps. History is an observation log, not the UI's source
-        of truth: callers treat CacheError here as a warning, never as a
-        refresh failure. Switching provider or account never clears it.
+    def append_history(self, entry: HistoryEntry, provider: str) -> list[HistoryEntry]:
+        """Append one observation and return the retained rows (all accounts).
+
+        Dedupes unchanged values and enforces BOTH retention caps on every
+        call -- the 90-day age cap must not wait for the 10k row cap to
+        trigger, or low-frequency history keeps stale rows forever. The single
+        read serves dedup AND the returned list, so the monitor never parses
+        the file twice per refresh. History is an observation log, not the
+        UI's source of truth: callers treat CacheError here as a warning,
+        never as a refresh failure. Switching provider or account never
+        clears it.
         """
         path = self.history_path(provider)
         try:
@@ -152,25 +162,26 @@ class Storage:
                 (item for item in reversed(entries) if item.account == entry.account),
                 None,
             )
-            if not should_append(last, entry):
-                return
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a+b") as handle:
-                handle.seek(0, os.SEEK_END)
-                if handle.tell() > 0:
-                    handle.seek(-1, os.SEEK_END)
-                    if handle.read(1) != b"\n":
-                        # A previous append died mid-row: terminate the torn
-                        # line so the new row never glues onto it.
-                        handle.write(b"\n")
-                handle.write((entry.to_line() + "\n").encode("utf-8"))
-                handle.flush()
-                os.fsync(handle.fileno())
-            if len(entries) + 1 > HISTORY_MAX_ROWS:
-                # Pass the cap explicitly: prune's default binds at definition
-                # time in history.py and would ignore this module's value.
-                kept = prune(entries + [entry], entry.queried_at, max_rows=HISTORY_MAX_ROWS)
+            if should_append(last, entry):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a+b") as handle:
+                    handle.seek(0, os.SEEK_END)
+                    if handle.tell() > 0:
+                        handle.seek(-1, os.SEEK_END)
+                        if handle.read(1) != b"\n":
+                            # A previous append died mid-row: terminate the torn
+                            # line so the new row never glues onto it.
+                            handle.write(b"\n")
+                    handle.write((entry.to_line() + "\n").encode("utf-8"))
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                entries.append(entry)
+            # Pass the cap explicitly: prune's default binds at definition
+            # time in history.py and would ignore this module's value.
+            kept = prune(entries, entry.queried_at, max_rows=HISTORY_MAX_ROWS)
+            if len(kept) != len(entries):
                 self._write_history(path, kept)
+            return kept
         except OSError as exc:
             raise CacheError(f"无法写入用量历史：{path.name}") from exc
 
@@ -184,14 +195,12 @@ class Storage:
         """
         path = self.history_path(provider)
         try:
-            entries = self._read_history(path)
+            entries = self._read_history(path, account)
         except OSError as exc:
             raise CacheError(f"无法读取用量历史：{path.name}") from exc
-        if account is not None:
-            entries = [entry for entry in entries if entry.account == account]
         return entries[-limit:] if limit > 0 else []
 
-    def _read_history(self, path: Path) -> list[HistoryEntry]:
+    def _read_history(self, path: Path, account: str | None = None) -> list[HistoryEntry]:
         try:
             # errors="replace": invalid UTF-8 bytes become replacement chars
             # and parse_line skips that row, instead of poisoning the read.
@@ -202,7 +211,7 @@ class Storage:
         entries = []
         for line in lines:
             entry = parse_line(line)
-            if entry is not None:
+            if entry is not None and (account is None or entry.account == account):
                 entries.append(entry)
         return entries
 
@@ -350,10 +359,17 @@ class Storage:
             with path.open("r", encoding="utf-8") as handle:
                 value = json.load(handle)
         except FileNotFoundError:
+            # A missing file is a normal first run, not a fault.
             return None
-        except (OSError, UnicodeError, json.JSONDecodeError):
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            # Corrupt is different from missing: say so, instead of silently
+            # resetting whatever this file backs.
+            logger.warning("Could not read %s (%s); treating as absent", path.name, exc)
             return None
-        return value if isinstance(value, dict) else None
+        if not isinstance(value, dict):
+            logger.warning("Unexpected JSON shape in %s; treating as absent", path.name)
+            return None
+        return value
 
     def _write_json(self, path: Path, value: dict[str, Any]) -> None:
         temporary = path.with_name(f"{path.name}.tmp")

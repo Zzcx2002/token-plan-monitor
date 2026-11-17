@@ -443,8 +443,13 @@ def read_document_at(path: Path) -> tuple[dict[str, Any] | None, bool]:
     return parse_settings_document(text), had_comments
 
 
+#: Newest app-named backups to keep. Every backup after the first apply holds
+#: a plaintext inference key, so they must not accumulate forever (review P0-6).
+BACKUP_KEEP_COUNT = 5
+
+
 def backup_file(path: Path, now: float) -> Path | None:
-    """Copy `path` aside at owner-only permissions, then tighten older copies.
+    """Copy `path` aside at owner-only permissions, then tighten and prune older copies.
 
     The backup holds the previous settings.json, which after the first apply
     contains a plaintext ANTHROPIC_AUTH_TOKEN. `write_bytes` created it 0644 (the
@@ -479,7 +484,30 @@ def backup_file(path: Path, now: float) -> Path | None:
         _discard(temporary)
         raise ClaudeConfigError(f"无法备份 {path.name}") from exc
     _tighten_legacy_backups(path)
+    _prune_old_backups(path)
     return target
+
+
+def _prune_old_backups(path: Path) -> None:
+    """Keep only the newest BACKUP_KEEP_COUNT app-named backups.
+
+    Ordered by the epoch in the name, not mtime, so the caller's injected
+    clock keeps the behavior deterministic. Same app-only naming filter as
+    `_tighten_legacy_backups`: a hand-made `settings.json.bak.20261110-160522`
+    is never ours to delete. Best effort -- a failed unlink must not fail the
+    write that just succeeded.
+    """
+    owned: list[tuple[int, Path]] = []
+    for candidate in path.parent.glob(f"{path.name}.bak.*"):
+        suffix = candidate.name.rsplit(".bak.", 1)[-1]
+        if suffix.isdigit():
+            owned.append((int(suffix), candidate))
+    owned.sort(key=lambda pair: pair[0], reverse=True)
+    for _, stale in owned[BACKUP_KEEP_COUNT:]:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
 
 
 def _tighten_legacy_backups(path: Path) -> None:

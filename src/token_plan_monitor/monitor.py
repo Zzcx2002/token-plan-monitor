@@ -51,6 +51,11 @@ class UsageMonitor:
         self._settings = Settings()
         self._credentials: Credentials | None = None
         self._state = MonitorViewState()
+        # One client per (provider, region, credentials): keep-alive and the
+        # Bailian bearer-token cache only work if the instance survives across
+        # refreshes. Owned exclusively by the monitor thread.
+        self._client: Any = None
+        self._client_key: tuple | None = None
 
     def start(self) -> None:
         with self._lock:
@@ -140,26 +145,40 @@ class UsageMonitor:
                 # switching accounts does: it was fetched from a different service.
                 provider_changed = settings.provider != self._settings.provider
                 account_changed = provider_changed or credentials != self._credentials
+                # Region changes the endpoint the data comes from, so it
+                # invalidates in-flight results just like an account switch.
+                source_changed = account_changed or settings.region != self._settings.region
                 self._settings = settings
                 self._credentials = credentials
-                self._state = replace(
-                    self._state,
-                    status="empty" if account_changed else self._state.status,
-                    snapshot=None if account_changed else self._state.snapshot,
-                    error=None,
-                    error_category=None,
-                    revision=self._state.revision + 1,
-                    provider=settings.provider,
-                    alert_threshold_percent=settings.alert.threshold_percent,
-                    trends=() if account_changed else self._state.trends,
-                    history=() if account_changed else self._state.history,
-                )
-                self._pending = True
-                self._next_run = None
-                should_clear_cache = account_changed
-                if account_changed:
-                    self._alert_armed = {}
-                self._wake.set()
+                if source_changed:
+                    self._state = replace(
+                        self._state,
+                        status="empty" if account_changed else self._state.status,
+                        snapshot=None if account_changed else self._state.snapshot,
+                        error=None,
+                        error_category=None,
+                        revision=self._state.revision + 1,
+                        provider=settings.provider,
+                        alert_threshold_percent=settings.alert.threshold_percent,
+                        trends=() if account_changed else self._state.trends,
+                        history=() if account_changed else self._state.history,
+                    )
+                    self._pending = True
+                    self._next_run = None
+                    should_clear_cache = account_changed
+                    if account_changed:
+                        self._alert_armed = {}
+                    self._wake.set()
+                else:
+                    # Only refresh interval / alert choices changed: the query
+                    # source is untouched, so an in-flight result stays valid
+                    # and must not be discarded. No revision bump, no forced
+                    # re-query; the new interval takes effect at the next
+                    # completion, which reschedules from the current settings.
+                    self._state = replace(
+                        self._state,
+                        alert_threshold_percent=settings.alert.threshold_percent,
+                    )
         if unchanged:
             self._publish()
             return
@@ -181,7 +200,25 @@ class UsageMonitor:
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=timeout)
 
+    def _retire_client(self) -> None:
+        """Close and drop the cached client. Call under the lock."""
+        client, self._client, self._client_key = self._client, None, None
+        close = getattr(client, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                logger.exception("Could not close the quota client")
+
     def _run(self) -> None:
+        try:
+            self._run_loop()
+        finally:
+            # The loop thread owns the client; release its session on exit.
+            with self._lock:
+                self._retire_client()
+
+    def _run_loop(self) -> None:
         while not self._stop.is_set():
             timeout: float | None = None
             with self._lock:
@@ -205,11 +242,21 @@ class UsageMonitor:
                 settings = self._settings
                 credentials = self._credentials
                 previous_snapshot = self._state.snapshot
+                # Rebuild only when the query source changes. Constructors
+                # are cheap (no network), so this stays under the lock; the
+                # old session is closed here on the monitor thread, never on
+                # the UI thread that calls update_configuration.
+                key = (settings.provider, settings.region, credentials)
+                if self._client is None or key != self._client_key:
+                    self._retire_client()
+                    self._client = self.client_factory(settings, credentials)
+                    self._client_key = key
+                client = self._client
                 self._state = replace(self._state, is_refreshing=True)
             self._publish()
 
             try:
-                snapshot = self.client_factory(settings, credentials).query()
+                snapshot = client.query()
                 error: QueryError | None = None
             except QueryError as exc:
                 snapshot = None
@@ -233,34 +280,49 @@ class UsageMonitor:
                     # History is best-effort: a failed append is logged, never
                     # surfaced as a cache warning and never fails the refresh.
                     account = account_fingerprint(credentials.access_key_id)
+                    entries = None
                     try:
-                        self.storage.append_history(
+                        # One read per refresh: append_history returns the
+                        # retained rows (all accounts), so trends and the raw
+                        # state rows come from the same parse -- the file is
+                        # no longer read twice back-to-back.
+                        entries = self.storage.append_history(
                             entry_from_snapshot(snapshot, account),
                             settings.provider,
                         )
                     except CacheError as exc:
                         logger.warning("Could not append history: %s", exc.message)
-                    # One history read per successful refresh keeps trends AND
-                    # the raw rows in the state, so UI rendering never touches
-                    # the disk. The full retention cap (not the 2000-row
-                    # default) because a 90-day chart at the 15-minute cadence
-                    # needs ~8640 rows; _read_history parses the whole file
-                    # regardless, so the larger limit costs no extra IO.
-                    try:
-                        history = self.storage.load_history(
-                            settings.provider, account, limit=HISTORY_MAX_ROWS
-                        )
+                    if entries is None:
+                        # Append failed (e.g. disk full); a plain read may still
+                        # work, so history survives a write-only fault.
+                        try:
+                            entries = self.storage.load_history(
+                                settings.provider, account, limit=HISTORY_MAX_ROWS
+                            )
+                        except CacheError as exc:
+                            logger.warning("Could not load history for trends: %s", exc.message)
+                    if entries is not None:
+                        # The full retention cap (not the 2000-row default):
+                        # a 90-day chart at the 15-minute cadence needs ~8640
+                        # rows. Filtering/slicing in memory is free -- the
+                        # rows are already parsed.
+                        history = [
+                            item for item in entries if item.account == account
+                        ][-HISTORY_MAX_ROWS:]
                         trends = trends_for_snapshot(history, snapshot, self.clock())
                         history_rows = tuple(history)
-                    except CacheError as exc:
-                        logger.warning("Could not load history for trends: %s", exc.message)
 
             events: list[AlertEvent] = []
             with self._lock:
                 self._in_flight = False
+                # A matching revision means the query source never changed, so
+                # only alert/interval choices can differ from the captured
+                # settings -- publish and evaluate with the CURRENT ones so a
+                # threshold saved mid-flight lands with this very result.
+                current_settings = self._settings
                 if revision != self._state.revision:
-                    # A settings change already queued another refresh. Never publish
-                    # data fetched with obsolete credentials.
+                    # A source change already queued another refresh. Never
+                    # publish data fetched with obsolete credentials/endpoint.
                     pass
                 elif snapshot is not None:
                     self._state = MonitorViewState(
@@ -271,12 +333,12 @@ class UsageMonitor:
                         last_attempt_at=self.clock(),
                         revision=revision,
                         provider=settings.provider,
-                        alert_threshold_percent=settings.alert.threshold_percent,
+                        alert_threshold_percent=current_settings.alert.threshold_percent,
                         trends=trends,
                         history=history_rows,
                     )
                     events, self._alert_armed = evaluate(
-                        previous_snapshot, snapshot, settings.alert,
+                        previous_snapshot, snapshot, current_settings.alert,
                         self._alert_armed, settings.provider,
                     )
                     if events:
@@ -303,7 +365,7 @@ class UsageMonitor:
                         last_attempt_at=self.clock(),
                         revision=revision,
                         provider=settings.provider,
-                        alert_threshold_percent=settings.alert.threshold_percent,
+                        alert_threshold_percent=current_settings.alert.threshold_percent,
                         # Like the retained snapshot, trends and history rows
                         # survive a failed refresh instead of blanking out.
                         trends=self._state.trends,
