@@ -74,15 +74,15 @@ This first release is only ad-hoc signed locally: no Developer ID signature, no 
 
 #### Portable build (recommended)
 
-Download `TokenPlanMonitor-<version>-win64.zip` and its matching `.sha256` file from the latest [GitHub Release](https://github.com/Zzcx2002/token-plan-monitor/releases) into the same folder. Verify the archive first, in PowerShell:
+Download [TokenPlanMonitor-0.3.0-win64.zip](https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.3.0/TokenPlanMonitor-0.3.0-win64.zip) and its matching [.sha256 checksum file](https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.3.0/TokenPlanMonitor-0.3.0-win64.zip.sha256) from the [GitHub Release v0.3.0](https://github.com/Zzcx2002/token-plan-monitor/releases/tag/v0.3.0) page into the same folder. Verify the archive first, in PowerShell:
 
 ```powershell
-$expected = (Get-Content .\TokenPlanMonitor-*.win64.zip.sha256 -TotalCount 1).Split(" ")[0].ToLower()
-$actual = (Get-FileHash .\TokenPlanMonitor-*.win64.zip -Algorithm SHA256).Hash.ToLower()
+$expected = (Get-Content .\TokenPlanMonitor-0.3.0-win64.zip.sha256 -TotalCount 1).Split(" ")[0].ToLower()
+$actual = (Get-FileHash .\TokenPlanMonitor-0.3.0-win64.zip -Algorithm SHA256).Hash.ToLower()
 if ($expected -eq $actual) { "OK" } else { "MISMATCH" }
 ```
 
-With Git Bash or coreutils you can instead run `sha256sum -c TokenPlanMonitor-<version>-win64.zip.sha256` — it must print `OK`.
+With Git Bash or coreutils you can instead run `sha256sum -c TokenPlanMonitor-0.3.0-win64.zip.sha256` — it must print `OK`.
 
 Once verified, extract the zip into a folder **your user can write to** (e.g. under `%LOCALAPPDATA%\Programs` or Documents; do not use protected locations such as `C:\Program Files`) and double-click `TokenPlanMonitor.exe`. The app is portable: config, history and logs are written to the `data\` and `logs\` folders next to the exe. Moving the whole folder migrates everything; deleting it uninstalls the app (the Credential Manager entries must be removed separately, see below). No administrator rights needed, no login item.
 

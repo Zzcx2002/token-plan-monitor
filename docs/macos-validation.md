@@ -15,7 +15,8 @@
 - **离线 pytest：375 passed、8 skipped**（新增路径 frozen 解析 5 项及三个 Windows GUI smoke 套件；跳过项为 Windows 原生特效与两个 live 实时接口）。GUI smoke 因 Tk 事件循环曾有偶发 GIL 致命错误，每个套件连跑两遍取信：`gui_smoke`、`gui_material_smoke`、`gui_settings_provider_smoke`、`gui_history_smoke`、`gui_resize_smoke`、`gui_claude_smoke` 均两遍通过；`gui_chrome_smoke` 与 `gui_theme_preview` 各 6 组合通过——期间抓到一个真回归：Claude 面板的长标签需要 560px 而设置窗几何下限仍是 400，固定为 `SETTINGS_MINIMUM_SIZE = (560, 260)` 后通过（窄标签断言反向验证有效）。
 - **打包实测证据**：`build_windows.py` 全流程通过——`TokenPlanMonitor.exe --self-check` 写出 `SELF-CHECK OK`（frozen 平台、certifi/keyring/PIL/pystray/requests/tkinter 导入、实际后端为 `WinVaultKeyring`、便携路径、打包图标与 CA 证书、配置与历史 JSON 往返、Windows 凭据管理器真实 set/get/delete 往返并清理）；随后真实启动 exe 的 12 秒存活探针通过，`logs/app.log` 生成且无 Traceback，taskkill 收尾；zip 内无 data/logs/自检报告残留；`.sha256` 以 LF + basename 写出，`sha256sum -c` 通过（CRLF 版本会失败，构建脚本用 `write_bytes` 规避）。
 - **已知限制（如实记录，Release notes 同口径）**：气泡点击无回调（pystray 能力限制，文档指导用户点托盘图标）；exe 无代码签名证书，首次运行有 SmartScreen 拦截；历史图在 Windows 用 Tk Canvas 渲染、macOS 用 AppKit 原生，数据与交互一致但非像素级相同；`gui_shell_smoke.py` 的 UIA 托盘图标 Name 断言（约 430 行）在本机环境持续失败，已在早前会话证明与本轮改动无关并基线化，其余 shell 断言全过。
-- **仍待手工/发布后**：真实 AK/SK 的 live 交叉核对（与 macOS 同属手工项，`TOKEN_PLAN_MONITOR_LIVE=1`）；发布后按使用者路径重下载 zip + `.sha256` 复验（结果在发布后补记，沿用 v0.2.x 的做法）。v0.3.0 不构建新 DMG，macOS 继续使用 v0.2.1。
+- **发布后按使用者路径复验（2026-11-17 已完成）**：GitHub Release id `RE_kwDOVlSkas4avBCO`，正式发布（非草稿、非预发布），资产为 `TokenPlanMonitor-0.3.0-win64.zip`（22,921,440 字节）与 99 字节、basename + LF 的同名 `.sha256`；GitHub 服务端计算的 digest 与本地构建同为 `5dd320c15f9c96c6d3504d6bbb79c01004a19d65292e408d10c2142f2dfe43d4`。另在空目录经 `gh release download` 重下载两份资产，`sha256sum -c` 通过，且重下载副本与本地构建字节级一致。注意 PyInstaller 会在 CArchive / `.pyc` 嵌入构建时间戳、zip 条目带各自 mtime，构建**不保证字节级可复现**：合并前同源码的一次构建摘要为 `97dffc68…`，发布以标签 `v0.3.0` 代码重跑的本次构建为准，两次构建的自检与托盘探针均全过。本机直连 GitHub 下载会挂起，复验经系统代理 `127.0.0.1:7897` 完成。
+- **仍待手工**：真实 AK/SK 的 live 交叉核对（与 macOS 同属手工项，`TOKEN_PLAN_MONITOR_LIVE=1`）。v0.3.0 不构建新 DMG，macOS 继续使用 v0.2.1。
 
 ## v0.2.1 发布记录（2026-11-17，已发布）
 

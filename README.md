@@ -71,15 +71,15 @@ shasum -a 256 -c TokenPlanMonitor-0.2.1-arm64.dmg.sha256
 
 #### 便携版（推荐）
 
-从 [GitHub Release](https://github.com/Zzcx2002/token-plan-monitor/releases) 最新版本下载 `TokenPlanMonitor-<版本>-win64.zip` 和同名 `.sha256` 校验文件，放到同一目录。先校验完整性，PowerShell 里执行：
+从 [GitHub Release v0.3.0](https://github.com/Zzcx2002/token-plan-monitor/releases/tag/v0.3.0) 下载 [TokenPlanMonitor-0.3.0-win64.zip](https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.3.0/TokenPlanMonitor-0.3.0-win64.zip) 和同名 [.sha256 校验文件](https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.3.0/TokenPlanMonitor-0.3.0-win64.zip.sha256)，放到同一目录。先校验完整性，PowerShell 里执行：
 
 ```powershell
-$expected = (Get-Content .\TokenPlanMonitor-*.win64.zip.sha256 -TotalCount 1).Split(" ")[0].ToLower()
-$actual = (Get-FileHash .\TokenPlanMonitor-*.win64.zip -Algorithm SHA256).Hash.ToLower()
+$expected = (Get-Content .\TokenPlanMonitor-0.3.0-win64.zip.sha256 -TotalCount 1).Split(" ")[0].ToLower()
+$actual = (Get-FileHash .\TokenPlanMonitor-0.3.0-win64.zip -Algorithm SHA256).Hash.ToLower()
 if ($expected -eq $actual) { "OK" } else { "MISMATCH" }
 ```
 
-装了 Git Bash 或 coreutils 时也可以 `sha256sum -c TokenPlanMonitor-<版本>-win64.zip.sha256`，输出 `OK` 才算通过。
+装了 Git Bash 或 coreutils 时也可以 `sha256sum -c TokenPlanMonitor-0.3.0-win64.zip.sha256`，输出 `OK` 才算通过。
 
 校验通过后把 zip 解压到**当前用户有权限的目录**（如 `%LOCALAPPDATA%\Programs` 或文档目录；不要放进 `C:\Program Files` 这类受保护位置），双击其中的 `TokenPlanMonitor.exe` 启动。应用是便携的：配置、历史和日志都写在 exe 旁边的 `data\` 与 `logs\` 目录，整个文件夹搬走即完成迁移，删掉文件夹即卸载（凭据管理器里的条目需另行手动删除，见下文）。不需要管理员权限，也不会设置开机自启。
 
