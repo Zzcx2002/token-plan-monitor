@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import queue
+import threading
 import tkinter as tk
 import tkinter.font as tkfont
 from pathlib import Path
@@ -11,14 +13,18 @@ from typing import Any
 
 import pystray
 
+from . import claude_code
 from .assets import make_tray_icon
 from .appearance import (AppearancePreferences, LIGHT, THEME_LABELS, resolve_theme,
                          installed_fonts, OUTER_PADDING, SECTION_GAP, ROW_PADDING)
+from .claude_code import ClaudeConfigError
 from .desktop_widget import DesktopWidget
 from .history_view import HistoryWindow
+from .model_catalog import fetch_model_ids, merge_model_options
 from .ui_graphics import (RoundedPanel, RoundedProgress, ScrollableBody, Tooltip, dpi_scale, window_work_area,
                           install_window_effects, apply_window_effects, configure_rounded_buttons)
 from .models import (
+    ClaudeProviderPrefs,
     MonitorViewState,
     QueryError,
     QuotaWindow,
@@ -27,6 +33,7 @@ from .models import (
 )
 from .monitor import UsageMonitor
 from .providers import get_provider
+from .settings_rules import resolve_claude_seed
 from .settings_view import SettingsDialog
 from .presentation import (
     PLAN_LABELS,
@@ -74,6 +81,26 @@ class MonitorUI:
         self._settings_dialog: SettingsDialog | None = None
         self._theme_poll_after = None
         self._tooltips = []
+        # Claude Code hookup: per-provider form memory so a provider switch
+        # never discards typed choices. Non-secret drafts also persist to
+        # claude.json; the inference-key draft is memory only and is cleared
+        # on shutdown. Mirrors the macOS shell's app-level ownership.
+        self._claude_drafts: dict[str, ClaudeProviderPrefs] = {}
+        self._claude_key_drafts: dict[str, str] = {}
+        # Live model catalogue: background threads only hand results back
+        # through this queue; every Tk mutation happens in the 100ms drain.
+        self._catalog_events: queue.SimpleQueue = queue.SimpleQueue()
+        self._catalog_inflight: set[str] = set()
+        self._catalog_status: dict[str, tuple[str, str]] = {}
+        # Injectable seams so the offline smoke stubs the network call and
+        # the confirmation dialog without touching a real ~/.claude.
+        self._fetch_model_ids = fetch_model_ids
+        self._confirm_override: Any = None
+        self.claude_paths_override: tuple[Path, Path] | None = None
+        self.inference_key: str | None = None
+        # Raised while the Claude write confirmation runs its nested event
+        # loop, so a queued provider rebuild cannot detach the form mid-write.
+        self._applying_claude = False
 
         self.root = tk.Tk()
         self.font_family, self.latin_font = installed_fonts(tkfont.families(self.root))
@@ -156,6 +183,9 @@ class MonitorUI:
         )
         style.configure(
             "CardWarning.TLabel", background=self.colors["card"], foreground=self.colors["warning"]
+        )
+        style.configure(
+            "CardSuccess.TLabel", background=self.colors["card"], foreground=self.colors["success"]
         )
         style.configure("Success.TLabel", foreground=self.colors["success"])
         style.configure("Error.TLabel", foreground=self.colors["error"])
@@ -471,6 +501,7 @@ class MonitorUI:
                     return
         except queue.Empty:
             pass
+        self._drain_model_catalog()
         self.root.after(100, self._process_events)
 
     def _create_popup(self) -> None:
@@ -833,6 +864,202 @@ class MonitorUI:
         self.history = window
         window.open(self._state)
 
+    # ------------------------------------------------------- Claude Code hookup
+    def claude_seed(self, provider: str) -> dict[str, str]:
+        """Initial Claude section values for one provider: draft → live → prefs.
+
+        Mirrors the macOS shell: the layering itself is the pure
+        `resolve_claude_seed`; this only gathers the three sources. Falling
+        back to the live file rather than to blank keeps a provider switch
+        from wiping the base URL and model the user can see they had.
+        """
+        try:
+            prefs = self.storage.load_claude_prefs(provider)
+        except QueryError:
+            prefs = ClaudeProviderPrefs()
+        live_base_url = live_model = live_auto = live_subagent = ""
+        try:
+            document, _ = claude_code.read_document_at(self.resolve_claude_paths()[0])
+        except (ClaudeConfigError, QueryError):
+            document = None
+        env = document.get("env") if isinstance(document, dict) else None
+        if isinstance(env, dict):
+            # Only non-secret fields are echoed; the token in the live file is
+            # deliberately never surfaced into a text field.
+            live_base_url = str(env.get(claude_code.ENV_BASE_URL) or "").strip()
+            live_model = str(env.get(claude_code.ENV_MODEL) or "").strip()
+            live_auto = str(env.get(claude_code.ENV_AUTO_MODE) or "").strip()
+            live_subagent = str(env.get(claude_code.ENV_SUBAGENT) or "").strip()
+        return resolve_claude_seed(
+            get_provider(provider), self._claude_drafts.get(provider), prefs,
+            live_base_url, live_model, live_auto,
+            model_options=self.effective_claude_options(provider),
+            live_subagent_model=live_subagent,
+        )
+
+    def effective_claude_options(self, provider: str):
+        """Static catalogue merged with any cached live models for the provider."""
+        spec = get_provider(provider)
+        try:
+            fetched = self.storage.load_model_catalog(provider)
+        except QueryError:
+            fetched = ()
+        if fetched:
+            return merge_model_options(spec.claude_models, fetched)
+        return spec.claude_models
+
+    def stored_inference_key(self, provider: str) -> str | None:
+        """Best-known inference key for the "leave blank to keep" semantics."""
+        return self._claude_key_drafts.get(provider) or self.inference_key
+
+    def stash_claude_draft(self, provider: str) -> None:
+        """Remember the open form's Claude values before a rebuild or save.
+
+        Non-secret fields go to claude.json as well as the session draft; the
+        inference key stays in memory only, for as long as this process runs.
+        """
+        dialog = self._settings_dialog
+        if dialog is None or dialog.claude_panel is None:
+            return
+        _popup, _custom, _base, key_text, prefs = dialog.claude_form_values()
+        self._claude_drafts[provider] = prefs
+        if key_text.strip():
+            self._claude_key_drafts[provider] = key_text.strip()
+        try:
+            self.storage.save_claude_prefs(prefs, provider)
+        except QueryError:
+            pass
+
+    def resolve_claude_paths(self) -> tuple[Path, Path]:
+        """Resolve both write targets from the real environment at call time.
+
+        `claude_paths_override` lets the offline smoke point the whole write
+        at a temp directory instead of a real `~/.claude`.
+        """
+        if self.claude_paths_override is not None:
+            return self.claude_paths_override
+        environ, home = dict(os.environ), Path.home()
+        return (claude_code.resolve_settings_path(environ, home),
+                claude_code.resolve_onboarding_path(environ, home))
+
+    def confirm_claude_write(self, lines: list[str]) -> bool:
+        """The write confirmation, with an injectable seam for the smoke."""
+        if self._confirm_override is not None:
+            if callable(self._confirm_override):
+                return bool(self._confirm_override(lines))
+            return bool(self._confirm_override)
+        parent = self.settings_window if self.settings_window is not None else self.root
+        return messagebox.askyesno(
+            "写入 Claude Code 配置？", "\n".join(lines), parent=parent
+        )
+
+    # --------------------------------------------------------- model catalogue
+    def catalog_status_for(self, provider: str) -> tuple[str, str]:
+        if provider in self._catalog_status:
+            return self._catalog_status[provider]
+        try:
+            fetched = self.storage.load_model_catalog(provider)
+        except QueryError:
+            fetched = ()
+        if fetched:
+            return (f"已缓存 {len(fetched)} 个在线模型", "neutral")
+        return ("使用内置模型清单，可在线刷新", "neutral")
+
+    def set_catalog_status(self, provider: str, text: str, tone: str) -> None:
+        self._catalog_status[provider] = (text, tone)
+        dialog = self._settings_dialog
+        if (dialog is not None and dialog.window is not None
+                and dialog.provider == provider and dialog.claude_panel is not None):
+            dialog.claude_panel.set_status(text, tone)
+
+    def catalog_fetch_target(self, provider: str) -> tuple[str, str]:
+        """Resolve (base_url, key) from the live form, then stored defaults."""
+        spec = get_provider(provider)
+        dialog = self._settings_dialog
+        base_url = key = ""
+        on_this_provider = dialog is not None and dialog.provider == provider
+        if on_this_provider and dialog.claude_panel is not None:
+            base_url = dialog.claude_panel.entries["base_url"].get().strip()
+            key = dialog.claude_panel.entries["api_key"].get().strip()
+        if not base_url:
+            region = ""
+            if on_this_provider:
+                region = dialog.entries["region"].get().strip()
+            base_url = spec.default_claude_base_url(region or spec.default_region)
+        if not key:
+            key = self.stored_inference_key(provider) or ""
+        return base_url, key
+
+    def maybe_auto_fetch(self, provider: str) -> None:
+        """Auto-pull on open / provider switch when a key and URL exist."""
+        if provider in self._catalog_inflight:
+            return
+        base_url, key = self.catalog_fetch_target(provider)
+        if not key or claude_code.ANTHROPIC_PATH not in base_url:
+            return
+        self._start_model_fetch(provider, base_url, key)
+
+    def refresh_models(self, provider: str) -> None:
+        """Manual refresh button: force a re-pull with the current form values."""
+        if provider in self._catalog_inflight:
+            return
+        base_url, key = self.catalog_fetch_target(provider)
+        if not key:
+            self.set_catalog_status(provider, "请先填写推理 API Key", "warning")
+            return
+        if claude_code.ANTHROPIC_PATH not in base_url:
+            self.set_catalog_status(provider, "该 Base URL 不支持在线获取模型", "warning")
+            return
+        self._start_model_fetch(provider, base_url, key)
+
+    def _start_model_fetch(self, provider: str, base_url: str, key: str) -> None:
+        self._catalog_inflight.add(provider)
+        self.set_catalog_status(provider, "正在在线获取模型列表…", "neutral")
+        threading.Thread(
+            target=self._fetch_models_worker,
+            args=(provider, base_url, key),
+            name=f"model-catalog-{provider}",
+            daemon=True,
+        ).start()
+
+    def _fetch_models_worker(self, provider: str, base_url: str, key: str) -> None:
+        try:
+            ids = self._fetch_model_ids(base_url, key)
+            self._catalog_events.put((provider, ids, None))
+        except QueryError as exc:
+            self._catalog_events.put((provider, None, exc.message))
+        except Exception:
+            logger.exception("Unexpected model catalogue fetch failure")
+            self._catalog_events.put((provider, None, "模型列表获取失败"))
+
+    def _drain_model_catalog(self) -> None:
+        """Apply background fetch results on the Tk thread; never block on it."""
+        while True:
+            try:
+                provider, ids, error = self._catalog_events.get_nowait()
+            except queue.Empty:
+                return
+            self._catalog_inflight.discard(provider)
+            if error is not None:
+                self.set_catalog_status(
+                    provider, f"在线获取失败：{error}，已用内置清单", "warning"
+                )
+                continue
+            try:
+                self.storage.save_model_catalog(provider, ids)
+            except QueryError:
+                pass
+            self.set_catalog_status(
+                provider, f"已在线更新模型列表（{len(ids)} 个）", "ok"
+            )
+            dialog = self._settings_dialog
+            if (dialog is not None and dialog.window is not None
+                    and dialog.provider == provider
+                    and not self._applying_claude
+                    and dialog.claude_panel is not None):
+                options = merge_model_options(get_provider(provider).claude_models, ids)
+                dialog.claude_panel.apply_catalog_options(options)
+
     def _close_settings(self,window:tk.Toplevel|None=None,*,commit:bool=False) -> None:
         # App-level entry point kept for existing callers; SettingsDialog owns
         # the teardown, so the window argument is intentionally unused.
@@ -864,6 +1091,9 @@ class MonitorUI:
         if self._closing:
             return
         self._closing = True
+        # Never leave a drafted inference key reachable past this process.
+        self._claude_key_drafts.clear()
+        self._claude_drafts.clear()
         if self._theme_poll_after is not None:
             self.root.after_cancel(self._theme_poll_after)
             self._theme_poll_after=None
