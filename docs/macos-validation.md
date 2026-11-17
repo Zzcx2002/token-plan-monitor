@@ -4,9 +4,9 @@
 
 开发/验证机器：Apple Silicon，macOS 26.6（25G72）。构建使用 python.org Python 3.13.9 framework、py2app 0.28.10；Python 及依赖都在项目隔离目录，未安装到系统 Python。依赖版本见 `requirements-macos-build.txt`。
 
-## v0.2.1 发布记录（2026-11-17，本地验证）
+## v0.2.1 发布记录（2026-11-17，已发布）
 
-分支 `release/v0.1.0`。功能提交 `d0b3ab0`（独立用量历史窗口）与修复 `a27c041`（smoke 报告显式 UTF-8，bundle ASCII locale）；bump 提交见 git 历史。版本 `0.2.1` / build `6`（`__init__.py`、`pyproject.toml`、`setup_macos.py` 三处同源）。
+分支 `release/v0.1.0`。功能提交 `d0b3ab0`（独立用量历史窗口）与修复 `a27c041`（smoke 报告显式 UTF-8，bundle ASCII locale）；bump 提交 `a517d85`。附注标签 `v0.2.1` 指向 `82a5124`（其树与最终构建一致），GitHub Release id `448239777`。推送经系统代理 127.0.0.1:7897。版本 `0.2.1` / build `6`（`__init__.py`、`pyproject.toml`、`setup_macos.py` 三处同源）。
 
 - 离线 pytest：**405 passed、3 skipped**；`compileall src scripts` 通过。原生 AppKit smoke 双外观（light/dark）通过，含历史窗口全部假状态。
 - 构建：`.venv-build`（python.org Python 3.13.9 framework）跑 `scripts/build_macos.py`；110 个 arm64 二进制、deployment target ≤14、项目与第三方许可证入包、ad-hoc 签名（`Signature=adhoc`、`TeamIdentifier=not set`、`flags=0x2(adhoc)`）随构建全过。
@@ -15,6 +15,8 @@
 - 兼容性：历史窗口为纯加法（`MonitorViewState.history` 加法字段、新模块 `history_chart.py` / `macos/chart.py`），config schema 不变；旧版数据目录直接可用。
 - `README.md` / `README.en.md` 下载与校验链接指向 v0.2.1。
 - 遗留手工项沿用「用量历史窗口验证」节清单（真实悬停、VoiceOver、开窗浅深切换、90 天密度观感、macOS 14 实机）；Windows 趋势/历史展示继续后置。
+- **发布后按使用者路径复验**：从 Release 资产链接重下载 DMG 与 `.sha256`（33479854 / 99 字节），`shasum -a 256 -c` OK，`hdiutil verify` VALID，挂载后 plist `0.2.1`/`6`、`codesign --verify --deep --strict` 通过，从挂载副本 ditto 出的 app 跑 `--smoke-test` 通过；重下载摘要与本地一致（`ae2c1ff8be365a51…`）。
+- **本地安装**：退出运行中的 v0.2.0 后旧版移入废纸篓，`/Applications/TokenPlanMonitor.app` 从**发布资产挂载副本** ditto 替换，签名复验通过并启动确认进程在跑；运行日志无错误、无 UN 降级记录。ad-hoc 签名重建后系统可能要求重新授权通知（README 已说明），如下次低额度告警未呈现按该节排查。
 
 ## 用量历史窗口验证（2026-11-16，本地验证；已随 v0.2.1 发布）
 
