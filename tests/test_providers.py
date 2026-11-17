@@ -61,6 +61,21 @@ def test_bailian_default_base_url_is_a_valid_anthropic_endpoint():
         spec.default_claude_base_url("cn-beijing"))
 
 
+@pytest.mark.parametrize("hostile_region", [
+    # Each of these used to land inside the hostname unchecked, moving the
+    # inference key to an attacker host (review P0-1, reproduced live).
+    "evil.example.com/",
+    "cn-beijing@evil.example.com/",
+    "cn-beijing.evil.example.com",
+    "http://evil.example.com",
+    "cn-shanghai",  # well-formed but outside bailian's region allowlist
+])
+def test_bailian_default_base_url_falls_back_for_hostile_regions(hostile_region):
+    spec = get_provider("bailian")
+    assert spec.default_claude_base_url(hostile_region) == (
+        spec.default_claude_base_url("cn-beijing"))
+
+
 def test_ark_never_prefills_an_unverified_endpoint_or_invented_models():
     spec = get_provider("volcengine")
     # Ark has no verified Anthropic endpoint or model catalogue, so the app must

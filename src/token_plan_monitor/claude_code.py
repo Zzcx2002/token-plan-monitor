@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 from .models import CacheError, ConfigurationError
 
@@ -113,6 +113,26 @@ def is_absent(value: Any) -> bool:
     return isinstance(value, str) and not value.strip()
 
 
+def url_transport_error(parsed: SplitResult) -> str | None:
+    """Transport checks for any URL that will carry the inference key.
+
+    Returns an error message, or None when the URL is https (local debug hosts
+    excepted) and carries no userinfo. Shared by the apply path
+    (`normalize_base_url`) and the model-catalog fetch so both enforce the same
+    policy: the key never leaves over plaintext HTTP or to a host smuggled in
+    through userinfo.
+    """
+    if parsed.scheme != "https" and parsed.hostname not in ("localhost", "127.0.0.1"):
+        return "Base URL 必须使用 https（本机调试可用 http://localhost）"
+    if "@" in parsed.netloc:
+        # Everything before the @ is userinfo, not the host. A URL like
+        # https://token-plan.cn-beijing@evil.example.com/... reads as a template
+        # instance but sends the key to evil.example.com -- and a path-based
+        # pass-through would hand it back untouched because its path looks right.
+        return "Base URL 不能包含用户名或密码（形如 https://user:pass@host）"
+    return None
+
+
 def normalize_base_url(raw: str) -> tuple[str, str | None]:
     """Return (anthropic base URL, value it was rewritten from).
 
@@ -127,16 +147,11 @@ def normalize_base_url(raw: str) -> tuple[str, str | None]:
     except ValueError as exc:
         raise ConfigurationError("Base URL 格式无效") from exc
 
-    if parsed.scheme != "https" and parsed.hostname not in ("localhost", "127.0.0.1"):
-        raise ConfigurationError("Base URL 必须使用 https（本机调试可用 http://localhost）")
+    transport_error = url_transport_error(parsed)
+    if transport_error is not None:
+        raise ConfigurationError(transport_error)
     if not parsed.netloc:
         raise ConfigurationError("Base URL 缺少主机名")
-    if "@" in parsed.netloc:
-        # Everything before the @ is userinfo, not the host. A URL like
-        # https://token-plan.cn-beijing@evil.example.com/... reads as a template
-        # instance but sends the key to evil.example.com -- and the pass-through
-        # below would hand it back untouched because its path looks right.
-        raise ConfigurationError("Base URL 不能包含用户名或密码（形如 https://user:pass@host）")
 
     if ANTHROPIC_PATH in parsed.path:
         return trimmed, None

@@ -127,30 +127,42 @@ class UsageMonitor:
     ) -> None:
         should_clear_cache = False
         with self._lock:
-            # Switching provider invalidates the cached snapshot just like
-            # switching accounts does: it was fetched from a different service.
-            provider_changed = settings.provider != self._settings.provider
-            account_changed = provider_changed or credentials != self._credentials
-            self._settings = settings
-            self._credentials = credentials
-            self._state = replace(
-                self._state,
-                status="empty" if account_changed else self._state.status,
-                snapshot=None if account_changed else self._state.snapshot,
-                error=None,
-                error_category=None,
-                revision=self._state.revision + 1,
-                provider=settings.provider,
-                alert_threshold_percent=settings.alert.threshold_percent,
-                trends=() if account_changed else self._state.trends,
-                history=() if account_changed else self._state.history,
-            )
-            self._pending = True
-            self._next_run = None
-            should_clear_cache = account_changed
-            if account_changed:
-                self._alert_armed = {}
-            self._wake.set()
+            if settings == self._settings and credentials == self._credentials:
+                # Re-saving identical settings is a no-op: bumping the revision
+                # here would discard an in-flight query fetched with these very
+                # credentials and pay for a full re-query nothing asked for.
+                # Settings/Credentials are frozen, normalized dataclasses, so
+                # == is a reliable deep comparison (alert threshold included).
+                unchanged = True
+            else:
+                unchanged = False
+                # Switching provider invalidates the cached snapshot just like
+                # switching accounts does: it was fetched from a different service.
+                provider_changed = settings.provider != self._settings.provider
+                account_changed = provider_changed or credentials != self._credentials
+                self._settings = settings
+                self._credentials = credentials
+                self._state = replace(
+                    self._state,
+                    status="empty" if account_changed else self._state.status,
+                    snapshot=None if account_changed else self._state.snapshot,
+                    error=None,
+                    error_category=None,
+                    revision=self._state.revision + 1,
+                    provider=settings.provider,
+                    alert_threshold_percent=settings.alert.threshold_percent,
+                    trends=() if account_changed else self._state.trends,
+                    history=() if account_changed else self._state.history,
+                )
+                self._pending = True
+                self._next_run = None
+                should_clear_cache = account_changed
+                if account_changed:
+                    self._alert_armed = {}
+                self._wake.set()
+        if unchanged:
+            self._publish()
+            return
         if should_clear_cache:
             try:
                 self.storage.clear_snapshot()

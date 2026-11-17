@@ -173,6 +173,70 @@ def test_settings_revision_discards_old_credential_result(tmp_path):
         monitor.stop()
 
 
+def test_resaving_identical_settings_keeps_the_in_flight_result(tmp_path):
+    storage = configured_storage(tmp_path)
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    class BlockingClient:
+        def query(self):
+            calls.append(1)
+            entered.set()
+            if not release.wait(2):
+                raise TimeoutError("test release failed")
+            return snapshot()
+
+    monitor = UsageMonitor(
+        storage,
+        client_factory=lambda settings, credentials: BlockingClient(),
+    )
+    try:
+        monitor.start()
+        assert entered.wait(2)
+        revision = monitor.get_state().revision
+        # Saving the very same settings mid-query must not bump the revision:
+        # the in-flight result was fetched with these exact credentials.
+        monitor.update_configuration(Settings(), Credentials("AKLT-a", "secret"))
+        assert monitor.get_state().revision == revision
+        release.set()
+        wait_for(lambda: monitor.get_state().status == "ok")
+        assert monitor.get_state().snapshot.plan_name == "Agent Plan Large"
+        assert storage.load_snapshot().plan_name == "Agent Plan Large"
+        history = storage.load_history("volcengine", account_fingerprint("AKLT-a"))
+        assert len(history) == 1
+        time.sleep(0.05)
+        assert len(calls) == 1
+    finally:
+        release.set()
+        monitor.stop()
+
+
+def test_resaving_identical_settings_while_idle_does_not_requery(tmp_path):
+    storage = configured_storage(tmp_path)
+    calls = []
+
+    class CountingClient:
+        def query(self):
+            calls.append(1)
+            return snapshot()
+
+    monitor = UsageMonitor(
+        storage, client_factory=lambda settings, credentials: CountingClient()
+    )
+    try:
+        monitor.start()
+        wait_for(lambda: monitor.get_state().status == "ok")
+        revision = monitor.get_state().revision
+        monitor.update_configuration(Settings(), Credentials("AKLT-a", "secret"))
+        time.sleep(0.05)
+        assert len(calls) == 1
+        assert monitor.get_state().revision == revision
+        assert monitor.get_state().snapshot is not None
+    finally:
+        monitor.stop()
+
+
 def test_missing_credentials_never_starts_a_request(tmp_path):
     storage = configured_storage(tmp_path, ak=None)
     calls = []

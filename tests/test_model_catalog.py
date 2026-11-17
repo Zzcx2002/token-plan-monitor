@@ -46,8 +46,8 @@ class FakeSession:
         self._error = error
         self.calls = []
 
-    def get(self, url, headers=None, timeout=None):
-        self.calls.append((url, headers, timeout))
+    def get(self, url, headers=None, timeout=None, allow_redirects=None):
+        self.calls.append((url, headers, timeout, allow_redirects))
         if self._error is not None:
             raise self._error
         return self._response
@@ -74,6 +74,30 @@ def test_models_url_rejects_empty_or_hostless():
         models_url_for("")
     with pytest.raises(ModelCatalogError):
         models_url_for("not-a-url")
+
+
+@pytest.mark.parametrize("base_url", [
+    # Plaintext HTTP would put the Bearer key on the wire in the clear.
+    "http://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
+    "http://evil.example.com/apps/anthropic",
+    # Userinfo smuggles the real host past a path/substring check: the key
+    # would go to evil.example.com while the URL reads like a template instance.
+    "https://token-plan.cn-beijing@evil.example.com/apps/anthropic",
+    "https://user:pass@token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
+])
+def test_models_url_rejects_plaintext_http_and_userinfo(base_url):
+    with pytest.raises(ModelCatalogError):
+        models_url_for(base_url)
+
+
+@pytest.mark.parametrize("base_url", [
+    "http://localhost:8080/apps/anthropic",
+    "http://127.0.0.1/apps/anthropic",
+])
+def test_models_url_allows_local_debug_http(base_url):
+    # Same localhost exception as the apply path (normalize_base_url).
+    assert models_url_for(base_url).endswith("/compatible-mode/v1/models")
+    assert models_url_for(base_url).startswith("http://")
 
 
 # --- Chat-model filtering ---------------------------------------------------
@@ -126,9 +150,11 @@ def test_fetch_sends_bearer_key_to_derived_url_and_returns_ids():
     session = FakeSession(FakeResponse(200, {"data": [{"id": "qwen4-max"}, {"id": "auto"}]}))
     ids = fetch_model_ids("https://token-plan.maas.aliyuncs.com/apps/anthropic", "sk-sp-x", session)
     assert ids == ("qwen4-max", "auto")
-    url, headers, _timeout = session.calls[0]
+    url, headers, _timeout, allow_redirects = session.calls[0]
     assert url == "https://token-plan.maas.aliyuncs.com/compatible-mode/v1/models"
     assert headers["Authorization"] == "Bearer sk-sp-x"
+    # A redirect could forward the Bearer key to another host.
+    assert allow_redirects is False
 
 
 def test_fetch_non_200_raises():

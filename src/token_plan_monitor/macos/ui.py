@@ -600,6 +600,10 @@ class MonitorUI:
         self.closed = False
         self.materials = []
         self.status_image = None
+        # tone -> NSImage. state_tone has only four discrete values, so the
+        # Pillow draw + PNG encode + NSImage decode runs at most four times
+        # instead of on every render.
+        self._icon_cache = {}
         self.provider_popup = None
         self.settings_provider = DEFAULT_PROVIDER
         self._settings_dirty = False
@@ -785,11 +789,16 @@ class MonitorUI:
     def render(self, state):
         self.state = state
         if self.status_item is not None:
-            data = F.NSData.dataWithBytes_length_(*self.icon_data())
-            image = A.NSImage.alloc().initWithData_(data)
-            image.setSize_(F.NSMakeSize(20, 20))
-            self.status_image = image
-            self.status_item.button().setImage_(image)
+            tone = state_tone(state)
+            image = self._icon_cache.get(tone)
+            if image is None:
+                data = F.NSData.dataWithBytes_length_(*self.icon_data())
+                image = A.NSImage.alloc().initWithData_(data)
+                image.setSize_(F.NSMakeSize(20, 20))
+                self._icon_cache[tone] = image
+            if image is not self.status_image:
+                self.status_image = image
+                self.status_item.button().setImage_(image)
             self.status_item.button().setToolTip_(hover_summary(state))
         self.render_card()
         if self.details is not None:
