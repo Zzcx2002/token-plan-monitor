@@ -1,0 +1,67 @@
+---
+import type { LandingContent } from '../content/types';
+import { release } from '../data/release';
+import { absoluteUrl, links, withBase } from '../data/site';
+import '../styles/tokens.css';
+import '../styles/global.css';
+
+interface Props { content: LandingContent }
+const { content } = Astro.props;
+const isEnglish = content.locale === 'en';
+const canonical = absoluteUrl(isEnglish ? 'en/' : '');
+const chinese = absoluteUrl('');
+const english = absoluteUrl('en/');
+const ogImage = absoluteUrl(`og/og-${isEnglish ? 'en' : 'zh'}.png`);
+const schema = {
+  '@context': 'https://schema.org',
+  '@type': 'SoftwareApplication',
+  name: isEnglish ? 'Token Plan Quota Monitor' : 'Token Plan 用量监控',
+  description: content.meta.description,
+  url: canonical,
+  applicationCategory: 'UtilitiesApplication',
+  operatingSystem: 'macOS 14 or later (Apple Silicon); Windows 10/11 64-bit',
+  softwareVersion: release.latestTag.slice(1),
+  isAccessibleForFree: true,
+  offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+  license: links.license,
+  sameAs: links.repository,
+  downloadUrl: links.releases,
+};
+---
+<!doctype html>
+<html lang={content.locale}>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{content.meta.title}</title>
+    <meta name="description" content={content.meta.description} />
+    <link rel="canonical" href={canonical} />
+    <link rel="alternate" hreflang="zh-CN" href={chinese} />
+    <link rel="alternate" hreflang="en" href={english} />
+    <link rel="alternate" hreflang="x-default" href={chinese} />
+    <link rel="icon" type="image/png" sizes="32x32" href={withBase('favicon-32.png')} />
+    <link rel="apple-touch-icon" href={withBase('apple-touch-icon.png')} />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f5f6f7" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#18191d" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Token Plan Monitor" />
+    <meta property="og:title" content={content.meta.title} />
+    <meta property="og:description" content={content.meta.description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:locale" content={isEnglish ? 'en_US' : 'zh_CN'} />
+    <meta property="og:locale:alternate" content={isEnglish ? 'zh_CN' : 'en_US'} />
+    <meta property="og:image" content={ogImage} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content={content.meta.ogAlt} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={content.meta.title} />
+    <meta name="twitter:description" content={content.meta.description} />
+    <meta name="twitter:image" content={ogImage} />
+    <script is:inline type="application/ld+json" set:html={JSON.stringify(schema)} />
+  </head>
+  <body id="top">
+    <a class="skip-link" href="#main">{content.skipLink}</a>
+    <slot />
+  </body>
+</html>

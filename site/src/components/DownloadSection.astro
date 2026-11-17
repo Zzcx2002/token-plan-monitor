@@ -1,0 +1,56 @@
+---
+import type { LandingContent } from '../content/types';
+import { release } from '../data/release';
+import { links } from '../data/site';
+import Icon from './Icon.astro';
+
+interface Props { content: LandingContent }
+const { content } = Astro.props;
+const copy = content.download;
+const mac = release.platforms.macos;
+const windows = release.platforms.windows;
+const windowsSource = content.locale === 'zh-CN' ? links.windowsZh : links.windowsEn;
+const versionLabel = (platform: typeof mac | typeof windows) => platform.status === 'available' ? platform.tag : '';
+const macRequirements = copy.mac.requirements.replace('{version}', versionLabel(mac));
+const windowsRequirements = copy.windows.requirements.replace('{version}', versionLabel(windows));
+const verified = copy.verified.replace('{date}', release.verifiedAt);
+---
+<section class="section download-section" id="download" aria-labelledby="download-title">
+  <div class="container">
+    <div class="section-heading centered-heading">
+      <p class="eyebrow">{copy.eyebrow}</p>
+      <h2 id="download-title">{copy.title}</h2>
+      <p>{copy.description}</p>
+    </div>
+    <div class="download-grid">
+      <article class:list={["platform-card", { available: mac.status === 'available' }]}>
+        <div class="platform-topline"><span class="platform-icon"><Icon name="apple" size={25} /></span><span class="availability-badge">{copy.mac.badge}</span></div>
+        <h3>{copy.mac.title}</h3>
+        <p class="platform-requirements">{macRequirements}</p>
+        <p>{copy.mac.description}</p>
+        {mac.status === 'available' && <>
+          <a class="button button-primary platform-button" href={mac.download} data-download="macos"><Icon name="download" size={18} />{copy.mac.cta}</a>
+          <a class="checksum-link" href={mac.checksum} target="_blank" rel="noreferrer">{copy.mac.checksum}<Icon name="arrow" size={14} /></a>
+        </>}
+        <details class="launch-details">
+          <summary>{copy.mac.detailsSummary}</summary>
+          <p>{copy.mac.details}</p>
+        </details>
+      </article>
+      <article class:list={["platform-card", { available: windows.status === 'available' }]}>
+        <div class="platform-topline"><span class="platform-icon"><Icon name="windows" size={23} /></span><span class:list={["availability-badge", { "muted-badge": windows.status !== 'available' }]}>{copy.windows.badge}</span></div>
+        <h3>{copy.windows.title}</h3>
+        <p class="platform-requirements">{windowsRequirements}</p>
+        <p>{copy.windows.description}</p>
+        {windows.status === 'available' ? <>
+          <a class="button button-primary platform-button" href={windows.download} data-download="windows"><Icon name="download" size={18} />{copy.windows.cta}</a>
+          <a class="checksum-link" href={windows.checksum} target="_blank" rel="noreferrer">{copy.windows.checksum}<Icon name="arrow" size={14} /></a>
+          <details class="launch-details"><summary>{copy.windows.detailsSummary}</summary><p>{copy.windows.details}</p></details>
+        </> : <a class="button button-secondary platform-button" href={windowsSource} target="_blank" rel="noreferrer"><Icon name="code" size={18} />{copy.windows.cta}<Icon name="arrow" size={15} /></a>}
+        <a class="source-link" href={windowsSource} target="_blank" rel="noreferrer">{copy.windows.source}<Icon name="arrow" size={13} /></a>
+      </article>
+    </div>
+    <p class="download-verified">{verified}</p>
+    <p class="download-ui-note"><Icon name="info" size={15} />{copy.uiNote}</p>
+  </div>
+</section>

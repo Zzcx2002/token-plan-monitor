@@ -1,0 +1,28 @@
+{
+  "name": "token-plan-monitor-site",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "npm run verify:manifest && astro build",
+    "preview": "astro preview",
+    "check": "astro check",
+    "verify:manifest": "node scripts/verify-manifest.mjs",
+    "verify:release": "node scripts/verify-release.mjs",
+    "make:assets": "node scripts/make-icons-and-og.mjs",
+    "test": "playwright test",
+    "test:install": "playwright install chromium webkit"
+  },
+  "dependencies": {
+    "@astrojs/sitemap": "^3.7.5",
+    "astro": "^7.4.12"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.12",
+    "@axe-core/playwright": "^4.14.0",
+    "@playwright/test": "^1.65.1",
+    "sharp": "^0.35.5",
+    "typescript": "^6.0.0"
+  }
+}
