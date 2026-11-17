@@ -15,9 +15,23 @@
 - **离线 pytest：375 passed、8 skipped**（新增路径 frozen 解析 5 项及三个 Windows GUI smoke 套件；跳过项为 Windows 原生特效与两个 live 实时接口）。GUI smoke 因 Tk 事件循环曾有偶发 GIL 致命错误，每个套件连跑两遍取信：`gui_smoke`、`gui_material_smoke`、`gui_settings_provider_smoke`、`gui_history_smoke`、`gui_resize_smoke`、`gui_claude_smoke` 均两遍通过；`gui_chrome_smoke` 与 `gui_theme_preview` 各 6 组合通过——期间抓到一个真回归：Claude 面板的长标签需要 560px 而设置窗几何下限仍是 400，固定为 `SETTINGS_MINIMUM_SIZE = (560, 260)` 后通过（窄标签断言反向验证有效）。
 - **打包实测证据**：`build_windows.py` 全流程通过——`TokenPlanMonitor.exe --self-check` 写出 `SELF-CHECK OK`（frozen 平台、certifi/keyring/PIL/pystray/requests/tkinter 导入、实际后端为 `WinVaultKeyring`、便携路径、打包图标与 CA 证书、配置与历史 JSON 往返、Windows 凭据管理器真实 set/get/delete 往返并清理）；随后真实启动 exe 的 12 秒存活探针通过，`logs/app.log` 生成且无 Traceback，taskkill 收尾；zip 内无 data/logs/自检报告残留；`.sha256` 以 LF + basename 写出，`sha256sum -c` 通过（CRLF 版本会失败，构建脚本用 `write_bytes` 规避）。
 - **已知限制（如实记录，Release notes 同口径）**：气泡点击无回调（pystray 能力限制，文档指导用户点托盘图标）；exe 无代码签名证书，首次运行有 SmartScreen 拦截；历史图在 Windows 用 Tk Canvas 渲染、macOS 用 AppKit 原生，数据与交互一致但非像素级相同；`gui_shell_smoke.py` 的 UIA 托盘图标 Name 断言（约 430 行）在本机环境持续失败，已在早前会话证明与本轮改动无关并基线化，其余 shell 断言全过。
-- **仍待手工/发布后**：真实 AK/SK 的 live 交叉核对（与 macOS 同属手工项，`TOKEN_PLAN_MONITOR_LIVE=1`）；发布后按使用者路径重下载 zip + `.sha256` 复验（结果在发布后补记，沿用 v0.2.0 的做法）。v0.3.0 不构建新 DMG，macOS 继续使用 v0.2.0。
+- **仍待手工/发布后**：真实 AK/SK 的 live 交叉核对（与 macOS 同属手工项，`TOKEN_PLAN_MONITOR_LIVE=1`）；发布后按使用者路径重下载 zip + `.sha256` 复验（结果在发布后补记，沿用 v0.2.x 的做法）。v0.3.0 不构建新 DMG，macOS 继续使用 v0.2.1。
 
-## 用量历史窗口验证（2026-11-16，本地验证；尚未发布）
+## v0.2.1 发布记录（2026-11-17，已发布）
+
+分支 `release/v0.1.0`。功能提交 `d0b3ab0`（独立用量历史窗口）与修复 `a27c041`（smoke 报告显式 UTF-8，bundle ASCII locale）；bump 提交 `a517d85`。附注标签 `v0.2.1` 指向 `82a5124`（其树与最终构建一致），GitHub Release id `448239777`。推送经系统代理 127.0.0.1:7897。版本 `0.2.1` / build `6`（`__init__.py`、`pyproject.toml`、`setup_macos.py` 三处同源）。
+
+- 离线 pytest：**405 passed、3 skipped**；`compileall src scripts` 通过。原生 AppKit smoke 双外观（light/dark）通过，含历史窗口全部假状态。
+- 构建：`.venv-build`（python.org Python 3.13.9 framework）跑 `scripts/build_macos.py`；110 个 arm64 二进制、deployment target ≤14、项目与第三方许可证入包、ad-hoc 签名（`Signature=adhoc`、`TeamIdentifier=not set`、`flags=0x2(adhoc)`）随构建全过。
+- 包内 `--smoke-test`（绝对路径 artifacts `/tmp/token-monitor-bundle-smoke-021`）通过。Info.plist `0.2.1` / `6`。
+- 产物：`TokenPlanMonitor-0.2.1-arm64.dmg`（33479854 字节）sha256 `ae2c1ff8be365a51fc3e48e6860267c57f60e9d1d2f02e6f43c2f679e15571f3`；`.sha256` 为纯文件名版（99 字节，与历版一致）。`hdiutil verify` VALID；挂载核对 plist `0.2.1`/`6`、Resources 无杂物（DMG staging 先于 bundle smoke）、含 Applications 拖拽别名。
+- 兼容性：历史窗口为纯加法（`MonitorViewState.history` 加法字段、新模块 `history_chart.py` / `macos/chart.py`），config schema 不变；旧版数据目录直接可用。
+- `README.md` / `README.en.md` 下载与校验链接指向 v0.2.1。
+- 遗留手工项沿用「用量历史窗口验证」节清单（真实悬停、VoiceOver、开窗浅深切换、90 天密度观感、macOS 14 实机）；Windows 趋势/历史展示继续后置。
+- **发布后按使用者路径复验**：从 Release 资产链接重下载 DMG 与 `.sha256`（33479854 / 99 字节），`shasum -a 256 -c` OK，`hdiutil verify` VALID，挂载后 plist `0.2.1`/`6`、`codesign --verify --deep --strict` 通过，从挂载副本 ditto 出的 app 跑 `--smoke-test` 通过；重下载摘要与本地一致（`ae2c1ff8be365a51…`）。
+- **本地安装**：退出运行中的 v0.2.0 后旧版移入废纸篓，`/Applications/TokenPlanMonitor.app` 从**发布资产挂载副本** ditto 替换，签名复验通过并启动确认进程在跑；运行日志无错误、无 UN 降级记录。ad-hoc 签名重建后系统可能要求重新授权通知（README 已说明），如下次低额度告警未呈现按该节排查。
+
+## 用量历史窗口验证（2026-11-16，本地验证；已随 v0.2.1 发布）
 
 分支 `release/v0.1.0`。在 v0.2.0 的历史/趋势数据层之上新增独立「用量历史」窗口：菜单入口、24小时/7天/30天/90天 一行范围选择器、每窗口一张已用%折线/面积图（CAShapeLayer + CGPath，theme 的「无 drawRect_/NSBezierPath」规则注释澄清为允许声明式图层路径）、周期断点不跨重置连线、重置细线/字幕密度门控、告警阈值虚线、悬停十字线+数值领先 tooltip、每图「数据列表」表格孪生、空/薄/未配置诚实文案。
 

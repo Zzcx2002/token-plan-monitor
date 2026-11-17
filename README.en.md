@@ -42,7 +42,7 @@ A standalone Windows tray / macOS menu-bar utility that shows **how much capacit
 
 | | macOS | Windows |
 | --- | --- | --- |
-| Distribution | DMG on GitHub Releases (latest is v0.2.0, see note below) | portable zip on GitHub Releases (from v0.3.0), or run from source |
+| Distribution | DMG on GitHub Releases (latest is v0.2.1, see note below) | portable zip on GitHub Releases (from v0.3.0), or run from source |
 | Requirements | macOS 14 or later, Apple Silicon (arm64) only | Windows 10 / 11 64-bit (exe); Python 3.11+ for source runs |
 | Providers | Volcengine Ark + Model Studio, switchable in Settings | same two, switchable in Settings |
 | Desktop card | three columns (5-hour / weekly / monthly), floating card or desktop component | three columns (5-hour / weekly / monthly), draggable, resizable, pinnable or hideable |
@@ -58,17 +58,17 @@ Model Studio Token Plan (Individual) is metered per subscription month: the API 
 
 ### macOS
 
-Download [TokenPlanMonitor-0.2.0-arm64.dmg](https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.2.0/TokenPlanMonitor-0.2.0-arm64.dmg) from the [GitHub Release v0.2.0](https://github.com/Zzcx2002/token-plan-monitor/releases/tag/v0.2.0) page, open it, drag `TokenPlanMonitor.app` into Applications, and launch it. The app bundles its own Python runtime — you do not need to install anything else.
+Download [TokenPlanMonitor-0.2.1-arm64.dmg](https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.2.1/TokenPlanMonitor-0.2.1-arm64.dmg) from the [GitHub Release v0.2.1](https://github.com/Zzcx2002/token-plan-monitor/releases/tag/v0.2.1) page, open it, drag `TokenPlanMonitor.app` into Applications, and launch it. The app bundles its own Python runtime — you do not need to install anything else.
 
-To confirm the download is intact, put the DMG and the [SHA-256 checksum file](https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.2.0/TokenPlanMonitor-0.2.0-arm64.dmg.sha256) in the same folder and run:
+To confirm the download is intact, put the DMG and the [SHA-256 checksum file](https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.2.1/TokenPlanMonitor-0.2.1-arm64.dmg.sha256) in the same folder and run:
 
 ```sh
-shasum -a 256 -c TokenPlanMonitor-0.2.0-arm64.dmg.sha256
+shasum -a 256 -c TokenPlanMonitor-0.2.1-arm64.dmg.sha256
 ```
 
 This first release is only ad-hoc signed locally: no Developer ID signature, no Apple notarization. A copy downloaded from the network may be blocked by Gatekeeper on first launch. Once you are satisfied with the source, use **Open Anyway** under System Settings → Privacy & Security, then confirm **Open**. Do **not** turn off your system security protections or strip the app's quarantine attribute.
 
-> v0.3.0 focuses on the Windows side and shared cross-platform code; **no new macOS DMG is built for it**. macOS users stay on v0.2.0 above — no feature is missing.
+> v0.3.0 focuses on the Windows side and shared cross-platform code; **no new macOS DMG is built for it**. macOS users stay on v0.2.1 above — no feature is missing.
 
 ### Windows
 

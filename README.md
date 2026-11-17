@@ -39,7 +39,7 @@
 
 | | macOS | Windows |
 | --- | --- | --- |
-| 获取方式 | GitHub Release 的 DMG（最新 v0.2.0，说明见下） | GitHub Release 的便携 zip（v0.3.0 起），也可源码运行 |
+| 获取方式 | GitHub Release 的 DMG（最新 v0.2.1，说明见下） | GitHub Release 的便携 zip（v0.3.0 起），也可源码运行 |
 | 系统要求 | macOS 14 及以上，仅 Apple Silicon（arm64） | Windows 10 / 11 64 位（exe）；源码运行需 Python 3.11+ |
 | 服务商 | 火山方舟 + 阿里云百炼，设置中可切换 | 相同，设置中可切换 |
 | 桌面卡片 | 三列（5 小时 / 每周 / 每月），可切换悬浮卡片或桌面组件 | 三列（5 小时 / 每周 / 每月），可拖动、缩放、置顶或隐藏 |
@@ -55,17 +55,17 @@
 
 ### macOS
 
-从 [GitHub Release v0.2.0](https://github.com/Zzcx2002/token-plan-monitor/releases/tag/v0.2.0) 下载 [TokenPlanMonitor-0.2.0-arm64.dmg](https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.2.0/TokenPlanMonitor-0.2.0-arm64.dmg)，打开后把 `TokenPlanMonitor.app` 拖进 Applications，双击启动。应用自带 Python 运行时，不需要另外安装任何东西。
+从 [GitHub Release v0.2.1](https://github.com/Zzcx2002/token-plan-monitor/releases/tag/v0.2.1) 下载 [TokenPlanMonitor-0.2.1-arm64.dmg](https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.2.1/TokenPlanMonitor-0.2.1-arm64.dmg)，打开后把 `TokenPlanMonitor.app` 拖进 Applications，双击启动。应用自带 Python 运行时，不需要另外安装任何东西。
 
-想确认下载完整，把 DMG 和 [SHA-256 校验文件](https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.2.0/TokenPlanMonitor-0.2.0-arm64.dmg.sha256) 放在同一目录后执行：
+想确认下载完整，把 DMG 和 [SHA-256 校验文件](https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.2.1/TokenPlanMonitor-0.2.1-arm64.dmg.sha256) 放在同一目录后执行：
 
 ```sh
-shasum -a 256 -c TokenPlanMonitor-0.2.0-arm64.dmg.sha256
+shasum -a 256 -c TokenPlanMonitor-0.2.1-arm64.dmg.sha256
 ```
 
 首版只有本地 ad-hoc 签名，没有 Developer ID 签名，也没有 Apple 公证。从网络下载的副本首次打开可能被 Gatekeeper 阻止；确认来源后，在系统设置「隐私与安全性」里点「仍要打开」，再确认「打开」。**不要**关闭系统安全保护，也不要删除应用的 quarantine 属性。
 
-> v0.3.0 的变化集中在 Windows 侧与两端共享代码，**没有重新构建 macOS DMG**；macOS 用户继续使用上面的 v0.2.0 即可，功能不缺失。
+> v0.3.0 的变化集中在 Windows 侧与两端共享代码，**没有重新构建 macOS DMG**；macOS 用户继续使用上面的 v0.2.1 即可，功能不缺失。
 
 ### Windows
 

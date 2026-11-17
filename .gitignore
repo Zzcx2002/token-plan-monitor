@@ -14,3 +14,4 @@ data/*.json
 data/*.tmp
 data/*.corrupt
 logs/*.log
+REVIEW-NOTES.md
