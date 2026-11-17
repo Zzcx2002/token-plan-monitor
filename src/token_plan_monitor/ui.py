@@ -791,8 +791,13 @@ class MonitorUI:
         return f"更新于 {value.astimezone():%m-%d %H:%M}"
 
     def _notify_alert(self,event) -> None:
-        """Quota alert channel: a tray toast. Clicking it follows the tray's
-        default action (open the usage popup), which needs no extra wiring."""
+        """Quota alert channel: a pystray tray balloon.
+
+        pystray 0.19.5's Windows backend only implements ``notify(message,
+        title)`` with no click callback, so the balloon cannot be wired to
+        open the details window -- a documented platform limitation. Users
+        open the usage popup by clicking the tray icon itself instead.
+        """
         if self.icon is None:
             return
         title,body=alert_notification(event,provider_label(event.provider))
