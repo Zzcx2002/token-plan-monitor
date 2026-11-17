@@ -4,6 +4,19 @@
 
 开发/验证机器：Apple Silicon，macOS 26.6（25G72）。构建使用 python.org Python 3.13.9 framework、py2app 0.28.10；Python 及依赖都在项目隔离目录，未安装到系统 Python。依赖版本见 `requirements-macos-build.txt`。
 
+本文件同时承载 Windows 侧的验收记录（见下节）；Windows 实机为 Windows 11 Pro 64 位 + python.org Python 3.13.13 venv。
+
+## Windows 功能对齐与便携版打包验收（2026-11-17，分支 `codex/windows-sync`；v0.3.0 发布前本地验证）
+
+目标：把 Windows Tk 壳补齐到与 macOS 功能完全一致，并用 PyInstaller 产出便携 zip。按阶段独立提交，每阶段结束 pytest 全绿。
+
+- **功能对齐（A1–A6）**：① 详情窗趋势行，文案与警告色规则复用共享 `trend_line`；② 设置窗服务商切换——先把 `macos/layout.py` 的纯校验规则抽到共享 `settings_rules.py`（mac 侧再导出，行为不变），再把 160 行设置闭包重构为 `SettingsDialog`，最后接服务商 Combobox（延迟重建、region 回退、凭据按 provider 隔离、保存显式带 provider）；③ 桌面卡片两列改三列（最低项标记、缺月窗显示「—」、最小宽度 280→320）；④ 独立用量历史窗口（`history_view.py`，Tk Canvas 由共享 `history_chart.build_chart` 纯规则驱动：周期断点不连线、阈值虚线、重置标记密度门控、十字线 tooltip、数据列表披露表、24 小时/7/30/90 天范围）；⑤ Claude Code 接入（`ClaudePanel` 11 控件，复刻 mac 的写入/校验/草稿/模型清单规则，所有写入经 `claude_paths_override` 落临时目录，绝不触碰真实 `~/.claude`）；⑥ pystray 0.19.5 气泡不可点击的平台限制如实写入 README，不做原生 Win32 通知。
+- **打包（A7）**：新增 `scripts/build_windows.py`（onedir、`--windowed`、hidden imports `pystray._win32` / `keyring.backends.Windows`、包外 launcher 避开 `__main__` 相对导入陷阱）。`paths.py` 增加 frozen 分支：便携 data/logs 落在 exe 旁，只读资源走 `sys._MEIPASS`，源码运行语义不变（`tests/test_paths.py` 5 项钉住）。声明文件：`THIRD_PARTY_NOTICES.md` 增「Standalone Windows runtime」清单，`licenses/` 新增 11 份运行时许可证（PyInstaller、pystray LGPL/GPL、Tcl/Tk、OpenSSL、zlib、libffi、PSF 等）；PYZ TOC 实测确认 pluggy/pygments/pytest 等构建期依赖不入包。
+- **离线 pytest：375 passed、8 skipped**（新增路径 frozen 解析 5 项及三个 Windows GUI smoke 套件；跳过项为 Windows 原生特效与两个 live 实时接口）。GUI smoke 因 Tk 事件循环曾有偶发 GIL 致命错误，每个套件连跑两遍取信：`gui_smoke`、`gui_material_smoke`、`gui_settings_provider_smoke`、`gui_history_smoke`、`gui_resize_smoke`、`gui_claude_smoke` 均两遍通过；`gui_chrome_smoke` 与 `gui_theme_preview` 各 6 组合通过——期间抓到一个真回归：Claude 面板的长标签需要 560px 而设置窗几何下限仍是 400，固定为 `SETTINGS_MINIMUM_SIZE = (560, 260)` 后通过（窄标签断言反向验证有效）。
+- **打包实测证据**：`build_windows.py` 全流程通过——`TokenPlanMonitor.exe --self-check` 写出 `SELF-CHECK OK`（frozen 平台、certifi/keyring/PIL/pystray/requests/tkinter 导入、实际后端为 `WinVaultKeyring`、便携路径、打包图标与 CA 证书、配置与历史 JSON 往返、Windows 凭据管理器真实 set/get/delete 往返并清理）；随后真实启动 exe 的 12 秒存活探针通过，`logs/app.log` 生成且无 Traceback，taskkill 收尾；zip 内无 data/logs/自检报告残留；`.sha256` 以 LF + basename 写出，`sha256sum -c` 通过（CRLF 版本会失败，构建脚本用 `write_bytes` 规避）。
+- **已知限制（如实记录，Release notes 同口径）**：气泡点击无回调（pystray 能力限制，文档指导用户点托盘图标）；exe 无代码签名证书，首次运行有 SmartScreen 拦截；历史图在 Windows 用 Tk Canvas 渲染、macOS 用 AppKit 原生，数据与交互一致但非像素级相同；`gui_shell_smoke.py` 的 UIA 托盘图标 Name 断言（约 430 行）在本机环境持续失败，已在早前会话证明与本轮改动无关并基线化，其余 shell 断言全过。
+- **仍待手工/发布后**：真实 AK/SK 的 live 交叉核对（与 macOS 同属手工项，`TOKEN_PLAN_MONITOR_LIVE=1`）；发布后按使用者路径重下载 zip + `.sha256` 复验（结果在发布后补记，沿用 v0.2.0 的做法）。v0.3.0 不构建新 DMG，macOS 继续使用 v0.2.0。
+
 ## 用量历史窗口验证（2026-11-16，本地验证；尚未发布）
 
 分支 `release/v0.1.0`。在 v0.2.0 的历史/趋势数据层之上新增独立「用量历史」窗口：菜单入口、24小时/7天/30天/90天 一行范围选择器、每窗口一张已用%折线/面积图（CAShapeLayer + CGPath，theme 的「无 drawRect_/NSBezierPath」规则注释澄清为允许声明式图层路径）、周期断点不跨重置连线、重置细线/字幕密度门控、告警阈值虚线、悬停十字线+数值领先 tooltip、每图「数据列表」表格孪生、空/薄/未配置诚实文案。
@@ -50,7 +63,7 @@
 
 仍未实机验证（发布前手工清单）：① 真实凭据下历史落盘/去重/轮转与趋势文案实机核对（或 `TOKEN_PLAN_MONITOR_LIVE=1`）；② 沿用历版清单：干净 macOS 14 与浏览器下载 Gatekeeper 流程、VoiceOver、多屏/Spaces、真实 `~/.claude/settings.json` 端到端写入。
 
-范围决定（2026-11-16，用户）：本期只验收 macOS。Windows 真机告警 panel / 托盘 toast 验证**挂起**——代码与 `tests/gui_material_smoke.py` 断言已随 v0.2.0 提交，留待后续 Windows 周期执行，不阻塞本期发布。
+范围决定（2026-11-16，用户）：本期只验收 macOS。Windows 真机告警 panel / 托盘 toast 验证**挂起**——代码与 `tests/gui_material_smoke.py` 断言已随 v0.2.0 提交，留待后续 Windows 周期执行，不阻塞本期发布。**该挂起项已于 2026-11-17 关闭**：见文首「Windows 功能对齐与便携版打包验收」，告警 panel 随 A2 设置窗重构在 Windows 实机 smoke 中验证，托盘通知链路沿用 v0.2.0 代码、限制已文档化。
 
 ## v0.1.3 发布记录（2026-11-16）
 
@@ -304,7 +317,7 @@
 ## 待实机验收
 
 - **macOS 14 arm64**：当前仅有 macOS 26.6 环境，最低版本尚未实机确认。Info.plist 和二进制部署目标检查不能替代实机测试。
-- **Windows 回归**：共用业务逻辑测试通过，Windows 原生界面、命名互斥锁和快捷方式需要 Windows 实机复核。
+- **Windows 回归**：共用业务逻辑测试通过，Windows 原生界面、命名互斥锁和快捷方式需要 Windows 实机复核。（2026-11-17 更新：本轮已在 Windows 11 实机完成功能对齐与打包验收，详见文首 Windows 节；互斥锁仍由 `gui_shell_smoke.py` 与源码测试覆盖，快捷方式脚本行为未改动。）
 - **剩余实际交互**：菜单栏左右键与悬停、卡片真实移动及八方向缩放、缩放光标、右键和 Control-单击仍需手工复核。已用纯几何测试和原生视图断言覆盖缩放计算、边缘命中及普通点击行为；本轮电脑工具对无边框卡片执行拖动时返回 `noWindowsAvailable`，未将程序化断言计为真实鼠标验收。
 - **VoiceOver**：已读取并核对实际 AX 树中的进度条名称、剩余值描述、设置字段标签及菜单/详情按钮；完整屏幕阅读器朗读流程尚未实测。
 - **显示与系统事件**：Retina/混合缩放多屏、真实外接屏断开、切换空间及全屏应用、系统降低透明度开关、真实睡眠唤醒。几何和到期逻辑有离线测试，系统事件需要实机操作。

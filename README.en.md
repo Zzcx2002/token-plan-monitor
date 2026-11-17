@@ -20,7 +20,7 @@ A standalone Windows tray / macOS menu-bar utility that shows **how much capacit
 - [First setup: which credentials you need](#first-setup-which-credentials-you-need)
 - [Using it](#using-it)
 - [Appearance](#appearance)
-- [Claude Code hookup (macOS only)](#claude-code-hookup-macos-only)
+- [Claude Code hookup](#claude-code-hookup)
 - [Where files and credentials live, and how to remove them](#where-files-and-credentials-live-and-how-to-remove-them)
 - [Privacy and security boundaries](#privacy-and-security-boundaries)
 - [FAQ](#faq)
@@ -42,13 +42,13 @@ A standalone Windows tray / macOS menu-bar utility that shows **how much capacit
 
 | | macOS | Windows |
 | --- | --- | --- |
-| Distribution | DMG on GitHub Releases | run from source (no installer) |
-| Requirements | macOS 14 or later, Apple Silicon (arm64) only | Python 3.11 or later |
-| Providers | Volcengine Ark + Model Studio, switchable in Settings | Volcengine Ark only |
-| Desktop card | three columns (5-hour / weekly / monthly), floating card or desktop component | two columns (5-hour / weekly) |
-| Claude Code hookup | yes (bottom of the Settings window) | no |
-| Low-quota alerts | Notification Center, configurable threshold, click opens details | tray toast, configurable threshold |
-| Usage history & trends | yes (trend line in the details window + usage-history window) | history recorded, trend display later |
+| Distribution | DMG on GitHub Releases (latest is v0.2.0, see note below) | portable zip on GitHub Releases (from v0.3.0), or run from source |
+| Requirements | macOS 14 or later, Apple Silicon (arm64) only | Windows 10 / 11 64-bit (exe); Python 3.11+ for source runs |
+| Providers | Volcengine Ark + Model Studio, switchable in Settings | same two, switchable in Settings |
+| Desktop card | three columns (5-hour / weekly / monthly), floating card or desktop component | three columns (5-hour / weekly / monthly), draggable, resizable, pinnable or hideable |
+| Claude Code hookup | yes (bottom of the Settings window) | yes (bottom of the Settings window) |
+| Low-quota alerts | Notification Center, configurable threshold, click opens details | tray balloon toast, configurable threshold; toast clicks are limited (see Alerts) |
+| Usage history & trends | yes (trend line in the details window + usage-history window) | yes (trend line in the details window + usage-history window) |
 | Appearance | follows the system light/dark setting, no in-app switch | light / dark / system, switchable in-app |
 | Credential storage | macOS login keychain | Windows Credential Manager |
 
@@ -68,9 +68,31 @@ shasum -a 256 -c TokenPlanMonitor-0.2.0-arm64.dmg.sha256
 
 This first release is only ad-hoc signed locally: no Developer ID signature, no Apple notarization. A copy downloaded from the network may be blocked by Gatekeeper on first launch. Once you are satisfied with the source, use **Open Anyway** under System Settings → Privacy & Security, then confirm **Open**. Do **not** turn off your system security protections or strip the app's quarantine attribute.
 
+> v0.3.0 focuses on the Windows side and shared cross-platform code; **no new macOS DMG is built for it**. macOS users stay on v0.2.0 above — no feature is missing.
+
 ### Windows
 
-There is no Windows installer; run it from source. Put the project wherever you like (referred to as `<project dir>` below), then in a terminal:
+#### Portable build (recommended)
+
+Download `TokenPlanMonitor-<version>-win64.zip` and its matching `.sha256` file from the latest [GitHub Release](https://github.com/Zzcx2002/token-plan-monitor/releases) into the same folder. Verify the archive first, in PowerShell:
+
+```powershell
+$expected = (Get-Content .\TokenPlanMonitor-*.win64.zip.sha256 -TotalCount 1).Split(" ")[0].ToLower()
+$actual = (Get-FileHash .\TokenPlanMonitor-*.win64.zip -Algorithm SHA256).Hash.ToLower()
+if ($expected -eq $actual) { "OK" } else { "MISMATCH" }
+```
+
+With Git Bash or coreutils you can instead run `sha256sum -c TokenPlanMonitor-<version>-win64.zip.sha256` — it must print `OK`.
+
+Once verified, extract the zip into a folder **your user can write to** (e.g. under `%LOCALAPPDATA%\Programs` or Documents; do not use protected locations such as `C:\Program Files`) and double-click `TokenPlanMonitor.exe`. The app is portable: config, history and logs are written to the `data\` and `logs\` folders next to the exe. Moving the whole folder migrates everything; deleting it uninstalls the app (the Credential Manager entries must be removed separately, see below). No administrator rights needed, no login item.
+
+The exe has no paid code-signing certificate, so SmartScreen may show "Windows protected your PC" on first launch. After confirming the download comes from this repository's Release and the sha256 check matches, choose **More info → Run anyway**.
+
+A Windows named mutex prevents duplicate launches, so double-clicking twice will not create a second tray instance.
+
+#### Run from source
+
+You can also run the source directly. Put the project wherever you like (referred to as `<project dir>` below), then in a terminal:
 
 ```bat
 cd /d <project dir>
@@ -79,13 +101,13 @@ py -3.13 -m venv .venv
 .venv\Scripts\pythonw.exe -m token_plan_monitor
 ```
 
-After installing dependencies, run the shortcut script once. It creates one "火山方舟用量监控" (Volcengine Ark usage monitor) shortcut on the Desktop and one in the current user's Start Menu, so you can launch by double-clicking without a console window flashing. No administrator rights needed, no login item; re-run it if you move the project or recreate `.venv`:
+After installing dependencies, run the shortcut script once. It creates one "火山方舟用量监控" (Volcengine Ark usage monitor) shortcut on the Desktop and one in the current user's Start Menu, so you can launch by double-clicking without a console window flashing. Re-run it if you move the project or recreate `.venv`:
 
 ```bat
 powershell -NoProfile -File .\scripts\New-AppShortcuts.ps1
 ```
 
-The program uses a Windows named mutex to prevent duplicate launches, so double-clicking twice will not create a second tray instance.
+Source runs keep their data under `<project dir>\data\` (the same exe-side folder rule as the portable build, see below).
 
 ## First setup: which credentials you need
 
@@ -148,7 +170,7 @@ Single-click the tray icon to open the usage popup (hover for a summary, right-c
 ### Usage history and low-quota alerts
 
 - **History**: every successful query appends one row to `history/<provider>.jsonl` (see the data directory below), containing only the percentages/amounts the API reported plus a one-way fingerprint of the AccessKey ID — never credentials. Unchanged values are recorded at most once per 15 minutes; any change is recorded immediately. Retention is 90 days and 10,000 rows per file with automatic rotation. Switching provider or account does **not** clear history (trends only use the current account and window cycle); delete the file to remove it.
-- **History window (macOS)**: the menu's 用量历史 (Usage history) opens a standalone window with one used-% line/area chart per quota window present in the current snapshot (fixed 0–100 axis). A single range selector at the top (24小时 / 7天 / 30天 / 90天 — 24 hours / 7 / 30 / 90 days, default 24 hours; 90 days is the retention cap) rescopes every chart at once. Each window cycle is its own line segment — **the line breaks at resets, never connects across them** — with a hairline and a 重置 (Reset) caption at the cut (captions drop out automatically when cycles are too dense); the alert threshold is a dashed reference line at the used-% where remaining drops below it. Hovering shows a crosshair and a value-first tooltip (used %, time, and absolutes only when the API reported them); each chart has a 数据列表 (Data list) disclosure table so every bucketed sample is readable without hovering. Only the **current account**'s history is shown; percent-only plans never display fabricated absolutes; thin evidence says so in words. History is seeded from disk at launch and retained across failed refreshes.
+- **History window**: the menu's 用量历史 (Usage history) opens a standalone window with one used-% line/area chart per quota window present in the current snapshot (fixed 0–100 axis). A single range selector at the top (24小时 / 7天 / 30天 / 90天 — 24 hours / 7 / 30 / 90 days, default 24 hours; 90 days is the retention cap) rescopes every chart at once. Each window cycle is its own line segment — **the line breaks at resets, never connects across them** — with a hairline and a 重置 (Reset) caption at the cut (captions drop out automatically when cycles are too dense); the alert threshold is a dashed reference line at the used-% where remaining drops below it. Hovering shows a crosshair and a value-first tooltip (used %, time, and absolutes only when the API reported them); each chart has a 数据列表 (Data list) disclosure table so every bucketed sample is readable without hovering. Only the **current account**'s history is shown; percent-only plans never display fabricated absolutes; thin evidence says so in words. History is seeded from disk at launch and retained across failed refreshes. Both platforms draw from the same layout data: macOS renders natively while Windows uses a Tk Canvas, so the look is not pixel-identical, but the data, reset breaks, threshold lines and interactions match.
 - **Alerts**: the Settings "低额度告警" group toggles system notifications, sets the threshold (1–99%) and optionally reminds on window resets. A window notifies once per downward crossing; recovery above the threshold or a window reset re-arms it, so there is no repeat spam. Restarting the app while still low reminds once more.
 - **Channels**: macOS uses Notification Center (authorization is requested once; if denied it falls back to the legacy notification API, and if that is unavailable the Settings window says so honestly); clicking a notification opens the details window. Low-quota notifications are **time-sensitive**, so they can break through Focus/Do Not Disturb (requires the system "Allow Time-Sensitive Notifications" toggle, on by default). After an ad-hoc-signed rebuild macOS may ask for authorization again. Windows uses a tray balloon toast. Because pystray 0.19.5 exposes no notification-click callback on Windows, **clicking the toast does not open the app**; single-click or right-click the tray icon to open the usage popup and menu instead. Source runs and `--preview` never send system notifications; the Settings window explains why.
 
@@ -161,13 +183,13 @@ Single-click the tray icon to open the usage popup (hover for a summary, right-c
 
 The Settings body scrolls; Tab, Enter to save, Esc to cancel, and native text-editing shortcuts such as ⌘C / ⌘V all work. Validation keeps what you typed and focuses the offending field; authentication or configuration errors lead with 检查凭据 (Check credentials), network errors lead with 重试 (Retry). Offline, the last successful data is retained and marked stale; after a wake, an overdue deadline triggers at most one coalesced refresh.
 
-## Claude Code hookup (macOS only)
+## Claude Code hookup
 
-After picking a provider you can also pick a model and write the connection details into Claude Code's local config in one click — no hand-copying Base URLs, pasting keys or editing model names. The entry point is at the bottom of the Settings window; the desktop card has none.
+After picking a provider you can also pick a model and write the connection details into Claude Code's local config in one click — no hand-copying Base URLs, pasting keys or editing model names. The entry point is at the bottom of the Settings window; the desktop card has none. The settings, write rules and confirmation flow are identical on macOS and Windows.
 
 <img src="docs/images/settings-claude-code.png" width="330" alt="Settings window: provider pop-up at the top, Claude Code hookup section at the bottom">
 
-**Where it writes**: `~/.claude/settings.json` by default, honouring `CLAUDE_CONFIG_DIR`. The confirmation dialog shows the resolved absolute path — an app launched from Finder does not inherit your shell environment, so trust the path in the dialog. It also sets `hasCompletedOnboarding` to true in `~/.claude.json` to skip the first-run wizard; if that file cannot be parsed the step is **skipped**, never rebuilt (it also holds your project history).
+**Where it writes**: `~/.claude/settings.json` by default (`%USERPROFILE%\.claude\settings.json` on Windows), honouring `CLAUDE_CONFIG_DIR`. The confirmation dialog shows the resolved absolute path — an app launched from Finder or Windows Explorer does not inherit your shell environment, so trust the path in the dialog. It also sets `hasCompletedOnboarding` to true in `~/.claude.json` to skip the first-run wizard; if that file cannot be parsed the step is **skipped**, never rebuilt (it also holds your project history).
 
 **Which keys change** — everything else is preserved:
 
@@ -183,12 +205,12 @@ After picking a provider you can also pick a model and write the connection deta
 
 Why touch a tier: in Claude Code `model: "opus"` is only an alias — what actually selects a model is `ANTHROPIC_DEFAULT_OPUS_MODEL`. Writing `ANTHROPIC_MODEL` alone does almost nothing for such a config. The side effect is that once top-level `model` becomes a concrete name, `/model opus` resolves through `ANTHROPIC_DEFAULT_OPUS_MODEL` (now your chosen model), which differs from your previous alias-only layering.
 
-**Safety**: every write is preceded by a backup to `settings.json.bak.<timestamp>` — that backup holds the previous plaintext key, so it is kept at `0600` like the file itself, and any older world-readable backup left behind is tightened too; it merges rather than rebuilds; if the file is not valid JSON or `env` is not an object it **aborts without touching the original**; the result is tightened to `0600`; clicking twice is idempotent. You see an itemized change list first and must confirm.
+**Safety**: every write is preceded by a backup to `settings.json.bak.<timestamp>` — that backup holds the previous plaintext key, so it is tightened to owner-only read/write like the file itself (on macOS that is mode `0600`, and any older world-readable backup left behind is tightened too); it merges rather than rebuilds; if the file is not valid JSON or `env` is not an object it **aborts without touching the original**; clicking twice is idempotent. You see an itemized change list first and must confirm. On Windows, Python's `chmod 0600` only toggles the read-only attribute — real access control comes from the folder's inherited NTFS ACL. `%USERPROFILE%\.claude` is user-private by default; **keep the portable build inside a user-private folder, not a world-writable share**, or the plaintext file inherits overly broad permissions.
 
 **Costs to know about**:
 
-- The inference key normally lives only in the keychain, but Claude Code consumes it through an environment variable, so `ANTHROPIC_AUTH_TOKEN` in `settings.json` ends up in **plaintext** (`0600`, readable only by your user; any process running as you can still read it), and each backup is plaintext too, likewise `0600`. The confirmation dialog says so.
-- Rewriting `settings.json` drops `//` and `/* */` comments and key order (values are unaffected); `~/.claude.json` is re-serialized wholesale, tightened to `0600`, and created if absent.
+- The inference key normally lives only in the OS credential store (macOS keychain / Windows Credential Manager), but Claude Code consumes it through an environment variable, so `ANTHROPIC_AUTH_TOKEN` in `settings.json` ends up in **plaintext** (mode `0600` on macOS; on Windows protected by the NTFS ACL described above; any process running as your user can still read it), and each backup is plaintext too. The confirmation dialog says so.
+- Rewriting `settings.json` drops `//` and `/* */` comments and key order (values are unaffected); `~/.claude.json` is re-serialized wholesale with the same permission tightening, and created if absent.
 - Official docs only promise hot reload for permissions / hooks / apiKeyHelper edits, not for `env` or `model`, so **start a new Claude Code session** to confirm it took.
 
 **Base URL and models**: an empty Base URL uses the provider default, and the Region interpolated into that address is validated first — same format-and-supported-region rule as credential saving. URLs carrying credentials (`https://user:pass@host`) are refused outright: everything before the `@` is not the host, so a plausible-looking domain can silently become the machine your key is sent to. For Model Studio the default is the verified `https://token-plan.<region>.maas.aliyuncs.com/apps/anthropic`; pasting an OpenAI-compatible address (`/compatible-mode/v1`) is rewritten automatically, and a proxy host you own under a known domain is kept verbatim. Model Studio ships a model catalogue (default `auto`); custom model IDs may contain only letters, digits and `. _ : / + -`. **Volcengine Ark has no verifiable Anthropic-compatible endpoint** (official material only gives the `/api/v3` OpenAI-compatible address and states the BaseUrl must be supplied by the user), so that field is left empty for you to fill, the UI marks it ⚠ unverified, and its model list is empty — type the model ID yourself.
@@ -228,19 +250,32 @@ To remove everything: delete exactly the accounts above in Keychain Access, dele
 
 ### Windows
 
+The portable build writes everything next to the exe; source runs use the project directory. `<root>` below means either location:
+
 ```text
-<project dir>\
+<root>\
   data\config.json              provider, region, refresh interval, alert settings, other non-secret config
+  data\claude.json              Claude Code choices (model / base URL, never the key)
+  data\models.json              cached provider model catalogue
   data\snapshot.json            last successful usage cache
   data\history\<provider>.jsonl append-only usage history (percentages/amounts + AK fingerprint, 90-day / 10k-row rotation)
   data\widget.json              card position, visibility, top-most state
   data\window_geometry.json     saved sizes for each window and the card
   data\appearance.json          light / dark / system
   logs\app.log                  sanitized run log
-  assets\app.ico                shortcut and window icon
 ```
 
-Credentials live in Windows Credential Manager as `TokenPlanMonitor/volcengine_access_key_id` and `TokenPlanMonitor/volcengine_secret_access_key`. The program never deletes them on its own; to get rid of them, delete both entries under Credential Manager → Windows Credentials, then delete the project directory. Corrupt config or cache files fall back to safe defaults or an empty state rather than crashing at startup.
+Source runs also keep `assets\app.ico` (shortcut and window icon) under the root; in the portable build the icon is a read-only resource packaged inside the app, not in the data folder. The single-instance guarantee uses a Windows named mutex, so no lock file is created.
+
+AK/SK and inference keys go only into Windows Credential Manager under service `TokenPlanMonitor`, with separate accounts per provider:
+
+| Purpose | Account |
+| --- | --- |
+| Volcengine Ark control plane | `volcengine_access_key_id` / `volcengine_secret_access_key` |
+| Model Studio control plane | `bailian_access_key_id` / `bailian_secret_access_key` |
+| Inference key for Claude Code | `volcengine_inference_api_key` / `bailian_inference_api_key` |
+
+Switching providers never reads or overwrites the other provider's credentials, and control-plane AK/SK are never reused as inference keys. The program never deletes them on its own; to get rid of them, delete the accounts above under Credential Manager → Windows Credentials, then delete the portable folder (or the project directory). Corrupt config or cache files fall back to safe defaults or an empty state rather than crashing at startup.
 
 ## Privacy and security boundaries
 
@@ -305,4 +340,4 @@ MIT licensed — see [LICENSE](LICENSE). Signing and response parsing were studi
 
 ## Developers
 
-Source runs, DMG packaging, offline UI preview and validation, tests and live verification: [docs/development.md](docs/development.md). macOS acceptance log: [docs/macos-validation.md](docs/macos-validation.md).
+Source runs, macOS DMG and Windows portable-zip packaging, offline UI preview and validation, tests and live verification: [docs/development.md](docs/development.md). macOS acceptance log: [docs/macos-validation.md](docs/macos-validation.md).
