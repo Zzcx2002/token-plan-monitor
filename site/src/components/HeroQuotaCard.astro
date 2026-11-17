@@ -1,0 +1,43 @@
+---
+import { Image } from 'astro:assets';
+import type { LandingContent } from '../content/types';
+import { appIcon } from '../data/media';
+import Icon from './Icon.astro';
+
+interface Props { content: LandingContent }
+const { content } = Astro.props;
+const preview = content.quotaPreview;
+---
+<div class="preview-wrap">
+  <div class="product-stage" role="group" aria-label={content.hero.previewAria}>
+    <div class="menu-bar" aria-hidden="true">
+      <span class="menu-bar-app"><Image src={appIcon} alt="" width={15} height={15} format="webp" />Token Plan</span>
+      <span class="menu-bar-status"><span></span></span>
+    </div>
+    <div class="quota-card">
+      <div class="quota-header">
+        <strong>{preview.provider}</strong>
+        <span class="quota-status"><span aria-hidden="true"></span>{preview.status}</span>
+      </div>
+      <div class="quota-grid">
+        {preview.windows.map((item) => (
+          <div class="quota-item">
+            <div class="quota-label">
+              <span>{item.label}</span>
+              {item.lowest && <small>{preview.lowest}</small>}
+            </div>
+            <div class="quota-value">{item.value.toFixed(1)}<span>%</span></div>
+            <div class="quota-meter" role="progressbar" aria-label={`${item.label} ${item.value}%`} aria-valuenow={item.value} aria-valuemin={0} aria-valuemax={100}>
+              <span style={`width: ${item.value}%`}></span>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div class="quota-footer">
+        <span>{preview.updated}</span>
+        <span class="refresh-mark" title={preview.refresh}><Icon name="refresh" size={16} /></span>
+      </div>
+    </div>
+  </div>
+  <p class="preview-caption">{content.hero.previewCaption}</p>
+</div>

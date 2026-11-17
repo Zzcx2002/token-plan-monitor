@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://zzcx2002.github.io/token-plan-monitor/sitemap-index.xml

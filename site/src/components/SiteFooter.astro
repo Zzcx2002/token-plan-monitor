@@ -1,0 +1,35 @@
+---
+import { Image } from 'astro:assets';
+import type { LandingContent } from '../content/types';
+import { appIcon } from '../data/media';
+import { release } from '../data/release';
+import { links } from '../data/site';
+import Icon from './Icon.astro';
+
+interface Props { content: LandingContent }
+const { content } = Astro.props;
+const copy = content.footer;
+const mac = release.platforms.macos;
+const privacyLink = content.locale === 'zh-CN' ? links.privacyZh : links.privacyEn;
+---
+<div class="container closing-wrap">
+  <section class="closing" aria-labelledby="closing-title">
+    <div><h2 id="closing-title">{content.closing.title}</h2><p>{content.closing.description}</p></div>
+    <div class="closing-actions">
+      {mac.status === 'available' && <a class="button closing-primary" href={mac.download} data-download="macos"><Icon name="download" size={18} />{content.closing.cta}</a>}
+      <a class="closing-secondary" href={links.repository} target="_blank" rel="noreferrer">{content.closing.secondary}<Icon name="arrow" size={15} /></a>
+    </div>
+  </section>
+</div>
+<footer class="site-footer">
+  <div class="container footer-grid">
+    <div class="footer-brand">
+      <a class="brand" href="#top"><Image src={appIcon} alt="" width={34} height={34} format="webp" /><span>{content.brandName}</span></a>
+      <p>{copy.tagline}</p>
+    </div>
+    <div class="footer-column"><h3>{copy.product}</h3><a href="#features">{content.nav.features}</a><a href="#history">{content.nav.history}</a><a href="#download">{content.nav.download}</a></div>
+    <div class="footer-column"><h3>{copy.resources}</h3><a href={links.repository} target="_blank" rel="noreferrer">{copy.source}</a><a href={links.releases} target="_blank" rel="noreferrer">{copy.releases}</a><a href={links.issues} target="_blank" rel="noreferrer">{copy.issues}</a></div>
+    <div class="footer-column"><h3>{copy.legal}</h3><a href={privacyLink} target="_blank" rel="noreferrer">{copy.privacy}</a><a href={links.license} target="_blank" rel="noreferrer">{copy.license}</a></div>
+  </div>
+  <div class="container footer-bottom"><span>{copy.copyright}</span><span>{copy.affiliation}</span></div>
+</footer>

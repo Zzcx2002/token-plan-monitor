@@ -1,0 +1,28 @@
+{
+  "latestTag": "v0.3.0",
+  "verifiedAt": "2026-11-17",
+  "platforms": {
+    "macos": {
+      "status": "available",
+      "tag": "v0.2.1",
+      "version": "0.2.1",
+      "publishedAt": "2026-11-17",
+      "releasePage": "https://github.com/Zzcx2002/token-plan-monitor/releases/tag/v0.2.1",
+      "assetName": "TokenPlanMonitor-0.2.1-arm64.dmg",
+      "download": "https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.2.1/TokenPlanMonitor-0.2.1-arm64.dmg",
+      "checksum": "https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.2.1/TokenPlanMonitor-0.2.1-arm64.dmg.sha256",
+      "sha256": "ae2c1ff8be365a51fc3e48e6860267c57f60e9d1d2f02e6f43c2f679e15571f3"
+    },
+    "windows": {
+      "status": "available",
+      "tag": "v0.3.0",
+      "version": "0.3.0",
+      "publishedAt": "2026-11-17",
+      "releasePage": "https://github.com/Zzcx2002/token-plan-monitor/releases/tag/v0.3.0",
+      "assetName": "TokenPlanMonitor-0.3.0-win64.zip",
+      "download": "https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.3.0/TokenPlanMonitor-0.3.0-win64.zip",
+      "checksum": "https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.3.0/TokenPlanMonitor-0.3.0-win64.zip.sha256",
+      "sha256": "5dd320c15f9c96c6d3504d6bbb79c01004a19d65292e408d10c2142f2dfe43d4"
+    }
+  }
+}

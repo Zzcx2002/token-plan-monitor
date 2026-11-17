@@ -1,0 +1,106 @@
+---
+import { Image } from 'astro:assets';
+import type { LandingContent } from '../content/types';
+import { historyImage } from '../data/media';
+import { links } from '../data/site';
+import BaseLayout from './BaseLayout.astro';
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import Hero from '../components/Hero.astro';
+import DownloadSection from '../components/DownloadSection.astro';
+import Icon from '../components/Icon.astro';
+
+interface Props { content: LandingContent }
+const { content } = Astro.props;
+const privacyLink = content.locale === 'zh-CN' ? links.privacyZh : links.privacyEn;
+const claudeLink = content.locale === 'zh-CN' ? links.claudeZh : links.claudeEn;
+---
+<BaseLayout content={content}>
+  <SiteHeader content={content} />
+  <main id="main">
+    <Hero content={content} />
+
+    <div class="container facts-wrap">
+      <dl class="facts-strip">
+        {content.facts.map((fact) => <div><dt>{fact.label}</dt><dd>{fact.value}</dd></div>)}
+      </dl>
+    </div>
+
+    <section class="providers-section" aria-labelledby="providers-title">
+      <div class="container">
+        <div class="section-heading">
+          <p class="eyebrow">{content.providers.eyebrow}</p>
+          <h2 id="providers-title">{content.providers.title}</h2>
+          <p>{content.providers.description}</p>
+        </div>
+        <div class="provider-grid">
+          {content.providers.items.map((provider) => (
+            <article class="provider-card">
+              <div class="provider-heading"><span class="provider-mark" aria-hidden="true">{provider.mark}</span><div><h3>{provider.name}</h3><p>{provider.plans}</p></div></div>
+              <p class="provider-detail">{provider.detail}</p>
+            </article>
+          ))}
+        </div>
+      </div>
+    </section>
+
+    <section class="section features-section" id="features" aria-labelledby="features-title">
+      <div class="container">
+        <div class="section-heading">
+          <p class="eyebrow">{content.features.eyebrow}</p>
+          <h2 id="features-title">{content.features.title}</h2>
+          <p>{content.features.description}</p>
+        </div>
+        <div class="feature-grid">
+          {content.features.items.map((feature) => (
+            <article class="feature-item">
+              <span class="feature-icon"><Icon name={feature.icon} size={24} /></span>
+              <h3>{feature.title}</h3>
+              <p>{feature.description}</p>
+            </article>
+          ))}
+        </div>
+      </div>
+    </section>
+
+    <section class="section history-section" id="history" aria-labelledby="history-title">
+      <div class="container history-grid">
+        <div class="history-copy">
+          <p class="eyebrow">{content.history.eyebrow}</p>
+          <h2 id="history-title">{content.history.title}</h2>
+          <p>{content.history.description}</p>
+          <ul class="check-list">{content.history.points.map((point) => <li><span><Icon name="check" size={15} /></span>{point}</li>)}</ul>
+        </div>
+        <figure class="history-figure">
+          <div class="history-image-wrap">
+            <Image src={historyImage} alt={content.history.imageAlt} widths={[480, 768, 1200]} sizes="(max-width: 900px) calc(100vw - 64px), 620px" format="webp" quality={88} loading="lazy" decoding="async" />
+          </div>
+          <figcaption>{content.history.caption}</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section class="section privacy-section" id="privacy" aria-labelledby="privacy-title">
+      <div class="container">
+        <div class="section-heading privacy-heading">
+          <p class="eyebrow">{content.privacy.eyebrow}</p>
+          <h2 id="privacy-title">{content.privacy.title}</h2>
+          <p>{content.privacy.description}</p>
+        </div>
+        <div class="privacy-grid">
+          {content.privacy.items.map((item) => (
+            <article class="privacy-card"><span class="feature-icon"><Icon name={item.icon} size={22} /></span><h3>{item.title}</h3><p>{item.description}</p></article>
+          ))}
+        </div>
+        <div class="privacy-notes">
+          <p>{content.privacy.honesty}</p>
+          <p class="privacy-caveat">{content.privacy.caveat} <a href={claudeLink} target="_blank" rel="noreferrer">{content.privacy.caveatLink}<Icon name="arrow" size={13} /></a></p>
+          <a class="text-link" href={privacyLink} target="_blank" rel="noreferrer">{content.footer.privacy}<Icon name="arrow" size={14} /></a>
+        </div>
+      </div>
+    </section>
+
+    <DownloadSection content={content} />
+  </main>
+  <SiteFooter content={content} />
+</BaseLayout>

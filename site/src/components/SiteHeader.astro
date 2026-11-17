@@ -1,0 +1,31 @@
+---
+import { Image } from 'astro:assets';
+import type { LandingContent } from '../content/types';
+import { appIcon } from '../data/media';
+import { links, withBase } from '../data/site';
+import Icon from './Icon.astro';
+
+interface Props { content: LandingContent }
+const { content } = Astro.props;
+const languageHref = content.locale === 'zh-CN' ? withBase('en/') : withBase();
+---
+<header class="site-header">
+  <div class="container nav-shell">
+    <a class="brand" href={withBase(content.locale === 'en' ? 'en/' : '')} aria-label={content.brandName}>
+      <Image src={appIcon} alt="" width={38} height={38} format="webp" />
+      <span>{content.brandName}</span>
+    </a>
+    <nav class="nav-links" aria-label={content.nav.ariaLabel}>
+      <a href="#features">{content.nav.features}</a>
+      <a href="#history">{content.nav.history}</a>
+      <a href="#privacy">{content.nav.privacy}</a>
+      <a href="#download">{content.nav.download}</a>
+    </nav>
+    <div class="nav-actions">
+      <a class="language-link" href={languageHref} hreflang={content.locale === 'zh-CN' ? 'en' : 'zh-CN'} aria-label={content.nav.languageLabel}>{content.nav.language}</a>
+      <a class="github-link" href={links.repository} target="_blank" rel="noreferrer" aria-label={content.nav.github}>
+        <Icon name="github" size={19} /><span>{content.nav.github}</span>
+      </a>
+    </div>
+  </div>
+</header>

@@ -1,0 +1,49 @@
+:root {
+  color-scheme: light;
+  --page: #f5f6f7;
+  --surface: #ffffff;
+  --surface-subtle: #eef0f3;
+  --ink: #191b20;
+  --muted: #646975;
+  --faint: #646975;
+  --border: #e2e5eb;
+  --border-strong: #d2d7df;
+  --accent: #007aff;
+  --accent-hover: #005fc4;
+  --accent-link: #0062cc;
+  --accent-soft: #e7f1ff;
+  --accent-track: #dceaff;
+  --success: #1e7b3c;
+  --success-soft: #e8f5eb;
+  --stage: #e9edf3;
+  --privacy: #eaf2fb;
+  --shadow: 0 24px 70px rgba(30, 48, 75, 0.1), 0 2px 8px rgba(30, 48, 75, 0.04);
+  --shadow-soft: 0 12px 36px rgba(30, 48, 75, 0.06);
+  --radius: 20px;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI Variable Display", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --page: #18191d;
+    --surface: #24262b;
+    --surface-subtle: #1e2025;
+    --ink: #f2f3f5;
+    --muted: #adb2bd;
+    --faint: #949ba8;
+    --border: #383c44;
+    --border-strong: #494e59;
+    --accent: #409cff;
+    --accent-hover: #70b5ff;
+    --accent-link: #70beff;
+    --accent-soft: #203249;
+    --accent-track: #263b53;
+    --success: #68d391;
+    --success-soft: #203a2d;
+    --stage: #20242b;
+    --privacy: #1d2835;
+    --shadow: 0 24px 70px rgba(0, 0, 0, 0.26), 0 2px 8px rgba(0, 0, 0, 0.18);
+    --shadow-soft: 0 12px 36px rgba(0, 0, 0, 0.18);
+  }
+}

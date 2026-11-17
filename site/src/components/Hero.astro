@@ -1,0 +1,26 @@
+---
+import type { LandingContent } from '../content/types';
+import { release } from '../data/release';
+import { links } from '../data/site';
+import Icon from './Icon.astro';
+import HeroQuotaCard from './HeroQuotaCard.astro';
+
+interface Props { content: LandingContent }
+const { content } = Astro.props;
+const mac = release.platforms.macos;
+const requirement = content.hero.requirement.replace('{version}', mac.status === 'available' ? mac.tag : '');
+---
+<section class="hero container">
+  <div class="hero-copy">
+    <p class="eyebrow hero-eyebrow"><span aria-hidden="true"></span>{content.hero.eyebrow}</p>
+    <h1 class="hero-title">{content.hero.titleLines.map((line) => <span>{line}</span>)}</h1>
+    <p class="hero-description">{content.hero.description}</p>
+    <div class="hero-actions">
+      {mac.status === 'available' && <a class="button button-primary" href={mac.download} data-download="macos"><Icon name="download" size={18} />{content.hero.primaryCta}</a>}
+      <a class="button button-secondary" href={links.repository} target="_blank" rel="noreferrer"><Icon name="github" size={18} />{content.hero.secondaryCta}</a>
+    </div>
+    <p class="release-requirement">{requirement}</p>
+    <p class="hero-ui-note"><Icon name="info" size={15} />{content.hero.uiNote}</p>
+  </div>
+  <HeroQuotaCard content={content} />
+</section>
