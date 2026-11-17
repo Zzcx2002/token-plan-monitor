@@ -32,6 +32,7 @@ from .models import (
     provider_label,
 )
 from .monitor import UsageMonitor
+from .paths import resource_path
 from .providers import get_provider
 from .settings_rules import resolve_claude_seed
 from .settings_view import SettingsDialog
@@ -52,7 +53,7 @@ from .storage import Storage
 from .window_geometry import WindowGeometry
 from .window_chrome import WindowChrome
 
-APP_ICON_PATH = Path(__file__).resolve().parents[2] / "assets" / "app.ico"
+APP_ICON_PATH = resource_path("assets", "app.ico")
 POPUP_WIDTH = 440
 COLORS = LIGHT.colors
 

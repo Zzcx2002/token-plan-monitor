@@ -22,6 +22,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8,<10"]
 macos-build = ["py2app==0.28.10", "setuptools<81"]
+windows-build = ["pyinstaller>=6,<7"]
 
 [project.scripts]
 token-plan-monitor = "token_plan_monitor.__main__:main"

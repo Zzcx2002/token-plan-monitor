@@ -256,6 +256,52 @@ directory, which is shipped inside the signed application under
 - zlib-ng 2.3.3 in zlib-compatible mode (`ZlibNG-2.3.3.md`), from
   <https://github.com/zlib-ng/zlib-ng/blob/2.3.3/LICENSE.md>.
 
+## Standalone Windows runtime
+
+The zipped Windows application (`TokenPlanMonitor-<version>-win64.zip`)
+redistributes the following runtime components. Their copyright and license
+texts are included unmodified in the `licenses/` directory, which ships at the
+top level of the unzipped application folder next to `TokenPlanMonitor.exe`.
+
+- Python 3.13.13 (`Python-3.13.13.txt`, PSF License), including the standard
+  library and the Tcl/Tk-backed `tkinter` extension.
+- Tcl/Tk 8.6.15, the GUI runtime behind `tkinter` (`Tcl-8.6.15.txt`,
+  `Tk-8.6.15.txt`).
+- Pillow 12.3.0 (`Pillow-12.3.0-and-native-libraries.txt`). This upstream
+  notice also covers the bundled Brotli, FreeType, HarfBuzz, JPEG, LCMS2,
+  XZ/liblzma, OpenJPEG, libpng, and libtiff library notices.
+- pystray 0.19.5, the system-tray backend, licensed under the GNU LGPL v3 or
+  later (`Pystray-0.19.5-LGPL.txt`, with the referenced GPL v3 text in
+  `Pystray-0.19.5-GPL.txt`). It runs as an unmodified dynamic dependency; the
+  application source is not part of the pystray work.
+- six 1.17.0 (`Six-1.17.0.txt`, MIT) and pywin32-ctypes 0.2.3
+  (`PyWin32-CTypes-0.2.3.txt`, BSD-3-Clause), pulled in by pystray.
+- Keyring 25.7.0 (`Keyring-25.7.0.txt`), Jaraco Classes 3.4.0, Jaraco Context
+  6.1.2, Jaraco Functools 4.6.0, More Itertools 11.2.1, and Packaging 26.3.
+  The license texts are the same files listed in the macOS section above;
+  keyring's optional CLI helpers (Pygments, Pluggy) are not bundled because the
+  application only uses its credential-store API.
+- Requests 2.34.2, urllib3 2.8.0, Charset Normalizer 3.5.2, and IDNA 3.20,
+  under the license files listed in the macOS section above.
+- Certifi 2026.10.23, including the Mozilla CA bundle attribution and MPL 2.0
+  notice (`Certifi-2026.10.23.txt`); the unmodified bundle is shipped as
+  `certifi/cacert.pem` inside the application.
+- Setuptools 84.2.1 (MIT; the unchanged license text is in
+  `Setuptools-80.10.2.txt`, including the vendored-dependency notices under
+  `licenses/setuptools-vendored/`).
+- The PyInstaller 6.22.3 bootloader embedded in `TokenPlanMonitor.exe`
+  (`PyInstaller-6.22.3.txt`, GPL v2 or later with the Bootloader Exception that
+  permits distributing the embedded bootloader without restriction).
+- OpenSSL 3.0.19 (`OpenSSL-3.0.19.txt`, Apache License 2.0), zlib 1.3.1
+  (`Zlib-1.3.1.txt`, zlib license), and libffi 3.4.6 (`LibFFI-3.4.6.txt`,
+  MIT), shipped as shared libraries inside the application folder.
+- The Visual C++ Redistributable and Universal C Runtime DLLs
+  (`VCRUNTIME140.dll`, `VCRUNTIME140_1.dll`, `ucrtbase.dll`, and the
+  `api-ms-win-*.dll` API sets) are Microsoft components distributed under the
+  Microsoft Software License Terms that accompany the python.org Windows
+  runtime.
+
 Only runtime components present in the application are listed here; build-
-and test-only tools are not included merely because they appear in the build
-environment.
+and test-only tools (PyInstaller's analysis dependencies such as altgraph and
+pefile, and the pytest toolchain) are not included in the zip and are not
+listed merely because they appear in the build environment.
