@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from gui_preview import ARTIFACTS, FakeMonitor, snapshot
 from token_plan_monitor.models import MonitorViewState, WindowTrend
+from token_plan_monitor.presentation import WINDOW_LABELS
 from token_plan_monitor.providers import get_provider
 from token_plan_monitor.storage import Storage
 from token_plan_monitor.ui import MonitorUI
@@ -71,6 +72,34 @@ def main():
             card = app.desktop_widget
             app.root.after(80, app.root.quit)
             app.root.mainloop()
+            # Desktop card: all three quota windows in WINDOW_ORDER, the single
+            # lowest-remaining column carries the "· 最低" marker, the title
+            # names the active provider, and values come from the snapshot.
+            canvas = card.card
+            texts = [canvas.itemcget(item, "text") for item in canvas.find_all()
+                     if canvas.type(item) == "text"]
+            joined = "|".join(texts)
+            assert state.provider_label in texts
+            for kind in ("five_hour", "weekly", "monthly"):
+                assert WINDOW_LABELS[kind] + "剩余" in joined
+            assert "每周剩余 · 最低" in texts
+            assert sum("· 最低" in text for text in texts) == 1
+            assert "75.4%" in texts and "41.8%" in texts and "61.4%" in texts
+            # A snapshot missing the monthly window keeps the third column and
+            # renders an em dash instead of dropping it.
+            partial = replace(
+                state,
+                snapshot=replace(
+                    state.snapshot,
+                    windows=tuple(w for w in state.snapshot.windows
+                                  if w.kind != "monthly"),
+                ),
+            )
+            app._render_state(partial)
+            partial_texts = [canvas.itemcget(item, "text") for item in canvas.find_all()
+                             if canvas.type(item) == "text"]
+            assert "每月剩余" in partial_texts and "—" in partial_texts
+            app._render_state(state)
             app.storage.save_snapshot(state.snapshot)
             cache_before=app.storage.snapshot_path.read_bytes()
             initial_card=card.window

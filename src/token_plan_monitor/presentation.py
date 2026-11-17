@@ -54,6 +54,20 @@ def compact_remaining(state: MonitorViewState, kind: str) -> str:
     return f"{window.remaining_percent:.1f}%" if window is not None else "—"
 
 
+def lowest_windows(state: MonitorViewState) -> frozenset[str]:
+    """Kinds sitting at the lowest remaining percentage of the snapshot.
+
+    Shared by the desktop cards on both platforms so the "· 最低" marker
+    follows the same rule; empty when there is no snapshot.
+    """
+    windows = state.snapshot.windows if state.snapshot else ()
+    if not windows:
+        return frozenset()
+    lowest = min(window.remaining_percent for window in windows)
+    return frozenset(window.kind for window in windows
+                     if window.remaining_percent == lowest)
+
+
 def hover_summary(state: MonitorViewState) -> str:
     heading = f"{state.provider_label} · {status_text(state)}"
     if state.snapshot is not None:

@@ -12,6 +12,7 @@ from ..models import (
     CARD_MIN_WIDTH,
     MonitorViewState,
 )
+from ..presentation import lowest_windows
 from ..settings_rules import (
     FieldValidationError,
     resolve_claude_seed,
@@ -40,14 +41,6 @@ def primary_action(state: MonitorViewState) -> tuple[str, str]:
     if state.status in ("stale", "error"):
         return "重试", "refresh"
     return "立即刷新", "refresh"
-
-
-def lowest_windows(state: MonitorViewState) -> frozenset[str]:
-    windows = state.snapshot.windows if state.snapshot else ()
-    if not windows:
-        return frozenset()
-    lowest = min(w.remaining_percent for w in windows)
-    return frozenset(w.kind for w in windows if w.remaining_percent == lowest)
 
 
 ScreenRect = tuple[float, float, float, float]

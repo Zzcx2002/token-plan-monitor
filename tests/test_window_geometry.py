@@ -40,6 +40,20 @@ def test_restore_scales_and_clamps_to_work_area(tmp_path, monkeypatch):
     assert window.geometry.call_count == 1
 
 
+def test_legacy_widget_width_grows_to_new_minimum(tmp_path, monkeypatch):
+    from token_plan_monitor import window_geometry as module
+    storage = Storage(tmp_path)
+    # v0.2.0 stored the old 280px desktop-card minimum; the three-column card
+    # needs 320, so restoring a legacy geometry must grow it automatically.
+    storage.save_window_size("widget", (280, 124))
+    window = Mock()
+    monkeypatch.setattr(module, "dpi_scale", lambda _: 1.0)
+    monkeypatch.setattr(module, "window_work_area", lambda _: (0, 0, 1920, 1080))
+    controller = WindowGeometry(window, storage, "widget", (320, 124))
+    controller.fit((320, 124))
+    window.geometry.assert_called_once_with("320x124")
+
+
 def test_save_failure_retains_session_size(tmp_path, monkeypatch, caplog):
     from token_plan_monitor import window_geometry as module
     window = Mock()

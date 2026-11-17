@@ -63,7 +63,10 @@ def run(mode, scale):
             pump(app)
             assert card._size == enlarged
             assert not hasattr(card.window, "_material_shadow")
-            for width, height in ((280, 124), (520, 240)):
+            # 280 is a legacy v0.2.0 geometry forced below the new 320 minimum:
+            # the three columns must still stay inside the card. 320 is the real
+            # minimum the drag floor and WindowGeometry now enforce.
+            for width, height in ((280, 124), (320, 124), (520, 240)):
                 card.window.geometry(f"{round(width*factor)}x{round(height*factor)}+700+40")
                 pump(app)
                 for item in card.card.find_all():

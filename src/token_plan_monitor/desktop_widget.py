@@ -8,11 +8,12 @@ import tkinter.font as tkfont
 from dataclasses import replace
 from typing import Any, Callable, Mapping
 
-from .models import CacheError, MonitorViewState, WidgetPreferences
+from .models import CacheError, MonitorViewState, WINDOW_ORDER, WidgetPreferences
 from .presentation import (
-    PLAN_LABELS,
+    WINDOW_LABELS,
     compact_remaining,
     hover_summary,
+    lowest_windows,
     menu_lines,
     state_tone,
 )
@@ -64,7 +65,7 @@ class QuotaCard(tk.Canvas):
         self.title_font=tkfont.Font(family=font_family,size=9,weight="bold")
         self.label_font=tkfont.Font(family=font_family,size=9)
         self.value_font=tkfont.Font(family=installed_fonts(tkfont.families(master))[1],size=18,weight="bold")
-        width=max(round(264*self.scale),self.value_font.measure("100.0%")*2+round(54*self.scale))
+        width=max(round(304*self.scale),self.value_font.measure("100.0%")*3+round(52*self.scale))
         super().__init__(master,width=width,height=round(124*self.scale),bg=colors["surface"],
                          highlightthickness=0,borderwidth=0)
         self.state=MonitorViewState(status="unconfigured")
@@ -94,10 +95,9 @@ class QuotaCard(tk.Canvas):
         self.create_image(0,0,image=self._surface,anchor="nw")
         extra=max(0,height-124*s)
         state=self.state
-        snapshot=state.snapshot
-        # Look the plan type up instead of a two-way ternary, so a third plan
-        # type (Bailian Token Plan) is not mislabelled as "Coding Plan".
-        title=PLAN_LABELS.get(snapshot.plan_type,snapshot.plan_type) if snapshot else state.provider_label
+        # The card names the active provider, matching the macOS desktop card;
+        # plan details live in the popup and the usage-history window.
+        title=state.provider_label
         self.create_text(18*s,20*s,text=title,font=self.title_font,fill=c["text"],anchor="w")
         tone=state_tone(state)
         colour=c[{"ok":"success","warning":"warning","error":"error","unconfigured":"muted"}[tone]]
@@ -112,10 +112,13 @@ class QuotaCard(tk.Canvas):
                          "error":"连接异常","unconfigured":"待配置"}[tone]
                 self.create_text(dot_x-10*s,20*s,text=message,font=self.label_font,fill=colour,anchor="e")
         windows={w.kind:w for w in state.snapshot.windows} if state.snapshot else {}
+        lowest=lowest_windows(state)
         self._progress_images=[]
-        column_width=(width-48*s)/2
-        for index,(kind,label) in enumerate((("five_hour","5 小时剩余"),("weekly","每周剩余"))):
-            x=18*s+index*(column_width+12*s)
+        margin,gutter=18*s,8*s
+        column_width=(width-2*margin-2*gutter)/3
+        for index,kind in enumerate(WINDOW_ORDER):
+            x=margin+index*(column_width+gutter)
+            label=WINDOW_LABELS[kind]+"剩余"+(" · 最低" if kind in lowest else "")
             self.create_text(x,49*s+extra*.35,text=label,font=self.label_font,fill=c["muted"],anchor="w")
             window=windows.get(kind)
             warning=window is not None and window.remaining_percent<state.alert_threshold_percent
@@ -139,7 +142,7 @@ class QuotaCard(tk.Canvas):
 
 
 class DesktopWidget:
-    MIN_WIDTH = 280
+    MIN_WIDTH = 320
     DRAG_THRESHOLD = 5
 
     def __init__(
@@ -166,7 +169,7 @@ class DesktopWidget:
         self.colors = colors
         self.font_family = font_family
         self._padding = 0
-        self.MIN_WIDTH = round(280*dpi_scale(root))
+        self.MIN_WIDTH = round(320*dpi_scale(root))
         self._spinner_after = None
         self._state = MonitorViewState(status="unconfigured")
         self._preferences = storage.load_widget_preferences()
@@ -188,7 +191,7 @@ class DesktopWidget:
         self.window.configure(background=colors["surface"])
         self.window.attributes("-topmost", self._preferences.topmost)
         install_window_effects(self.window, self.colors["surface"], round(20*dpi_scale(self.window)))
-        self.geometry=WindowGeometry(self.window,storage,"widget",(280,124))
+        self.geometry=WindowGeometry(self.window,storage,"widget",(320,124))
         self._resize_press=None
         self._create_card()
         self.window.bind("<Configure>",self._on_size,add=True)
@@ -414,7 +417,7 @@ class DesktopWidget:
             edge,sx,sy,x,y,w,h=self._resize_press
             dx,dy=event.x_root-sx,event.y_root-sy
             left,top,right,bottom=self._work_area(x,y,w,h)
-            minw,minh=(round(n*dpi_scale(self.window)) for n in (280,124))
+            minw,minh=(round(n*dpi_scale(self.window)) for n in (320,124))
             nw=min(max(minw,w+dx if "e" in edge else w-dx if "w" in edge else w),right-left)
             nh=min(max(minh,h+dy if "s" in edge else h-dy if "n" in edge else h),bottom-top)
             nx=x+w-nw if "w" in edge else x
