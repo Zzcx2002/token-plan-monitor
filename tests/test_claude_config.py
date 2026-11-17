@@ -374,9 +374,10 @@ def test_onboarding_path_ignores_config_dir():
 def test_describe_changes_lists_target_url_tier_and_destructive_items():
     stale = dict(LIVE_DOCUMENT, env={**LIVE_DOCUMENT["env"], "ANTHROPIC_API_KEY": "stale"})
     patch = patch_for(stale)
+    settings_path = Path("/tmp/cc/settings.json")
     lines = "\n".join(cc.describe_changes(make_request(), patch, stale,
-                                         Path("/tmp/cc/settings.json"), True))
-    assert "/tmp/cc/settings.json" in lines
+                                         settings_path, True))
+    assert str(settings_path) in lines
     assert "token-plan.maas.qianwenaiapi.com" in lines      # shows the old value
     assert "ANTHROPIC_DEFAULT_OPUS_MODEL" in lines          # which tier changes and why
     assert "ANTHROPIC_DEFAULT_SONNET_MODEL" in lines        # and which stays
@@ -588,6 +589,7 @@ def test_onboarding_marker_merges_and_never_rebuilds_a_broken_file(tmp_path):
     assert broken.read_text(encoding="utf-8") == "{ nope"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX directory permissions")
 def test_onboarding_marker_skips_when_the_directory_is_not_writable(tmp_path):
     locked = tmp_path / "locked"
     locked.mkdir()

@@ -99,6 +99,7 @@ def test_alert_fields_validate_and_default_without_touching_legacy_calls():
         assert failure.value.field == "alert_threshold"
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS UserNotifications framework")
 def test_notification_guard_and_delivery_path_are_pure():
     from token_plan_monitor.macos.notifications import delivery_path, un_available
 
