@@ -15,6 +15,7 @@ from .assets import make_tray_icon
 from .appearance import (AppearancePreferences, LIGHT, THEME_LABELS, resolve_theme,
                          installed_fonts, OUTER_PADDING, SECTION_GAP, ROW_PADDING)
 from .desktop_widget import DesktopWidget
+from .history_view import HistoryWindow
 from .ui_graphics import (RoundedPanel, RoundedProgress, ScrollableBody, Tooltip, dpi_scale, window_work_area,
                           install_window_effects, apply_window_effects, configure_rounded_buttons)
 from .models import (
@@ -97,6 +98,7 @@ class MonitorUI:
         self.rows: dict[str, dict[str, Any]] = {}
         self.settings_window: tk.Toplevel | None = None
         self.settings_body: ScrollableBody | None = None
+        self.history: HistoryWindow | None = None
         self.desktop_widget: DesktopWidget | None = None
         self.icon: pystray.Icon | None = None
         self._theme_poll_after = self.root.after(2000, self._poll_theme)
@@ -278,7 +280,8 @@ class MonitorUI:
         visit(self.root)
         for tip in self._tooltips:
             tip.hide()
-        for window in (self.popup,self.settings_window):
+        history_window = self.history.window if self.history is not None else None
+        for window in (self.popup,self.settings_window,history_window):
             if window is not None and window.winfo_exists():
                 window._shadow_opacity=self.theme.shadow_opacity
                 apply_window_effects(window,self.colors["surface"])
@@ -393,6 +396,10 @@ class MonitorUI:
                 default=True,
             ),
             pystray.MenuItem(
+                "用量历史",
+                self._tray_command("history"),
+            ),
+            pystray.MenuItem(
                 "立即刷新",
                 self._tray_command("refresh"),
                 enabled=refresh_enabled,
@@ -449,6 +456,8 @@ class MonitorUI:
                     self._render_state(payload)
                 elif command == "show":
                     self.show_popup()
+                elif command == "history":
+                    self.open_history()
                 elif command == "refresh":
                     self._request_refresh()
                 elif command == "settings":
@@ -618,6 +627,8 @@ class MonitorUI:
             self.icon.icon = make_tray_icon(state_tone(state))
             self.icon.title = tray_tooltip(state)
             self._update_tray_menu()
+        if self.history is not None and self.history.window is not None:
+            self.history.render(state)
         if self.plan_label is None or self.content_frame is None:
             return
         snapshot = state.snapshot
@@ -814,6 +825,14 @@ class MonitorUI:
         self.settings_window=dialog.open()
         self.settings_body=dialog.body
 
+    def open_history(self) -> None:
+        if self.history is not None and self.history.window is not None:
+            self.history.focus()
+            return
+        window = HistoryWindow(self)
+        self.history = window
+        window.open(self._state)
+
     def _close_settings(self,window:tk.Toplevel|None=None,*,commit:bool=False) -> None:
         # App-level entry point kept for existing callers; SettingsDialog owns
         # the teardown, so the window argument is intentionally unused.
@@ -848,7 +867,8 @@ class MonitorUI:
         if self._theme_poll_after is not None:
             self.root.after_cancel(self._theme_poll_after)
             self._theme_poll_after=None
-        for window in (self.popup,self.settings_window):
+        history_window = self.history.window if self.history is not None else None
+        for window in (self.popup,self.settings_window,history_window):
             if window is not None and window.winfo_exists():
                 controller=getattr(window,"_geometry",None) or getattr(self,"popup_geometry",None)
                 if controller:

@@ -467,8 +467,8 @@ class MonitorViewState:
     #: The same history read carried as raw rows so the history window can
     #: build chart geometry without touching disk. Current account only;
     #: seeded at startup, refreshed with trends, retained across failed
-    #: refreshes, cleared on account/provider change. The Windows shell
-    #: ignores this field.
+    #: refreshes, cleared on account/provider change. Both shells feed this
+    #: into the shared history_chart geometry builder.
     history: tuple[HistoryEntry, ...] = ()
 
     @property

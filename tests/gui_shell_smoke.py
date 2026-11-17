@@ -273,36 +273,65 @@ def open_tray_menu() -> int:
     raise AssertionError("The monitor tray menu did not open")
 
 
-def click_menu(name: str) -> None:
+# Ordered menu slots; None marks a separator. The tray table mirrors
+# MonitorUI._create_tray_menu and the widget table mirrors
+# DesktopWidget._show_menu (four disabled header rows while a snapshot
+# exists). Adding a tray row now means extending the table, not re-deriving
+# positional indexes by hand.
+TRAY_MENU_LAYOUT = (
+    "context", "window", "window", "window", None,
+    "打开详细用量", "用量历史", "立即刷新", None,
+    "桌面卡片", "卡片置顶", "设置", None,
+    "退出",
+)
+WIDGET_MENU_LAYOUT = (
+    "context", "window", "window", "window", None,
+    "打开详细用量", "立即刷新", "置顶显示", "隐藏桌面卡片", "设置", None,
+    "退出",
+)
+
+
+def fallback_menu_point(hwnd: int, name: str, layout: tuple) -> tuple[int, int]:
+    """Pixel center of a row when neither HMENU nor UIA exposes menu items."""
+    if name not in layout:
+        raise AssertionError(f"{name!r} is not part of this menu layout")
+    slot = layout.index(name)
+    text_index = sum(1 for entry in layout[:slot] if entry is not None)
+    separators_before = sum(1 for entry in layout[:slot] if entry is None)
+    text_rows = sum(1 for entry in layout if entry is not None)
+    separator_count = sum(1 for entry in layout if entry is None)
+    left, top, right, bottom = window_rect(hwnd)
+    # A native text row is about 2.5 separator heights tall, so the menu's
+    # total height in separator units is text_rows * 2.5 + separator_count.
+    separator_height = round(
+        (bottom - top) / (text_rows * 2.5 + separator_count)
+    )
+    row_height = (
+        bottom - top - separator_count * separator_height
+    ) / text_rows
+    return (
+        (left + right) // 2,
+        round(
+            top
+            + (text_index + 0.5) * row_height
+            + separators_before * separator_height
+        ),
+    )
+
+
+def click_menu(name: str, *, menu: str = "tray") -> None:
     try:
         rect = menu_item_rect(name)
     except AssertionError:
-        # Tk's custom Windows menu exposes neither HMENU nor UIA items. The
-        # fixture has ten equal text rows and two separators in this order.
-        row_indexes = {
-            "打开详细用量": 4,
-            "立即刷新": 5,
-            "置顶显示": 6,
-            "隐藏桌面卡片": 7,
-            "设置": 8,
-            "退出": 9,
-        }
+        # Tk's custom Windows menu exposes neither HMENU nor UIA items in
+        # some builds; fall back to the structural row tables above.
         hwnd = native_menu_handle()
-        if name not in row_indexes or not hwnd:
+        if not hwnd:
             raise
-        left, top, right, bottom = window_rect(hwnd)
-        separator_height = round((bottom - top) / 27)
-        row_height = (bottom - top - 2 * separator_height) / 10
-        index = row_indexes[name]
-        separators_before = int(index >= 4) + int(index >= 9)
-        click(
-            (left + right) // 2,
-            round(
-                top
-                + (index + 0.5) * row_height
-                + separators_before * separator_height
-            ),
+        layout = (
+            TRAY_MENU_LAYOUT if menu == "tray" else WIDGET_MENU_LAYOUT
         )
+        click(*fallback_menu_point(hwnd, name, layout))
     else:
         click_rect(rect)
     time.sleep(0.4)
@@ -427,6 +456,7 @@ def main() -> None:
                 "5 小时：剩余 75.4% · 已用 24.6%",
                 "每周：剩余 41.8% · 已用 58.2%",
                 "每月：剩余 8.6% · 已用 91.4%",
+                "用量历史",
             ):
                 assert expected in names, names
             capture_menu("native-tray-menu.png")
@@ -476,7 +506,7 @@ def main() -> None:
             wait_for(native_menu_handle, "Widget menu did not open")
             time.sleep(0.35)
             capture_menu("native-widget-menu.png")
-            click_menu("置顶显示")
+            click_menu("置顶显示", menu="widget")
             preferences = load_preferences(data_dir)
             assert preferences["topmost"] is False
             style = user32.GetWindowLongW(window_handle("火山方舟桌面容量"), GWL_EXSTYLE)
@@ -484,7 +514,7 @@ def main() -> None:
 
             left, top, right, bottom = widget_rect()
             click((left + right) // 2, (top + bottom) // 2, right=True)
-            click_menu("隐藏桌面卡片")
+            click_menu("隐藏桌面卡片", menu="widget")
             wait_for(lambda: not widget_visible(), "Widget did not hide")
             assert load_preferences(data_dir)["visible"] is False
 
