@@ -198,6 +198,12 @@ class Storage:
             with path.open("r", encoding="utf-8", errors="replace") as handle:
                 lines = handle.readlines()
         except FileNotFoundError:
+            if path.parent.exists() and not path.parent.is_dir():
+                # A path component is a regular file. POSIX raises
+                # NotADirectoryError here; Windows maps the same fault to
+                # FileNotFoundError, so re-raise to keep the CacheError
+                # contract identical across platforms.
+                raise
             return []
         entries = []
         for line in lines:
