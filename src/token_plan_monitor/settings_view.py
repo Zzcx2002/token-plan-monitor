@@ -66,6 +66,11 @@ CUSTOM_MARKER = "自定义模型 ID…"
 AUTO_UNSET = "不设置（保持现状）"
 SUBAGENT_DEFAULT = "默认（保持现有值；为空时填入主模型）"
 
+#: The Claude panel's full-width hint labels need ~480 logical pixels and the
+#: whole form requests ~560; a smaller window would clip them, so the geometry
+#: floor matches the form's natural width instead of an arbitrary 400px.
+SETTINGS_MINIMUM_SIZE = (560, 260)
+
 #: Status-label tones map to card-scoped ttk styles so they sit on the panel.
 _STATUS_STYLE = {
     "neutral": "CardMuted.TLabel",
@@ -109,7 +114,8 @@ class SettingsDialog:
         app._apply_icon(window)
         install_window_effects(window, app.colors["surface"])
         self.window = window
-        window._geometry = WindowGeometry(window, app.storage, "settings", (400, 260))
+        window._geometry = WindowGeometry(
+            window, app.storage, "settings", SETTINGS_MINIMUM_SIZE)
         window._chrome = WindowChrome(
             window, "设置", app.colors, app.font_family, lambda: self.close()
         )
