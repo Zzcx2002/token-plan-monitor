@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "token-plan-monitor"
-version = "0.2.1"
+dynamic = ["version"]
 description = "A lightweight Windows and macOS menu bar monitor for Volcengine Ark and Alibaba Cloud Model Studio plan quotas"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -28,6 +28,11 @@ token-plan-monitor = "token_plan_monitor.__main__:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+
+[tool.setuptools.dynamic]
+# Single version source: src/token_plan_monitor/__init__.py. The plist and the
+# dmg name both derive from it, so they can no longer drift apart.
+version = {attr = "token_plan_monitor.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]

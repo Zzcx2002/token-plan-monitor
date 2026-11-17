@@ -239,6 +239,44 @@ def resolve_claude_seed(spec, draft, prefs, live_base_url="", live_model="",
             "claude_subagent_model": subagent, "claude_subagent_custom": subagent_custom}
 
 
+#: Trailing entry of every model popup; its value lives in the custom text
+#: field, never in the popup selection.
+CUSTOM_MODEL_MARKER = "自定义模型 ID…"
+
+
+def model_popup_index(known, model_id, custom, offset=0, empty_index=0):
+    """Selection index for a model popup.
+
+    Layout: [leading placeholder when offset=1] + known models + custom
+    marker. A non-empty custom field wins (the marker); a known id selects
+    its slot; anything else lands on ``empty_index`` -- callers pick 0 (first
+    model / placeholder) or the marker, depending on the site.
+    """
+    if custom:
+        return offset + len(known)
+    if model_id in known:
+        return offset + known.index(model_id)
+    return empty_index
+
+
+def model_popup_value(known, index, offset=0):
+    """Model id at a popup index; placeholder and custom marker read as ""."""
+    position = index - offset
+    return known[position] if 0 <= position < len(known) else ""
+
+
+def model_popup_restore(known, model_id, custom, offset=0):
+    """(index, demoted_id) after a catalogue refresh.
+
+    A non-empty id the plan no longer offers is demoted to the custom field
+    (returned as ``demoted_id`` for the caller to write) rather than lost.
+    Everything else follows model_popup_index with empty -> index 0.
+    """
+    if not custom and model_id and model_id not in known:
+        return offset + len(known), model_id
+    return model_popup_index(known, model_id, custom, offset), ""
+
+
 ScreenRect = tuple[float, float, float, float]
 FrameRect = tuple[float, float, float, float]
 

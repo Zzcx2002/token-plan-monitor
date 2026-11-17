@@ -25,8 +25,6 @@ MIN_RATE_PERCENT_PER_HOUR = 0.01
 #: history_chart.py so the chart's cycle cuts and the trend's current-cycle
 #: slice can never disagree about what counts as a reset.
 RESET_JUMP_TOLERANCE_PERCENT = 1.0
-#: Legacy private name kept as an alias; internal callers use either.
-_RESET_JUMP_TOLERANCE_PERCENT = RESET_JUMP_TOLERANCE_PERCENT
 
 
 def _slope_per_hour(points: list[tuple[float, float]]) -> float | None:
@@ -61,7 +59,7 @@ def _cycle_samples(
             and window.reset_at != reset_at
         ):
             break
-        if samples and window.used_percent > samples[-1][1] + _RESET_JUMP_TOLERANCE_PERCENT:
+        if samples and window.used_percent > samples[-1][1] + RESET_JUMP_TOLERANCE_PERCENT:
             break
         samples.append((entry.queried_at, window.used_percent, window.quota, window.used))
     samples.reverse()

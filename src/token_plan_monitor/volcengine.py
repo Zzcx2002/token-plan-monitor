@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import re
 from datetime import UTC, datetime
 from typing import Any, Callable
 
@@ -19,7 +18,10 @@ from .models import (
     Settings,
     TransientProviderError,
     UsageSnapshot,
+    classify_http_error,
+    decode_json,
     parse_reset_time,
+    safe_error,
 )
 from .volcengine_signer import OPENAPI_HOST, sign_request
 
@@ -75,9 +77,9 @@ class VolcengineClient:
 
     def query(self) -> UsageSnapshot:
         agent_body = self._call("GetAFPUsage")
-        agent_windows = parse_agent_windows(_result(agent_body))
+        result = _result(agent_body)
+        agent_windows = parse_agent_windows(result)
         if agent_windows:
-            result = _result(agent_body)
             plan_type = result.get("PlanType")
             suffix = plan_type.strip() if isinstance(plan_type, str) else ""
             plan_name = f"Agent Plan {suffix}".strip()
@@ -122,32 +124,30 @@ class VolcengineClient:
             raise NetworkError("无法连接火山方舟 OpenAPI，请检查网络或代理") from exc
 
         status = response.status_code
-        try:
-            body = response.json()
-        except (ValueError, requests.exceptions.JSONDecodeError) as exc:
-            if status == 401 or status == 403:
-                raise AuthenticationError("AK/SK 鉴权失败，请检查凭据和系统时间") from exc
-            if status == 429 or status >= 500:
-                raise TransientProviderError(f"火山方舟暂时不可用（HTTP {status}）") from exc
-            if not 200 <= status < 300:
-                raise ProviderError(f"OpenAPI 返回非 JSON 响应（HTTP {status}）") from exc
-            raise ParseError("OpenAPI 成功响应不是有效 JSON") from exc
+        body = decode_json(
+            response,
+            service="火山方舟",
+            what="OpenAPI",
+            auth_hint="AK/SK 鉴权失败，请检查凭据和系统时间",
+        )
 
         if not isinstance(body, dict):
             raise ParseError("OpenAPI 响应顶层必须是 JSON 对象")
         error = _response_error(body)
         if error is not None:
             code, message = error
-            detail = _safe_error(code, message)
-            if status in (401, 403) or _is_auth_error(code):
+            detail = safe_error(code, message)
+            category = classify_http_error(status, code, auth_parts=AUTH_ERROR_PARTS)
+            if category is AuthenticationError:
                 raise AuthenticationError(f"AK/SK 鉴权失败：{detail}；请检查凭据和系统时间")
-            if status == 429 or status >= 500:
+            if category is TransientProviderError:
                 raise TransientProviderError(f"火山方舟暂时不可用：{detail}")
             raise ProviderError(f"OpenAPI 错误：{detail}")
 
-        if status in (401, 403):
+        category = classify_http_error(status)
+        if category is AuthenticationError:
             raise AuthenticationError("AK/SK 鉴权失败，请检查凭据和系统时间")
-        if status == 429 or status >= 500:
+        if category is TransientProviderError:
             raise TransientProviderError(f"火山方舟暂时不可用（HTTP {status}）")
         if not 200 <= status < 300:
             raise ProviderError(f"OpenAPI 请求失败（HTTP {status}）")
@@ -255,16 +255,5 @@ def _response_error(body: dict[str, Any]) -> tuple[str, str] | None:
     if not code and not message:
         return None
     return code, message
-
-
-def _is_auth_error(code: str) -> bool:
-    lowered = code.lower()
-    return any(part in lowered for part in AUTH_ERROR_PARTS)
-
-
-def _safe_error(code: str, message: str) -> str:
-    code = re.sub(r"[\x00-\x1f\x7f]", "", code)[:80]
-    message = re.sub(r"[\x00-\x1f\x7f]", " ", message)[:240]
-    return f"{code}: {message}" if code else message or "未知错误"
 
 

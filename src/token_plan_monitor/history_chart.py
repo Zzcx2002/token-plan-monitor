@@ -100,6 +100,9 @@ class ChartGeometry:
     plot_height: float
     #: Every in-range sample, time order -- the tooltip lookup population.
     samples: tuple[ChartSample, ...]
+    #: x_scale of each sample, computed once at build time: the hover path
+    #: (nearest_sample) bisects this instead of re-scaling every mouse move.
+    sample_xs: tuple[float, ...]
     cycles: tuple[ChartCycle, ...]
     #: (x, show_caption) per cycle cut; () when cuts exceed MAX_RESET_MARKS.
     reset_marks: tuple[tuple[float, bool], ...]
@@ -187,17 +190,15 @@ def _bucket_groups(
     return [groups[index] for index in sorted(groups)]
 
 
-def bucket_cycle(
-    samples: Sequence[ChartSample], origin: datetime, bucket_seconds: float
-) -> tuple[tuple[datetime, float], ...]:
-    """Downsample one cycle to ~one point per BUCKET_PIXELS of plot width.
+def _cycle_points(groups: Sequence[Sequence[ChartSample]]) -> tuple[tuple[datetime, float], ...]:
+    """Min/max draw points from already-bucketed groups (time order).
 
     Each bucket keeps its min-value AND max-value sample (first occurrence of
-    each, emitted in time order, one point when they coincide) so spikes and
-    dips survive aggregation instead of being averaged away.
+    each, one point when they coincide) so spikes and dips survive
+    aggregation instead of being averaged away.
     """
     points: list[tuple[datetime, float]] = []
-    for group in _bucket_groups(samples, origin, bucket_seconds):
+    for group in groups:
         low = min(group, key=lambda sample: sample.used_percent)
         high = max(group, key=lambda sample: sample.used_percent)
         kept = [low] if low is high else sorted(
@@ -205,6 +206,13 @@ def bucket_cycle(
         )
         points.extend((sample.queried_at, sample.used_percent) for sample in kept)
     return tuple(points)
+
+
+def bucket_cycle(
+    samples: Sequence[ChartSample], origin: datetime, bucket_seconds: float
+) -> tuple[tuple[datetime, float], ...]:
+    """Downsample one cycle to ~one point per BUCKET_PIXELS of plot width."""
+    return _cycle_points(_bucket_groups(samples, origin, bucket_seconds))
 
 
 def time_ticks(
@@ -269,12 +277,14 @@ def build_chart(
     cycles: list[ChartCycle] = []
     rows: list[ChartBucketRow] = []
     for cycle_index, cycle_samples in enumerate(split_cycles(samples)):
+        # One bucketing pass serves both the draw points and the table rows.
+        groups = _bucket_groups(cycle_samples, start, bucket_seconds)
         points = tuple(
             (x_scale(t, start, end, plot_width), y_scale(percent, plot_height))
-            for t, percent in bucket_cycle(cycle_samples, start, bucket_seconds)
+            for t, percent in _cycle_points(groups)
         )
         cycles.append(ChartCycle(points=points, samples=tuple(cycle_samples)))
-        for group in _bucket_groups(cycle_samples, start, bucket_seconds):
+        for group in groups:
             newest = group[-1]
             rows.append(
                 ChartBucketRow(
@@ -297,6 +307,9 @@ def build_chart(
         plot_width=plot_width,
         plot_height=plot_height,
         samples=samples,
+        sample_xs=tuple(
+            x_scale(sample.queried_at, start, end, plot_width) for sample in samples
+        ),
         cycles=tuple(cycles),
         reset_marks=reset_marks,
         y_ticks=(
@@ -359,11 +372,7 @@ def nearest_sample(geometry: ChartGeometry, x: float) -> ChartSample | None:
     """
     if not geometry.samples or x < 0 or x > geometry.plot_width:
         return None
-    xs = [
-        x_scale(sample.queried_at, geometry.range_start, geometry.range_end,
-                geometry.plot_width)
-        for sample in geometry.samples
-    ]
+    xs = geometry.sample_xs
     index = bisect_left(xs, x)
     if index == 0:
         return geometry.samples[0]

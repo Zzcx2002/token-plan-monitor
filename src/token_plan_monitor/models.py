@@ -88,6 +88,76 @@ class CacheError(QueryError):
     category = "cache"
 
 
+# ----------------------------------------------------------------------
+# Shared provider error helpers. The sanitization and status-mapping RULES
+# live here once; the user-facing copy stays with each provider, whose
+# wording differs deliberately.
+# ----------------------------------------------------------------------
+
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def safe_error(code: str, message: str) -> str:
+    """The last sanitization gate before provider error text reaches the UI.
+
+    Control characters are stripped from the code and spaced out of the
+    message; both are length-bounded so a hostile server response cannot
+    smuggle terminal escapes or unbounded text into dialogs and logs.
+    """
+    code = _CONTROL_CHARS.sub("", code)[:80]
+    message = _CONTROL_CHARS.sub(" ", message)[:240]
+    return f"{code}: {message}" if code else message or "未知错误"
+
+
+def is_auth_error(code: str, auth_parts: tuple[str, ...]) -> bool:
+    """True when a provider error code marks an authentication failure.
+
+    Each provider keeps its own marker list (they genuinely differ); the
+    substring rule itself is shared.
+    """
+    lowered = code.lower()
+    return any(part in lowered for part in auth_parts)
+
+
+def classify_http_error(
+    status: int, code: str = "", *, auth_parts: tuple[str, ...] = ()
+) -> type[QueryError]:
+    """The one HTTP-status -> error-category rule every provider ladder uses.
+
+    401/403 or an auth-marked code -> AuthenticationError; 429/5xx ->
+    TransientProviderError; anything else -> ProviderError. Callers raise the
+    returned class with their own copy. One rule in one place is what keeps a
+    missed ladder edit from misclassifying 401 as a generic interface error.
+    """
+    if status in (401, 403) or (code and is_auth_error(code, auth_parts)):
+        return AuthenticationError
+    if status == 429 or status >= 500:
+        return TransientProviderError
+    return ProviderError
+
+
+def decode_json(response: Any, *, service: str, what: str, auth_hint: str) -> Any:
+    """response.json() with the shared status ladder on decode failure.
+
+    ``service`` names the provider in transient copy, ``what`` names the
+    endpoint in parse/provider copy, ``auth_hint`` is the full credential
+    advice line. A 2xx body that is not JSON is a ParseError. ValueError
+    covers requests' JSONDecodeError too (it subclasses json.JSONDecodeError).
+    """
+    try:
+        return response.json()
+    except ValueError as exc:
+        status = response.status_code
+        category = classify_http_error(status)
+        if category is AuthenticationError:
+            raise AuthenticationError(auth_hint) from exc
+        if category is TransientProviderError:
+            raise TransientProviderError(f"{service}暂时不可用（HTTP {status}）") from exc
+        if not 200 <= status < 300:
+            raise ProviderError(f"{what}返回非 JSON 响应（HTTP {status}）") from exc
+        raise ParseError(f"{what}成功响应不是有效 JSON") from exc
+
+
 @dataclass(frozen=True)
 class AlertSettings:
     """Low-quota alert choices, persisted inside Settings.

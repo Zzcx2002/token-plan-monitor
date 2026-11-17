@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -528,26 +529,32 @@ def _tighten_legacy_backups(path: Path) -> None:
 
 
 def write_document_atomic(path: Path, document: Mapping[str, Any]) -> None:
-    """Write pretty JSON with owner-only permissions."""
+    """Write pretty JSON with owner-only permissions.
+
+    The temp name is unique (mkstemp, 0600 from creation): a fixed `.tmp`
+    would let a crash leftover block every later apply with O_EXCL, and two
+    writers would clobber each other's temp. Rename stays atomic.
+    """
     payload = (json.dumps(document, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
-    temporary = path.with_name(f"{path.name}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=path.parent, prefix=f"{path.name}.", suffix=".tmp"
+        )
+        temporary = Path(temporary_name)
         try:
             with os.fdopen(descriptor, "wb") as handle:
                 handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
+            os.replace(temporary, path)
+            # Tighten a pre-existing 0644 file: it is about to hold a token.
+            os.chmod(path, 0o600)
         except OSError:
+            # Cleanup must never replace the real cause with its own error.
             _discard(temporary)
             raise
-        os.replace(temporary, path)
-        # Tighten a pre-existing 0644 file: it is about to hold a token.
-        os.chmod(path, 0o600)
     except OSError as exc:
-        # Cleanup must never replace the real cause with its own error.
-        _discard(temporary)
         raise CacheError(f"无法写入 {path.name}") from exc
 
 

@@ -346,6 +346,30 @@ def test_client_is_reused_across_refreshes_and_rebuilt_on_region_change(tmp_path
     wait_for(lambda: instances[-1].closed)
 
 
+def test_monitor_can_restart_after_stop(tmp_path):
+    storage = configured_storage(tmp_path)
+    calls = []
+
+    class CountingClient:
+        def query(self):
+            calls.append(1)
+            return snapshot()
+
+    monitor = UsageMonitor(
+        storage, client_factory=lambda settings, credentials: CountingClient()
+    )
+    monitor.start()
+    wait_for(lambda: len(calls) == 1)
+    monitor.stop()
+    # The loop is fully stopped and its state cleared for a fresh start.
+    assert monitor._thread is None
+    monitor.start()
+    wait_for(lambda: len(calls) == 2)
+    assert monitor.get_state().status == "ok"
+    assert monitor.get_state().snapshot is not None
+    monitor.stop()
+
+
 def test_missing_credentials_never_starts_a_request(tmp_path):
     storage = configured_storage(tmp_path, ak=None)
     calls = []

@@ -213,3 +213,26 @@ def test_grant_with_no_pending_alerts_delivers_nothing(cocoa, monkeypatch):
     center.auth_handlers[0](True, None)
     assert center.added == []
     assert notifier.authorization_status() == "authorized"
+
+
+def test_removed_legacy_api_marks_the_path_dead(cocoa, monkeypatch):
+    # A future macOS removes NSUserNotification (deprecated since 11.0): the
+    # AttributeError must mark the path dead, not retry on every alert.
+    monkeypatch.delattr(nt.A, "NSUserNotification")
+    notifier, center = make_notifier(monkeypatch, 1)  # denied -> legacy attempt
+    notifier.notify(make_event())
+    assert notifier.legacy_dead is True
+    assert center.added == []
+    # Later alerts degrade silently instead of raising or retrying.
+    notifier.notify(make_event())
+    assert notifier.legacy_dead is True
+
+
+def test_denied_authorization_with_dead_legacy_drops_pending(cocoa, monkeypatch):
+    notifier, center = make_notifier(monkeypatch, 0)
+    notifier.notify(make_event())
+    assert len(notifier._pending) == 1
+    monkeypatch.delattr(nt.A, "NSUserNotification")
+    center.auth_handlers[0](False, None)
+    assert notifier.legacy_dead is True
+    assert notifier._pending == []

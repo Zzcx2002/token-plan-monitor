@@ -37,7 +37,10 @@ from .models import (
     Settings,
     TransientProviderError,
     UsageSnapshot,
+    classify_http_error,
+    decode_json,
     parse_reset_time,
+    safe_error,
 )
 
 TOKEN_PLAN_USAGE_API = "zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage"
@@ -216,13 +219,16 @@ class BailianClient:
             # The console reports an expired session as e.g. Console.NotLogined.
             if "notlogined" in code.lower():
                 raise _TokenExpired(code)
-            detail = _safe_error(code, message)
+            detail = safe_error(code, message)
             lowered = code.lower()
             if "team" in lowered and ("notauthoris" in lowered or "notauthoriz" in lowered):
                 raise AuthenticationError(f"{TEAM_NOT_AUTHORISED_HINT}。（{detail}）")
-            if _is_auth_error(code) or response.status_code in (401, 403):
+            category = classify_http_error(
+                response.status_code, code, auth_parts=AUTH_ERROR_PARTS
+            )
+            if category is AuthenticationError:
                 raise AuthenticationError(f"阿里云百炼鉴权失败：{detail}")
-            if response.status_code == 429 or response.status_code >= 500:
+            if category is TransientProviderError:
                 raise TransientProviderError(f"阿里云百炼暂时不可用：{detail}")
             raise ProviderError(f"控制台网关错误：{detail}")
         _raise_for_http_status(response.status_code, "阿里云百炼控制台网关")
@@ -246,19 +252,12 @@ class BailianClient:
             raise NetworkError("无法连接阿里云百炼，请检查网络或代理") from exc
 
     def _decode_json(self, response: Any, what: str) -> Any:
-        try:
-            return response.json()
-        except ValueError as exc:
-            status = response.status_code
-            if status in (401, 403):
-                raise AuthenticationError(
-                    "AK/SK 鉴权失败，请检查凭据、权限和系统时间"
-                ) from exc
-            if status == 429 or status >= 500:
-                raise TransientProviderError(f"阿里云百炼暂时不可用（HTTP {status}）") from exc
-            if not 200 <= status < 300:
-                raise ProviderError(f"{what}返回非 JSON 响应（HTTP {status}）") from exc
-            raise ParseError(f"{what}成功响应不是有效 JSON") from exc
+        return decode_json(
+            response,
+            service="阿里云百炼",
+            what=what,
+            auth_hint="AK/SK 鉴权失败，请检查凭据、权限和系统时间",
+        )
 
 
 # ----------------------------------------------------------------------
@@ -411,10 +410,11 @@ def _raise_for_pop_status(status: int, body: dict[str, Any]) -> None:
         return
     code = body.get("Code") if isinstance(body.get("Code"), str) else ""
     message = body.get("Message") if isinstance(body.get("Message"), str) else ""
-    detail = _safe_error(code, message)
-    if status in (401, 403) or _is_auth_error(code):
+    detail = safe_error(code, message)
+    category = classify_http_error(status, code, auth_parts=AUTH_ERROR_PARTS)
+    if category is AuthenticationError:
         raise AuthenticationError(f"AK/SK 鉴权失败：{detail}；请检查凭据、权限和系统时间")
-    if status == 429 or status >= 500:
+    if category is TransientProviderError:
         raise TransientProviderError(f"阿里云百炼暂时不可用：{detail}")
     if not 200 <= status < 300 or body.get("Success") is False:
         raise ProviderError(f"阿里云百炼接口错误：{detail}")
@@ -423,9 +423,10 @@ def _raise_for_pop_status(status: int, body: dict[str, Any]) -> None:
 def _raise_for_http_status(status: int, what: str) -> None:
     if 200 <= status < 300:
         return
-    if status in (401, 403):
+    category = classify_http_error(status)
+    if category is AuthenticationError:
         raise AuthenticationError("AK/SK 鉴权失败，请检查凭据、权限和系统时间")
-    if status == 429 or status >= 500:
+    if category is TransientProviderError:
         raise TransientProviderError(f"{what}暂时不可用（HTTP {status}）")
     raise ProviderError(f"{what}请求失败（HTTP {status}）")
 
@@ -441,16 +442,5 @@ def _optional_number(value: Any) -> float | None:
         return None
     number = float(value)
     return number if math.isfinite(number) else None
-
-
-def _is_auth_error(code: str) -> bool:
-    lowered = code.lower()
-    return any(part in lowered for part in AUTH_ERROR_PARTS)
-
-
-def _safe_error(code: str, message: str) -> str:
-    code = re.sub(r"[\x00-\x1f\x7f]", "", code)[:80]
-    message = re.sub(r"[\x00-\x1f\x7f]", " ", message)[:240]
-    return f"{code}: {message}" if code else message or "未知错误"
 
 

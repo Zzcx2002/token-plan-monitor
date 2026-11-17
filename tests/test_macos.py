@@ -5,7 +5,11 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from token_plan_monitor.macos.layout import (
+    CUSTOM_MODEL_MARKER,
     FieldValidationError,
+    model_popup_index,
+    model_popup_restore,
+    model_popup_value,
     resolve_claude_seed,
     clamp_card,
     fit_card_size,
@@ -464,3 +468,58 @@ def test_claude_validation_subagent_is_optional_and_field_tagged():
             "bailian", "cn-beijing", "auto", "", "", "", "key",
             "", "", "", "has space")
     assert failure.value.field == "subagent_model"
+
+
+# --- Model popup index math (the ±1 convention, one rule for all 3 popups) ---
+
+KNOWN = ["auto", "qwen3.8-max", "qwen3.8-flash"]
+
+
+def test_model_popup_index_main_popup_has_no_placeholder():
+    assert model_popup_index(KNOWN, "qwen3.8-max", "") == 1
+    # Custom field wins over any popup selection.
+    assert model_popup_index(KNOWN, "qwen3.8-max", "my-model") == len(KNOWN)
+    # Build convention: unknown/empty lands on the marker when asked.
+    assert model_popup_index(KNOWN, "gone", "", empty_index=len(KNOWN)) == len(KNOWN)
+    assert model_popup_index(KNOWN, "", "", empty_index=len(KNOWN)) == len(KNOWN)
+    # Refresh convention: empty lands on item 0.
+    assert model_popup_index(KNOWN, "", "") == 0
+
+
+def test_model_popup_index_offset_popups_shift_by_the_placeholder():
+    assert model_popup_index(KNOWN, "auto", "", offset=1) == 1
+    assert model_popup_index(KNOWN, "qwen3.8-flash", "", offset=1) == 3
+    assert model_popup_index(KNOWN, "", "custom", offset=1) == len(KNOWN) + 1
+    # Empty selects the placeholder itself ("不设置"/"默认").
+    assert model_popup_index(KNOWN, "", "", offset=1) == 0
+    assert model_popup_index(KNOWN, "gone", "", offset=1) == 0
+
+
+def test_model_popup_value_round_trips_and_reads_markers_as_empty():
+    for offset in (0, 1):
+        for position, model_id in enumerate(KNOWN):
+            index = model_popup_index(KNOWN, model_id, "", offset=offset)
+            assert model_popup_value(KNOWN, index, offset) == model_id
+        assert model_popup_value(KNOWN, len(KNOWN) + offset, offset) == ""
+    assert model_popup_value(KNOWN, 0, 1) == ""  # placeholder
+    assert model_popup_value(KNOWN, -1, 0) == ""
+
+
+def test_model_popup_restore_demotes_retired_ids_to_the_custom_field():
+    # A selected model the plan no longer offers becomes custom text, not loss.
+    index, demoted = model_popup_restore(KNOWN, "retired-model", "")
+    assert index == len(KNOWN)
+    assert demoted == "retired-model"
+    # Still offered: selection preserved, nothing demoted.
+    assert model_popup_restore(KNOWN, "auto", "") == (0, "")
+    # Custom already set: marker, no demotion.
+    assert model_popup_restore(KNOWN, "auto", "mine") == (len(KNOWN), "")
+    # Empty stays at 0 (first model / placeholder).
+    assert model_popup_restore(KNOWN, "", "") == (0, "")
+    assert model_popup_restore(KNOWN, "", "", offset=1) == (0, "")
+    # Offset popups demote to their own marker slot.
+    assert model_popup_restore(KNOWN, "gone", "", offset=1) == (len(KNOWN) + 1, "gone")
+
+
+def test_custom_marker_copy_is_shared():
+    assert CUSTOM_MODEL_MARKER == "自定义模型 ID…"

@@ -12,9 +12,7 @@ from typing import Any
 
 from .bailian import BailianClient
 from .models import (
-    DEFAULT_PROVIDER,
     PROVIDER_BAILIAN,
-    PROVIDER_IDS,
     PROVIDER_LABELS,
     PROVIDER_VOLCENGINE,
     ConfigurationError,
@@ -168,10 +166,6 @@ def get_provider(provider: str) -> ProviderSpec:
     return spec
 
 
-def default_region(provider: str) -> str:
-    return get_provider(provider).default_region
-
-
 def create_client(settings: Settings, credentials: Credentials) -> Any:
     """Build the quota client for `settings.provider`.
 
@@ -179,7 +173,3 @@ def create_client(settings: Settings, credentials: Credentials) -> Any:
     and its tests can inject a stub without knowing about providers.
     """
     return get_provider(settings.provider).client(settings, credentials)
-
-
-DEFAULT_PROVIDER_ID = DEFAULT_PROVIDER
-SUPPORTED_PROVIDER_IDS = PROVIDER_IDS

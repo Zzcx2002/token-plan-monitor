@@ -25,6 +25,7 @@ from ..storage import Storage
 from ..trends import trends_for_snapshot
 from . import theme as T
 from .ui import (
+    DESKTOP_CARD_BEHAVIOR, DESKTOP_CARD_LEVEL, FLOATING_CARD_BEHAVIOR,
     HISTORY_HEIGHT, HISTORY_MIN_HEIGHT, HISTORY_WIDTH, SETTINGS_MAX_HEIGHT,
     SETTINGS_WIDTH, MonitorUI, status_presentation,
 )
@@ -349,11 +350,10 @@ class FakeMouseEvent:
 
 
 def check_card_modes(ui, storage):
-    desktop_level = Quartz.CGWindowLevelForKey(Quartz.kCGDesktopIconWindowLevelKey) + 1
-    desktop_behavior = (A.NSWindowCollectionBehaviorCanJoinAllSpaces
-                        | A.NSWindowCollectionBehaviorStationary
-                        | A.NSWindowCollectionBehaviorIgnoresCycle
-                        | A.NSWindowCollectionBehaviorFullScreenNone)
+    # The production constants, not a re-invented copy: the smoke must verify
+    # what the app actually sets.
+    desktop_level = DESKTOP_CARD_LEVEL
+    desktop_behavior = DESKTOP_CARD_BEHAVIOR
     # Exercise the menu command route for both prior floating preferences.
     for topmost in (False, True):
         ui.preferences = replace(ui.preferences, topmost=topmost)
@@ -402,7 +402,7 @@ def check_card_modes(ui, storage):
             ui.command("floating-mode")
             assert ui.preferences.topmost == topmost
             assert ui.card.level() == (A.NSFloatingWindowLevel if topmost else A.NSNormalWindowLevel)
-            assert ui.card.collectionBehavior() == A.NSWindowCollectionBehaviorMoveToActiveSpace
+            assert ui.card.collectionBehavior() == FLOATING_CARD_BEHAVIOR
             assert ui.card.isVisible() == visible
             assert ui.card.frame().origin == origin
             menu = ui.make_menu()

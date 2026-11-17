@@ -276,12 +276,6 @@ def _rounded(face, size):
     return A.NSFont.fontWithDescriptor_size_(descriptor, size) if descriptor else face
 
 
-def metric_font(role="metric"):
-    """Percentages: tabular so they never reflow, rounded for softness."""
-    size, weight = ROLES[role]
-    return _rounded(A.NSFont.monospacedDigitSystemFontOfSize_weight_(size, _WEIGHTS[weight]), size)
-
-
 def metric_sized(size, weight="semibold"):
     """Tabular figures at an explicit size (see ``sized_font`` for why)."""
     return _rounded(

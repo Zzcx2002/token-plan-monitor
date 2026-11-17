@@ -5,6 +5,7 @@ import pytest
 
 from token_plan_monitor.history import HISTORY_MAX_ROWS, HistoryEntry, account_fingerprint
 from token_plan_monitor.models import (
+    DEFAULT_PROVIDER,
     AlertSettings,
     CacheError,
     ClaudeProviderPrefs,
@@ -15,12 +16,14 @@ from token_plan_monitor.models import (
     UsageSnapshot,
     WidgetPreferences,
 )
-from token_plan_monitor.storage import (
-    AK_USERNAME,
-    KEYRING_SERVICE,
-    SK_USERNAME,
-    Storage,
-)
+from token_plan_monitor.providers import get_provider
+from token_plan_monitor.storage import KEYRING_SERVICE, Storage
+
+# Vault entry names of the default provider, derived here rather than exported
+# from storage: production code addresses them via the provider spec only.
+_DEFAULT_SPEC = get_provider(DEFAULT_PROVIDER)
+AK_USERNAME = _DEFAULT_SPEC.access_key_username
+SK_USERNAME = _DEFAULT_SPEC.secret_key_username
 
 
 class FakeKeyring:

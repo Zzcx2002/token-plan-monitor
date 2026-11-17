@@ -61,6 +61,10 @@ class UsageMonitor:
         with self._lock:
             if self._thread is not None:
                 return
+            # A stop() before any start() leaves the stop flag set; a fresh
+            # start always begins with a clean signal state.
+            self._stop.clear()
+            self._wake.clear()
             self._settings = self.storage.load_settings()
             provider = self._settings.provider
             snapshot = self.storage.load_snapshot()
@@ -199,6 +203,19 @@ class UsageMonitor:
         thread = self._thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=timeout)
+        with self._lock:
+            # Only a fully stopped loop may be restarted: if the join timed
+            # out, the old thread is still running (a 15s network call easily
+            # outlives the 2s join), and clearing state here would let start()
+            # spawn a second concurrent loop. The cached client needs no
+            # cleanup -- the loop's finally already retired it.
+            if self._thread is not None and not self._thread.is_alive():
+                self._thread = None
+                self._stop.clear()
+                self._wake.clear()
+                self._in_flight = False
+                self._pending = False
+                self._next_run = None
 
     def _retire_client(self) -> None:
         """Close and drop the cached client. Call under the lock."""

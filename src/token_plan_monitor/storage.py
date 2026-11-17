@@ -5,11 +5,12 @@ import logging
 import math
 import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
 import keyring
-from .paths import PROJECT_ROOT, data_directory
+from .paths import data_directory
 
 from .appearance import AppearancePreferences
 from .history import (
@@ -38,11 +39,6 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_DATA_DIR = data_directory()
 KEYRING_SERVICE = "TokenPlanMonitor"
-# Vault entry names of the default provider. Each provider owns its own pair, so
-# switching providers never exposes or overwrites the other one's secret.
-_DEFAULT_SPEC = get_provider(DEFAULT_PROVIDER)
-AK_USERNAME = _DEFAULT_SPEC.access_key_username
-SK_USERNAME = _DEFAULT_SPEC.secret_key_username
 
 
 class Storage:
@@ -216,9 +212,14 @@ class Storage:
         return entries
 
     def _write_history(self, path: Path, entries: list[HistoryEntry]) -> None:
-        temporary = path.with_name(f"{path.name}.tmp")
+        # Unique temp name: a fixed ".tmp" would let concurrent writers (or a
+        # crash leftover) clobber or block the rotation rewrite.
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=path.parent, prefix=f"{path.name}.", suffix=".tmp"
+        )
+        temporary = Path(temporary_name)
         try:
-            with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
                 for entry in entries:
                     handle.write(entry.to_line() + "\n")
                 handle.flush()
@@ -372,18 +373,25 @@ class Storage:
         return value
 
     def _write_json(self, path: Path, value: dict[str, Any]) -> None:
-        temporary = path.with_name(f"{path.name}.tmp")
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            with temporary.open("w", encoding="utf-8", newline="\n") as handle:
-                json.dump(value, handle, ensure_ascii=False, indent=2)
-                handle.write("\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, path)
-        except OSError as exc:
+            # Unique temp name, same rationale as _write_history.
+            descriptor, temporary_name = tempfile.mkstemp(
+                dir=path.parent, prefix=f"{path.name}.", suffix=".tmp"
+            )
+            temporary = Path(temporary_name)
             try:
-                temporary.unlink(missing_ok=True)
+                with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+                    json.dump(value, handle, ensure_ascii=False, indent=2)
+                    handle.write("\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, path)
             except OSError:
-                pass
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                raise
+        except OSError as exc:
             raise CacheError(f"无法写入本地文件：{path.name}") from exc

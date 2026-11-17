@@ -100,6 +100,10 @@ class MacNotifier:
         self._legacy_center = None
         self._status = "unavailable"
         self.authorization_error: str | None = None
+        # Set when the deprecated NSUserNotification API turns out to be gone
+        # (removed by a future macOS): decisions stop attempting the dead path
+        # and the settings window says alerts may not be deliverable.
+        self.legacy_dead = False
         # notify() runs on the monitor thread; the authorization callback
         # lands on a background queue. Both touch the pending queue.
         self._pending: list[AlertEvent] = []
@@ -205,6 +209,11 @@ class MacNotifier:
         if granted:
             for event in pending:
                 self._deliver_un(event)
+        elif self.legacy_dead:
+            logger.warning(
+                "Dropping %d pending alert(s): notifications denied and the legacy path is dead",
+                len(pending),
+            )
         else:
             # Denied: the legacy path may still show the alert (it needs no
             # UN authorization). If it is gone too, _deliver_legacy logs.
@@ -213,7 +222,8 @@ class MacNotifier:
 
     def notify(self, event: AlertEvent) -> None:
         self._refresh_status()
-        path = delivery_path(self._center, self._legacy_center, self._status)
+        legacy = None if self.legacy_dead else self._legacy_center
+        path = delivery_path(self._center, legacy, self._status)
         if path == "un":
             if self._status == "not_determined":
                 # Hold the alert and ask. Dropping it here used to lose the
@@ -228,7 +238,7 @@ class MacNotifier:
         if path == "legacy":
             self._deliver_legacy(event)
             return
-        if self._center is not None and self._status == "denied":
+        if self._center is not None and self._status == "denied" and not self.legacy_dead:
             # UN is denied but the legacy center has not been created yet
             # (bundle path): delivery_path says "silent", yet legacy needs no
             # UN authorization and is created lazily -- try it before giving up.
@@ -293,6 +303,12 @@ class MacNotifier:
                 note.setTitle_(title)
                 note.setInformativeText_(body)
                 center.deliverNotification_(note)
+            except AttributeError:
+                # The API itself is gone (NSUserNotification, deprecated since
+                # 11.0, removed by a future macOS): mark the path dead instead
+                # of retrying a missing symbol on every alert.
+                self.legacy_dead = True
+                logger.warning("Legacy notification API unavailable; path marked dead")
             except Exception:
                 logger.exception("Could not deliver legacy notification")
 

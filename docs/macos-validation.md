@@ -4,6 +4,8 @@
 
 开发/验证机器：Apple Silicon，macOS 26.6（25G72）。构建使用 python.org Python 3.13.9 framework、py2app 0.28.10；Python 及依赖都在项目隔离目录，未安装到系统 Python。依赖版本见 `requirements-macos-build.txt`。
 
+**版本与许可证约定（2026-11-17 起）**：版本唯一来源是 `src/token_plan_monitor/__init__.py` 的 `__version__`——`pyproject.toml` 用 dynamic version 读取它，`setup_macos.py` 的 `CFBundleShortVersionString` 直接 import 它，dmg 文件名同源；`CFBundleVersion`（build 号）是 `setup_macos.py` 里唯一手工递增处。`verify_resources` 不再硬编码许可证文件名：校验源 `licenses/` 与包内清单一致、每个随包发布的 pin 有对应版本命名许可证（PyObjC 家族共用一份）、Python 许可证与构建解释器版本一致。setuptools/pkg_resources/_distutils_hack/stdlib test 已排除出包（运行期零引用，keyring 25.x 走 importlib.metadata）；Tk 壳模块因 packages 整目录拷贝仍随包（~96KB，macOS 不导入），excludes 不再虚列它们。
+
 ## v0.2.1 发布记录（2026-11-17，已发布）
 
 分支 `release/v0.1.0`。功能提交 `d0b3ab0`（独立用量历史窗口）与修复 `a27c041`（smoke 报告显式 UTF-8，bundle ASCII locale）；bump 提交 `a517d85`。附注标签 `v0.2.1` 指向 `82a5124`（其树与最终构建一致），GitHub Release id `448239777`。推送经系统代理 127.0.0.1:7897。版本 `0.2.1` / build `6`（`__init__.py`、`pyproject.toml`、`setup_macos.py` 三处同源）。

@@ -580,6 +580,18 @@ def test_malformed_settings_aborts_without_touching_the_file(tmp_path):
     assert not list(tmp_path.glob("*.bak.*")), "no backup should have been taken"
 
 
+def test_crash_leftover_tmp_does_not_block_apply(tmp_path):
+    # The old fixed-name O_EXCL temp made a crash leftover block every later
+    # apply; unique mkstemp names must shrug it off.
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps(LIVE_DOCUMENT), encoding="utf-8")
+    leftover = tmp_path / "settings.json.tmp"
+    leftover.write_text("stale", encoding="utf-8")
+    cc.apply_request(make_request(), path, clock=lambda: 700)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    assert document["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-sp-NEW"
+
+
 def test_non_object_env_aborts_before_any_write(tmp_path):
     path = tmp_path / "settings.json"
     path.write_text(json.dumps({"env": "stringified"}), encoding="utf-8")
