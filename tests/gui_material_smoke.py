@@ -10,7 +10,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from gui_preview import ARTIFACTS, FakeMonitor, snapshot
-from token_plan_monitor.models import MonitorViewState, Settings, WindowTrend
+from token_plan_monitor.models import MonitorViewState, WindowTrend
+from token_plan_monitor.providers import get_provider
 from token_plan_monitor.storage import Storage
 from token_plan_monitor.ui import MonitorUI
 from token_plan_monitor.ui_graphics import native_handle
@@ -199,7 +200,10 @@ def main():
             app.root.mainloop()
             assert app._settings_entries["access_key"].instate(["invalid"])
             assert app._settings_errors["access_key"].cget("text")
-            entries = [w for w in descendants(app.settings_window) if isinstance(w, ttk.Entry)]
+            # ttk.Combobox subclasses ttk.Entry in this Tk build; the provider
+            # selector must not be mistaken for a credential field.
+            entries = [w for w in descendants(app.settings_window)
+                       if isinstance(w, ttk.Entry) and not isinstance(w, ttk.Combobox)]
             entries[0].insert(0, 'offline-test-access-key')
             entries[1].insert(0, 'offline-test-secret')
             save.invoke()
@@ -210,8 +214,6 @@ def main():
             assert app.storage.load_credentials().access_key_id == 'offline-test-access-key'
             # Alert panel: a bad threshold is a field error that keeps the
             # dialog; a valid one persists and reaches update_configuration.
-            # The Windows dialog has no provider selector: saving must preserve it.
-            app.storage.save_settings(Settings(provider="bailian"))
             app.open_settings()
             app.root.after(80, app.root.quit)
             app.root.mainloop()
@@ -227,6 +229,26 @@ def main():
             app._settings_entries["alert_threshold"].delete(0, "end")
             app._settings_entries["alert_threshold"].insert(0, "25")
             app._settings_alert_reset.set(True)
+            # Real provider switch: an unsupported region falls back to the
+            # provider default, interval and alert values carry over, and the
+            # form shows the new provider's own (empty) vault pair.
+            app._settings_entries["region"].delete(0, "end")
+            app._settings_entries["region"].insert(0, "us-east-1")
+            dialog = app._settings_dialog
+            dialog.provider_var.set(get_provider("bailian").label)
+            dialog._schedule_rebuild()
+            app.root.after(80, app.root.quit)
+            app.root.mainloop()
+            assert dialog.provider == "bailian"
+            assert app._settings_entries["region"].get() == "cn-beijing"
+            assert app._settings_entries["refresh"].get() == "15"
+            assert app._settings_entries["alert_threshold"].get() == "25"
+            assert app._settings_alert_reset.get() is True
+            assert app._settings_entries["access_key"].get() == ""
+            app._settings_entries["access_key"].insert(0, "bailian-test-ak")
+            app._settings_entries["secret_key"].insert(0, "bailian-test-sk")
+            save = next(w for w in descendants(app.settings_window)
+                        if isinstance(w, ttk.Button) and w.cget('text') == '保存设置')
             save.invoke()
             app.root.after(80, app.root.quit)
             app.root.mainloop()
@@ -236,6 +258,10 @@ def main():
             assert monitor.saved[0].alert == saved_alert
             assert app.storage.load_settings().provider == "bailian"
             assert monitor.saved[0].provider == "bailian"
+            # Each provider owns its vault pair: the switch never overwrites
+            # the previous provider's secret and the new one lands separately.
+            assert app.storage.load_credentials("volcengine").access_key_id == "offline-test-access-key"
+            assert app.storage.load_credentials("bailian").secret_access_key == "bailian-test-sk"
             # Tray toast channel: copy comes from the shared presentation layer.
             from token_plan_monitor.alerts import AlertEvent
             recorded = []

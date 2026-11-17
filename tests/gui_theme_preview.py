@@ -104,9 +104,17 @@ def render(mode:str,scale:float) -> None:
                 pump(app)
                 assert app.settings_body.canvas.yview()[1]>0.99
                 app.settings_body.canvas.yview_moveto(0)
-                app._settings_entries["refresh"].focus_set()
-                pump(app)
                 field=app._settings_entries["refresh"]
+                # Let wrapped labels and the scroll region settle first: a
+                # reveal measured against mid-layout geometry would no-op and
+                # then be proved wrong by the reflow.
+                pump(app)
+                field.focus_set()
+                # A driven harness does not deliver FocusIn reliably; fire the
+                # same event the real focus change would, so the scrollable
+                # body's reveal path scrolls the field back into the viewport.
+                field.event_generate("<FocusIn>")
+                pump(app)
                 top=field.winfo_rooty()-app.settings_body.canvas.winfo_rooty()
                 assert top>=0 and top+field.winfo_height()<=app.settings_body.canvas.winfo_height()
             assert not failures,failures
