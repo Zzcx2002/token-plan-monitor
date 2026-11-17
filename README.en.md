@@ -1,5 +1,7 @@
 [中文](README.md) | [English](README.en.md)
 
+<img src="assets/app.png" width="72" alt="Token Plan Monitor logo">
+
 # Token Plan Quota Monitor
 
 A standalone Windows tray / macOS menu-bar utility that shows **how much capacity your subscription plan has left**, across the 5-hour, weekly and monthly windows. Two providers today: **Volcengine Ark (火山方舟)** — Agent Plan / Coding Plan, and **Alibaba Cloud Model Studio (阿里云百炼)** — Token Plan (Individual) / Coding Plan.

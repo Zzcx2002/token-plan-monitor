@@ -150,7 +150,7 @@ py -3.13 -m venv .venv
 
 GUI smoke 依赖 Tk 事件循环，曾观察到偶发的 Tk GIL 致命错误（与改动无关的环境抖动）；改动 Windows 壳后每个相关 smoke 至少连跑两遍，单跑一次通过不能作为绿灯依据。
 
-截图保存在 `artifacts\theme-*.png`，其中 `theme-light/dark-popup-collapsed/expanded.png`、`theme-light/dark-widget.png`、`theme-light/dark-settings.png` 是两套主题的代表截图。需要重新生成多尺寸应用图标 `assets\app.ico` 时，运行 `.venv\Scripts\python.exe scripts\generate_app_icon.py`，再重新执行快捷方式脚本。
+截图保存在 `artifacts\theme-*.png`，其中 `theme-light/dark-popup-collapsed/expanded.png`、`theme-light/dark-widget.png`、`theme-light/dark-settings.png` 是两套主题的代表截图。需要重新生成多尺寸应用图标 `assets\app.ico` 和 README 使用的 `assets\app.png` 时，运行 `.venv\Scripts\python.exe scripts\generate_app_icon.py`，再重新执行快捷方式脚本。
 
 ## Windows：打包便携版
 

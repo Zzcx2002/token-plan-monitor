@@ -1,5 +1,7 @@
 [中文](README.md) | [English](README.en.md)
 
+<img src="assets/app.png" width="72" alt="Token Plan Monitor 图标">
+
 # Token Plan 用量监控
 
 一个独立的 Windows 托盘 / macOS 菜单栏小工具，用来看订阅套餐**还剩多少容量**：5 小时、每周、每月三个窗口。当前支持两个服务商——**火山方舟**（Agent Plan / Coding Plan）与**阿里云百炼**（Token Plan 个人版 / Coding Plan）。

@@ -1,4 +1,4 @@
-"""Regenerate the multi-size application icon from the shared Pillow drawing."""
+"""Regenerate the application and documentation icons from the shared drawing."""
 
 from pathlib import Path
 
@@ -26,7 +26,10 @@ def main() -> None:
             (256, 256),
         ],
     )
+    png_destination = destination.with_suffix(".png")
+    make_brand_icon(512).save(png_destination, format="PNG")
     print(destination)
+    print(png_destination)
 
 
 if __name__ == "__main__":

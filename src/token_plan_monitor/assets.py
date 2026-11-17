@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from PIL import Image, ImageDraw
 
 
@@ -12,21 +14,21 @@ STATUS_COLORS = {
 
 
 def make_brand_icon(size: int = 256) -> Image.Image:
-    """Draw a macOS-inspired squircle with three simple capacity bars."""
+    """Draw a Token monogram inside an open, recurring-quota ring."""
     scale = 4
     side = max(16, size) * scale
     image = Image.new("RGBA", (side, side), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
     margin = round(side * 0.04)
     radius = round(side * 0.23)
+    top_color = (85, 178, 255)
+    bottom_color = (0, 122, 255)
     for y in range(margin, side - margin):
         fraction = (y - margin) / max(1, side - 2 * margin)
-        color = (
-            round(10 + 55 * fraction),
-            round(132 - 45 * fraction),
-            round(255 - 12 * fraction),
-            255,
-        )
+        color = tuple(
+            round(start + (end - start) * fraction)
+            for start, end in zip(top_color, bottom_color)
+        ) + (255,)
         draw.line((margin, y, side - margin, y), fill=color, width=1)
     mask = Image.new("L", (side, side), 0)
     ImageDraw.Draw(mask).rounded_rectangle(
@@ -35,19 +37,57 @@ def make_brand_icon(size: int = 256) -> Image.Image:
     image.putalpha(mask)
 
     draw = ImageDraw.Draw(image)
-    bar_width = round(side * 0.115)
-    gap = round(side * 0.07)
-    total_width = bar_width * 3 + gap * 2
-    left = (side - total_width) // 2
-    baseline = round(side * 0.70)
-    for index, height_fraction in enumerate((0.22, 0.36, 0.50)):
-        x = left + index * (bar_width + gap)
-        top = baseline - round(side * height_fraction)
-        draw.rounded_rectangle(
-            (x, top, x + bar_width, baseline),
-            radius=bar_width // 2,
-            fill=(255, 255, 255, 245),
+    foreground = (255, 255, 255, 255)
+    stroke = round(side * 0.075)
+
+    def rounded_line(start: tuple[float, float], end: tuple[float, float]) -> None:
+        draw.line((*start, *end), fill=foreground, width=stroke)
+        cap_radius = stroke / 2
+        for x, y in (start, end):
+            draw.ellipse(
+                (x - cap_radius, y - cap_radius, x + cap_radius, y + cap_radius),
+                fill=foreground,
+            )
+
+    center_x, center_y = side * 0.50, side * 0.48
+    ring_radius = side * 0.25
+    # Pillow grows arc strokes inward, so expand the box to center the stroke.
+    ring_outer_radius = ring_radius + stroke / 2
+    ring_box = (
+        center_x - ring_outer_radius,
+        center_y - ring_outer_radius,
+        center_x + ring_outer_radius,
+        center_y + ring_outer_radius,
+    )
+    # The upper-right opening suggests renewal without colliding with tray badges.
+    start_angle, end_angle = 340, 290
+    draw.arc(
+        ring_box,
+        start=start_angle,
+        end=end_angle,
+        fill=foreground,
+        width=stroke,
+    )
+    for angle in (start_angle, end_angle):
+        radians = math.radians(angle)
+        point = (
+            center_x + ring_radius * math.cos(radians),
+            center_y + ring_radius * math.sin(radians),
         )
+        cap_radius = stroke / 2
+        draw.ellipse(
+            (
+                point[0] - cap_radius,
+                point[1] - cap_radius,
+                point[0] + cap_radius,
+                point[1] + cap_radius,
+            ),
+            fill=foreground,
+        )
+
+    crossbar_y = side * 0.39
+    rounded_line((side * 0.38, crossbar_y), (side * 0.62, crossbar_y))
+    rounded_line((side * 0.50, crossbar_y), (side * 0.50, side * 0.63))
     return image.resize((size, size), Image.Resampling.LANCZOS)
 
 
