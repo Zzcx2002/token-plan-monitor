@@ -4,7 +4,19 @@
 
 开发/验证机器：Apple Silicon，macOS 26.6（25G72）。构建使用 python.org Python 3.13.9 framework、py2app 0.28.10；Python 及依赖都在项目隔离目录，未安装到系统 Python。依赖版本见 `requirements-macos-build.txt`。
 
-## 用量历史窗口验证（2026-11-16，本地验证；尚未发布）
+## v0.2.1 发布记录（2026-11-17，本地验证）
+
+分支 `release/v0.1.0`。功能提交 `d0b3ab0`（独立用量历史窗口）与修复 `a27c041`（smoke 报告显式 UTF-8，bundle ASCII locale）；bump 提交见 git 历史。版本 `0.2.1` / build `6`（`__init__.py`、`pyproject.toml`、`setup_macos.py` 三处同源）。
+
+- 离线 pytest：**405 passed、3 skipped**；`compileall src scripts` 通过。原生 AppKit smoke 双外观（light/dark）通过，含历史窗口全部假状态。
+- 构建：`.venv-build`（python.org Python 3.13.9 framework）跑 `scripts/build_macos.py`；110 个 arm64 二进制、deployment target ≤14、项目与第三方许可证入包、ad-hoc 签名（`Signature=adhoc`、`TeamIdentifier=not set`、`flags=0x2(adhoc)`）随构建全过。
+- 包内 `--smoke-test`（绝对路径 artifacts `/tmp/token-monitor-bundle-smoke-021`）通过。Info.plist `0.2.1` / `6`。
+- 产物：`TokenPlanMonitor-0.2.1-arm64.dmg`（33479854 字节）sha256 `ae2c1ff8be365a51fc3e48e6860267c57f60e9d1d2f02e6f43c2f679e15571f3`；`.sha256` 为纯文件名版（99 字节，与历版一致）。`hdiutil verify` VALID；挂载核对 plist `0.2.1`/`6`、Resources 无杂物（DMG staging 先于 bundle smoke）、含 Applications 拖拽别名。
+- 兼容性：历史窗口为纯加法（`MonitorViewState.history` 加法字段、新模块 `history_chart.py` / `macos/chart.py`），config schema 不变；旧版数据目录直接可用。
+- `README.md` / `README.en.md` 下载与校验链接指向 v0.2.1。
+- 遗留手工项沿用「用量历史窗口验证」节清单（真实悬停、VoiceOver、开窗浅深切换、90 天密度观感、macOS 14 实机）；Windows 趋势/历史展示继续后置。
+
+## 用量历史窗口验证（2026-11-16，本地验证；已随 v0.2.1 发布）
 
 分支 `release/v0.1.0`。在 v0.2.0 的历史/趋势数据层之上新增独立「用量历史」窗口：菜单入口、24小时/7天/30天/90天 一行范围选择器、每窗口一张已用%折线/面积图（CAShapeLayer + CGPath，theme 的「无 drawRect_/NSBezierPath」规则注释澄清为允许声明式图层路径）、周期断点不跨重置连线、重置细线/字幕密度门控、告警阈值虚线、悬停十字线+数值领先 tooltip、每图「数据列表」表格孪生、空/薄/未配置诚实文案。
 
