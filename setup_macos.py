@@ -34,11 +34,11 @@ setup(
             "CFBundleName": "TokenPlanMonitor",
             "CFBundleDisplayName": "Token Plan 用量监控",
             "CFBundleIdentifier": "com.zzcx2002.tokenplanmonitor",
-            "CFBundleShortVersionString": "0.2.0",
-            # Build 5: v0.2.0 adds usage history, trend/exhaustion estimates
-            # and threshold alerts with system notifications, so the version
-            # pair must not claim to be build 4.
-            "CFBundleVersion": "5",
+            "CFBundleShortVersionString": "0.3.0",
+            # Build 6: v0.3.0 reaches Windows/macOS feature parity and ships
+            # the PyInstaller portable build; no new DMG is published, but the
+            # plist strings stay in sync with token_plan_monitor.__version__.
+            "CFBundleVersion": "6",
             "NSHumanReadableCopyright": "Copyright © 2026 Zzcx2002",
             "LSUIElement": True,
             "LSMinimumSystemVersion": "14.0",
