@@ -19,9 +19,9 @@ export const links = {
   issues: `${REPOSITORY}/issues`,
   license: `${REPOSITORY}/blob/main/LICENSE`,
   privacyZh: `${REPOSITORY}/blob/main/README.md#隐私与安全边界`,
-  privacyEn: `${REPOSITORY}/blob/main/README.en.md#privacy--security-boundaries`,
+  privacyEn: `${REPOSITORY}/blob/main/README.en.md#privacy-and-security-boundaries`,
   windowsZh: `${REPOSITORY}/blob/main/README.md#windows`,
   windowsEn: `${REPOSITORY}/blob/main/README.en.md#windows`,
   claudeZh: `${REPOSITORY}/blob/main/README.md#接入-claude-code`,
-  claudeEn: `${REPOSITORY}/blob/main/README.en.md#connecting-claude-code`,
+  claudeEn: `${REPOSITORY}/blob/main/README.en.md#claude-code-hookup`,
 };

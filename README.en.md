@@ -1,10 +1,27 @@
 [中文](README.md) | [English](README.en.md)
 
-<img src="assets/app.png" width="72" alt="Token Plan Monitor logo">
+<p align="center">
+  <img src="assets/app.png" width="88" alt="Token Plan Monitor logo">
+</p>
 
-# Token Plan Quota Monitor
+<h1 align="center">Token Plan Quota Monitor</h1>
 
-A standalone Windows tray / macOS menu-bar utility that shows **how much capacity your subscription plan has left**, across the 5-hour, weekly and monthly windows. Two providers today: **Volcengine Ark (火山方舟)** — Agent Plan / Coding Plan, and **Alibaba Cloud Model Studio (阿里云百炼)** — Token Plan (Individual) / Coding Plan.
+<p align="center">
+  <strong>Know what’s left, at a glance.</strong><br>
+  A standalone Windows tray / macOS menu-bar utility that shows <strong>how much capacity your subscription plan has left</strong> across the 5-hour, weekly and monthly windows.
+</p>
+
+<p align="center">
+  <a href="https://zzcx2002.github.io/token-plan-monitor/en/">Product site</a> ·
+  <a href="#quick-download">Quick download</a> ·
+  <a href="#install">Install</a> ·
+  <a href="#privacy-and-security-boundaries">Privacy</a> ·
+  <a href="https://github.com/Zzcx2002/token-plan-monitor/releases">Releases</a>
+</p>
+
+<p align="center">
+  <strong>2</strong> providers · <strong>3</strong> quota windows · <strong>0</strong> telemetry or usage uploads
+</p>
 
 | Desktop card · light | Desktop card · dark |
 | --- | --- |
@@ -12,10 +29,22 @@ A standalone Windows tray / macOS menu-bar utility that shows **how much capacit
 
 > Screenshots come from the offline UI preview harness with fake numbers. They do not include the out-of-window shadow or the desktop backdrop blur, so the real thing looks slightly softer.
 
-> **The app interface is currently Chinese-only.** There is no English localization yet, so the Chinese terms quoted throughout this document are exactly what you will see on screen. They are all collected in the [glossary](#glossary-of-on-screen-chinese) below.
+> **The app interface is currently Chinese-only.** There is no English localization yet, so the Chinese terms quoted throughout this document are exactly what you will see on screen. They are all collected in the [glossary](#glossary-of-on-screen-chinese) below. The English product site and this README do not change the in-app language.
+
+Two providers today: **Volcengine Ark (火山方舟)** — Agent Plan / Coding Plan, and **Alibaba Cloud Model Studio (阿里云百炼)** — Token Plan (Individual) / Coding Plan.
+
+## Quick download
+
+| Platform | Version | Download | Requirements |
+| --- | --- | --- | --- |
+| macOS | v0.2.1 | [TokenPlanMonitor-0.2.1-arm64.dmg](https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.2.1/TokenPlanMonitor-0.2.1-arm64.dmg) | macOS 14+ · Apple Silicon (arm64) |
+| Windows | v0.3.0 | [TokenPlanMonitor-0.3.0-win64.zip](https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.3.0/TokenPlanMonitor-0.3.0-win64.zip) | Windows 10 / 11 · 64-bit |
+
+Full install steps, SHA-256 checksums and Gatekeeper / SmartScreen first-launch guidance are under [Install](#install); the [product site download section](https://zzcx2002.github.io/token-plan-monitor/en/#download) links to the same files. Windows can also [run from source](#run-from-source).
 
 ## Contents
 
+- [Quick download](#quick-download)
 - [What it does / what it does not](#what-it-does--what-it-does-not)
 - [Support matrix](#support-matrix)
 - [Install](#install)
@@ -28,10 +57,15 @@ A standalone Windows tray / macOS menu-bar utility that shows **how much capacit
 - [FAQ](#faq)
 - [Glossary of on-screen Chinese](#glossary-of-on-screen-chinese)
 - [License and acknowledgements](#license-and-acknowledgements)
+- [Developers](#developers)
 
 ## What it does / what it does not
 
-**Does**: queries the official APIs on a schedule (every 15 minutes by default, configurable 5–1440); shows the remaining percentage, a progress bar and the reset time for each window on hover and on click; keeps a draggable, resizable card on your desktop; shows absolute amounts when the provider reports them (AFP for Volcengine Ark Agent Plan, quota units for Model Studio Coding Plan); retains the last successful result when a query fails and labels it as stale; appends every successful query to a local history and estimates consumption rate and exhaustion time from it; sends one system notification (macOS Notification Center / Windows tray toast) when any window's remaining drops below a configurable threshold (default 10%), re-arming after a reset or recovery.
+**Does**:
+
+- **Capacity at a glance**: queries the official APIs on a schedule (every 15 minutes by default, configurable 5–1440 minutes); hover for a summary and click for the remaining percentage, progress bar and reset time of each window; keeps a draggable, resizable card on your desktop. Absolute amounts are shown when the provider reports them (AFP for Volcengine Ark Agent Plan, quota units for Model Studio Coding Plan).
+- **Local history and early alerts**: every successful query is appended to local history, which powers consumption-rate and exhaustion-time estimates; one system notification (macOS Notification Center / Windows tray toast) is sent when any window's remaining drops below a configurable threshold (default 10%), re-arming after a reset or recovery. A failed query keeps the last successful result and labels it as stale. Every trend and exhaustion time is explicitly an estimate based on local records.
+- **Optional Claude Code hookup**: pick a provider and model, review an itemized change list, then merge the settings into your local Claude Code config with a timestamped backup. The write leaves a plaintext inference key in that config — see [Claude Code hookup](#claude-code-hookup) for the full costs and file-permission details.
 
 **Does not**:
 
@@ -343,3 +377,7 @@ MIT licensed — see [LICENSE](LICENSE). Signing and response parsing were studi
 ## Developers
 
 Source runs, macOS DMG and Windows portable-zip packaging, offline UI preview and validation, tests and live verification: [docs/development.md](docs/development.md). macOS acceptance log: [docs/macos-validation.md](docs/macos-validation.md).
+
+### Product site
+
+The bilingual product site ([中文](https://zzcx2002.github.io/token-plan-monitor/) / [English](https://zzcx2002.github.io/token-plan-monitor/en/)) is an Astro static site under `site/`, deployed to GitHub Pages through GitHub Actions (workflow: [.github/workflows/pages.yml](.github/workflows/pages.yml)). See [site/README.md](site/README.md) for local development, icon and OG-image generation, release-manifest updates and browser verification. The site uses no analytics, external fonts or runtime client-side JavaScript.

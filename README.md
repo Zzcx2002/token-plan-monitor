@@ -1,10 +1,27 @@
 [中文](README.md) | [English](README.en.md)
 
-<img src="assets/app.png" width="72" alt="Token Plan Monitor 图标">
+<p align="center">
+  <img src="assets/app.png" width="88" alt="Token Plan Monitor 图标">
+</p>
 
-# Token Plan 用量监控
+<h1 align="center">Token Plan 用量监控</h1>
 
-一个独立的 Windows 托盘 / macOS 菜单栏小工具，用来看订阅套餐**还剩多少容量**：5 小时、每周、每月三个窗口。当前支持两个服务商——**火山方舟**（Agent Plan / Coding Plan）与**阿里云百炼**（Token Plan 个人版 / Coding Plan）。
+<p align="center">
+  <strong>套餐余量，一眼看清。</strong><br>
+  独立的 Windows 托盘 / macOS 菜单栏小工具，随时查看订阅套餐在 5 小时、每周、每月三个窗口<strong>还剩多少容量</strong>。
+</p>
+
+<p align="center">
+  <a href="https://zzcx2002.github.io/token-plan-monitor/">产品官网</a> ·
+  <a href="#快速下载">快速下载</a> ·
+  <a href="#安装">安装说明</a> ·
+  <a href="#隐私与安全边界">隐私与安全</a> ·
+  <a href="https://github.com/Zzcx2002/token-plan-monitor/releases">Releases</a>
+</p>
+
+<p align="center">
+  <strong>2</strong> 家服务商 · <strong>3</strong> 个额度窗口 · <strong>0</strong> 遥测与用量上传
+</p>
 
 | 桌面卡片 · 浅色 | 桌面卡片 · 深色 |
 | --- | --- |
@@ -12,8 +29,20 @@
 
 > 截图来自离线界面预览，数值是假数据；渲染不含窗口外阴影与桌面背景模糊，实际观感以真机为准。
 
+当前支持两个服务商——**火山方舟**（Agent Plan / Coding Plan）与**阿里云百炼**（Token Plan 个人版 / Coding Plan）。
+
+## 快速下载
+
+| 平台 | 版本 | 下载 | 系统要求 |
+| --- | --- | --- | --- |
+| macOS | v0.2.1 | [TokenPlanMonitor-0.2.1-arm64.dmg](https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.2.1/TokenPlanMonitor-0.2.1-arm64.dmg) | macOS 14+ · Apple Silicon (arm64) |
+| Windows | v0.3.0 | [TokenPlanMonitor-0.3.0-win64.zip](https://github.com/Zzcx2002/token-plan-monitor/releases/download/v0.3.0/TokenPlanMonitor-0.3.0-win64.zip) | Windows 10 / 11 · 64 位 |
+
+完整安装步骤、SHA-256 校验与 Gatekeeper / SmartScreen 首次打开说明见下方[安装](#安装)；同样的下载入口也在[产品官网下载区](https://zzcx2002.github.io/token-plan-monitor/#download)。Windows 还可以[从源码运行](#从源码运行)。
+
 ## 目录
 
+- [快速下载](#快速下载)
 - [它能做什么 / 不做什么](#它能做什么--不做什么)
 - [支持范围](#支持范围)
 - [安装](#安装)
@@ -25,10 +54,15 @@
 - [隐私与安全边界](#隐私与安全边界)
 - [常见问题](#常见问题)
 - [许可与致谢](#许可与致谢)
+- [开发者](#开发者)
 
 ## 它能做什么 / 不做什么
 
-**做**：后台按间隔（默认 15 分钟，可设 5–1440）查询官方接口；菜单栏/托盘悬停看摘要、点开看三个窗口的剩余百分比、进度条和重置时间；桌面上放一张可拖动、可调整大小的常驻卡片；有绝对额度时一并显示（火山方舟 Agent Plan 的 AFP、百炼 Coding Plan 的额度）；查询失败时保留上次成功数据并明确标记过期；把每次成功查询追加进本机历史，据此估算消耗速率与预计耗尽时刻；任一窗口剩余低于可配置阈值（默认 10%）时发一次系统通知（macOS 通知中心 / Windows 托盘提示），窗口重置或剩余回升后自动重新启用。
+**做**：
+
+- **额度就在眼前**：后台按间隔（默认 15 分钟，可设 5–1440 分钟）查询官方接口；菜单栏 / 托盘悬停看摘要，点开看三个窗口的剩余百分比、进度条和重置时间；桌面上放一张可拖动、可调整大小的常驻卡片。接口提供绝对额度时一并显示（火山方舟 Agent Plan 的 AFP、百炼 Coding Plan 的额度）。
+- **本地历史与提前提醒**：每次成功查询追加进本机历史，据此估算消耗速率与预计耗尽时刻；任一窗口剩余低于可配置阈值（默认 10%）时发一次系统通知（macOS 通知中心 / Windows 托盘提示），窗口重置或剩余回升后自动重新启用。查询失败时保留上次成功数据并明确标记过期。所有趋势与耗尽时刻都是基于本地记录的估算。
+- **可选接入 Claude Code**：选好服务商和模型后，逐项确认再合并写入本地配置，并保留时间戳备份。写入会在本地配置中留下明文推理 Key，完整代价与权限说明见[接入 Claude Code](#接入-claude-code)。
 
 **不做**：
 
@@ -300,3 +334,7 @@ MIT 许可，见 [LICENSE](LICENSE)。签名与响应解析参考 [CC Switch](ht
 ## 开发者
 
 源码运行、打包 macOS DMG 与 Windows 便携包、离线界面预览与验收、测试与实时验证：[docs/development.md](docs/development.md)。macOS 实机验收记录：[docs/macos-validation.md](docs/macos-validation.md)。
+
+### 产品网站
+
+双语产品官网（[中文](https://zzcx2002.github.io/token-plan-monitor/) / [English](https://zzcx2002.github.io/token-plan-monitor/en/)）是 `site/` 目录下的 Astro 静态站点，通过 GitHub Actions 部署到 GitHub Pages（工作流：[.github/workflows/pages.yml](.github/workflows/pages.yml)）。本地开发、图标与 OG 图生成、发布数据更新和浏览器验证见 [site/README.md](site/README.md)；网站不使用分析脚本、外部字体或运行时客户端 JavaScript。
