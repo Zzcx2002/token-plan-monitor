@@ -376,7 +376,7 @@ MIT licensed — see [LICENSE](LICENSE). Signing and response parsing were studi
 
 ## Developers
 
-Source runs, macOS DMG and Windows portable-zip packaging, offline UI preview and validation, tests and live verification: [docs/development.md](docs/development.md). macOS acceptance log: [docs/macos-validation.md](docs/macos-validation.md).
+Source runs, macOS DMG and Windows portable-zip packaging, offline UI preview and validation, tests and live verification: [docs/development.md](docs/development.md).
 
 ### Product site
 

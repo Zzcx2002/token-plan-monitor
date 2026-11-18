@@ -15,3 +15,5 @@ data/*.tmp
 data/*.corrupt
 logs/*.log
 REVIEW-NOTES.md
+# Internal acceptance records live in the private token-plan-monitor-internal repo.
+docs/macos-validation.md
