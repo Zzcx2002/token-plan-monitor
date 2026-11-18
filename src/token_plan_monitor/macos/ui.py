@@ -33,16 +33,20 @@ from ..history_chart import (
 from ..presentation import (
     HISTORY_RANGE_LABELS, HISTORY_TABLE_COLLAPSE, HISTORY_TABLE_HEADERS,
     HISTORY_TABLE_TITLE, HISTORY_WINDOW_TITLE, WINDOW_LABELS, compact_remaining,
-    format_datetime, format_number, history_absolute_header, history_chart_title,
-    history_context_line, history_empty_text, hover_summary, menu_lines,
-    state_tone, status_text, trend_line,
+    display_remaining, format_datetime, format_number, history_absolute_header,
+    history_chart_title, history_context_line, history_empty_text, hover_summary,
+    menu_lines, state_tone, status_text, trend_line,
 )
 from ..providers import PROVIDERS, get_provider
 from .layout import (
+    CUSTOM_MODEL_MARKER,
     FieldValidationError,
     clamp_card,
     fit_card_size,
     lowest_windows,
+    model_popup_index,
+    model_popup_restore,
+    model_popup_value,
     primary_action,
     resize_card_frame,
     resolve_claude_seed,
@@ -62,6 +66,14 @@ TITLE = "Token Plan 用量监控"
 # cannot be constants (see theme's rule 3), so callers ask theme.tone().
 TEXT = T.TEXT
 SECONDARY = T.SECONDARY
+# Card window level/behaviors, exported so the offline smoke asserts against
+# the production values instead of re-inventing its own copy of the bitmasks.
+DESKTOP_CARD_LEVEL = Quartz.CGWindowLevelForKey(Quartz.kCGDesktopIconWindowLevelKey) + 1
+DESKTOP_CARD_BEHAVIOR = (A.NSWindowCollectionBehaviorCanJoinAllSpaces
+                         | A.NSWindowCollectionBehaviorStationary
+                         | A.NSWindowCollectionBehaviorIgnoresCycle
+                         | A.NSWindowCollectionBehaviorFullScreenNone)
+FLOATING_CARD_BEHAVIOR = A.NSWindowCollectionBehaviorMoveToActiveSpace
 
 
 def status_presentation(state):
@@ -258,6 +270,102 @@ def popup_row(parent, title, y, width, items, index, accessibility=None):
     popup.setAccessibilityLabel_(accessibility or title)
     parent.addSubview_(popup)
     return y + T.FIELD_HEIGHT, popup
+
+
+AUTO_MODEL_PLACEHOLDER = "不设置（保持现状）"
+SUBAGENT_MODEL_PLACEHOLDER = "默认（保持现有值；为空时填入主模型）"
+
+
+class ModelPopup:
+    """One model popup's index<->id convention, in exactly one place.
+
+    The main popup has no leading placeholder (offset 0); auto/subagent lead
+    with "不设置"/"默认" (offset 1). All three end with the custom marker whose
+    value lives in the paired text field. The index math itself is pure and
+    unit-tested in layout (model_popup_index/value/restore); this wrapper only
+    wires it to the Cocoa popup and field. The provider popup has a different
+    convention and deliberately stays outside this class.
+    """
+
+    def __init__(self, popup, field_key, offset=0, placeholder=""):
+        self.popup = popup
+        self.field_key = field_key
+        self.offset = offset
+        self.placeholder = placeholder
+
+    @staticmethod
+    def titles(options, placeholder=""):
+        labels = [option.label for option in options]
+        if placeholder:
+            labels = [placeholder] + labels
+        return labels + [CUSTOM_MODEL_MARKER]
+
+    def value(self, known):
+        return model_popup_value(known, self.popup.indexOfSelectedItem(), self.offset)
+
+    def repopulate(self, options, known, model_id, custom, fields):
+        """Refresh the items in place, preserving (or demoting) the selection."""
+        self.popup.removeAllItems()
+        self.popup.addItemsWithTitles_(self.titles(options, self.placeholder))
+        index, demoted = model_popup_restore(known, model_id, custom, self.offset)
+        if demoted:
+            fields[self.field_key].setStringValue_(demoted)
+        self.popup.selectItemAtIndex_(index)
+
+
+def window_scaffold(window, width, header_height, footer_height):
+    """The shared window shell: page root + flipped header + borderless scroll
+    + seamed footer. Details and history differ only in header contents and
+    footer buttons; the scaffolding itself is identical and lives here once.
+    Returns (root, header, scroll, footer).
+    """
+    root = T.SurfaceView.alloc().initWithFrame_(window.contentView().bounds())
+    root.setAutoresizingMask_(A.NSViewWidthSizable | A.NSViewHeightSizable)
+    root.setWantsLayer_(True)
+    root.fill = "page"
+    window.setContentView_(root)
+    height = window.contentView().bounds().size.height
+    header = FlippedView.alloc().initWithFrame_(rect(0, 0, width, header_height))
+    root.addSubview_(header)
+    scroll = A.NSScrollView.alloc().initWithFrame_(
+        rect(0, header_height, width, max(0, height - header_height - footer_height)))
+    scroll.setHasVerticalScroller_(True)
+    scroll.setBorderType_(A.NSNoBorder)
+    scroll.setDrawsBackground_(False)
+    root.addSubview_(scroll)
+    footer = T.SurfaceView.alloc().initWithFrame_(
+        rect(0, height - footer_height, width, footer_height))
+    footer.setWantsLayer_(True)
+    footer.fill = "page"
+    root.addSubview_(footer)
+    # The one line the shell still draws: a seam separating the fixed action
+    # bar from scrolling content, the way a sheet separates its buttons.
+    _stretch(T.surface(footer, 0, 0, width, T.SEAM_HEIGHT, fill="seam"))
+    return root, header, scroll, footer
+
+
+def document_begin(scroll):
+    """Start a document rebuild: keep the scroll origin, derive the widths.
+
+    Returns (content, origin, content_width, width): the flipped document view
+    (viewport - 24) and the label width (content - 48) every row lays out
+    against -- the width contract the smoke asserts.
+    """
+    origin = scroll.contentView().bounds().origin
+    viewport_width = scroll.contentView().bounds().size.width
+    content_width = max(1, viewport_width - 24)
+    width = max(1, content_width - 48)
+    content = FlippedView.alloc().initWithFrame_(rect(0, 0, content_width, 438))
+    return content, origin, content_width, width
+
+
+def document_end(scroll, content, content_width, y, origin):
+    """Install the rebuilt document and restore the clamped scroll position."""
+    content.setFrameSize_(F.NSMakeSize(content_width, y + 12))
+    scroll.setDocumentView_(content)
+    max_y = max(0, content.frame().size.height - scroll.contentView().bounds().size.height)
+    scroll.contentView().scrollToPoint_(F.NSMakePoint(0, min(origin.y, max_y)))
+    scroll.reflectScrolledClipView_(scroll.contentView())
 
 
 def text_field(parent, value, secure, y, width, label_text):
@@ -509,8 +617,13 @@ class Actions(F.NSObject):
     def statusClick_(self, sender):
         event = A.NSApplication.sharedApplication().currentEvent()
         if event.type() == A.NSEventTypeRightMouseUp or event.modifierFlags() & A.NSEventModifierFlagControl:
-            menu = self.owner.make_menu()
-            self.owner.status_item.popUpStatusItemMenu_(menu)
+            # popUpStatusItemMenu_ is deprecated since 10.10; the context-menu
+            # popup (same pattern as the card's right-click) keeps the exact
+            # UX: left click opens details, right/ctrl click opens the menu.
+            # Assigning statusItem.menu instead would open the menu on LEFT
+            # click too, which is not this app's interaction.
+            A.NSMenu.popUpContextMenu_withEvent_forView_(
+                self.owner.make_menu(), event, self.owner.status_item.button())
         else:
             self.owner.show_details()
 
@@ -518,17 +631,31 @@ class Actions(F.NSObject):
         command = sender.representedObject() if isinstance(sender, A.NSMenuItem) else sender.identifier()
         self.owner.command(str(command))
 
+    def windowWillStartLiveResize_(self, notification):
+        # A drag posts windowDidResize_ on every tick; rebuilding the document
+        # each time (all labels re-measured, up to 3 fresh ChartViews) is a
+        # redraw storm. During the drag only geometry is laid out.
+        self.owner._live_resizing = True
+
+    def windowDidEndLiveResize_(self, notification):
+        self.owner._live_resizing = False
+        # One rebuild at the final width.
+        self.windowDidResize_(notification)
+
     def windowDidResize_(self, notification):
+        live = getattr(self.owner, "_live_resizing", False)
         if notification.object() == self.owner.details:
             self.owner.layout_details()
-            self.owner.render_details_document()
+            if not live:
+                self.owner.render_details_document()
         elif notification.object() == getattr(self.owner, "settings", None):
             # Never rebuild the settings form here: that would discard typing.
             self.owner.layout_settings()
         elif notification.object() == getattr(self.owner, "history", None):
             # Safe to rebuild wholesale: the history window holds no typed input.
             self.owner.layout_history()
-            self.owner.render_history_document()
+            if not live:
+                self.owner.render_history_document()
 
     def tick_(self, timer):
         self.owner.drain_events()
@@ -598,8 +725,15 @@ class MonitorUI:
         self._history_table_sources = []
         self.timer = None
         self.closed = False
+        # Set between windowWillStartLiveResize_ and windowDidEndLiveResize_;
+        # resize ticks during a drag lay out geometry only.
+        self._live_resizing = False
         self.materials = []
         self.status_image = None
+        # tone -> NSImage. state_tone has only four discrete values, so the
+        # Pillow draw + PNG encode + NSImage decode runs at most four times
+        # instead of on every render.
+        self._icon_cache = {}
         self.provider_popup = None
         self.settings_provider = DEFAULT_PROVIDER
         self._settings_dirty = False
@@ -607,6 +741,8 @@ class MonitorUI:
         self.model_popup = None
         self.auto_popup = None
         self.subagent_popup = None
+        # field key -> ModelPopup wrapper; populated by build_settings.
+        self._model_popups = {}
         self.apply_claude_button = None
         self.inference_key = None
         self._applying_claude = False
@@ -785,14 +921,25 @@ class MonitorUI:
     def render(self, state):
         self.state = state
         if self.status_item is not None:
-            data = F.NSData.dataWithBytes_length_(*self.icon_data())
-            image = A.NSImage.alloc().initWithData_(data)
-            image.setSize_(F.NSMakeSize(20, 20))
-            self.status_image = image
-            self.status_item.button().setImage_(image)
+            tone = state_tone(state)
+            image = self._icon_cache.get(tone)
+            if image is None:
+                data = F.NSData.dataWithBytes_length_(*self.icon_data())
+                image = A.NSImage.alloc().initWithData_(data)
+                image.setSize_(F.NSMakeSize(20, 20))
+                self._icon_cache[tone] = image
+            if image is not self.status_image:
+                self.status_image = image
+                self.status_item.button().setImage_(image)
             self.status_item.button().setToolTip_(hover_summary(state))
-        self.render_card()
-        if self.details is not None:
+        # Hidden windows must not render: an orderOut_'d details window used
+        # to rebuild every NSTextField + measurement on each refresh, and the
+        # card repainted even while hidden. The show paths (show_details,
+        # show_history, sync_card_visibility) render explicitly before
+        # ordering front, so nothing stale is ever presented.
+        if self.card is not None and self.card.isVisible():
+            self.render_card()
+        if self.details is not None and self.details.isVisible():
             self.render_details()
         if self.history is not None and self.history.isVisible():
             self.render_history()
@@ -811,14 +958,11 @@ class MonitorUI:
         self.activate(self.details)
 
     def create_details_shell(self):
-        root = T.SurfaceView.alloc().initWithFrame_(self.details.contentView().bounds())
-        root.setAutoresizingMask_(A.NSViewWidthSizable | A.NSViewHeightSizable)
-        root.setWantsLayer_(True)
-        root.fill = "page"
-        self.details.setContentView_(root)
+        root, header, scroll, footer = window_scaffold(self.details, 480, 154, 58)
         self.details_root = root
-        self.details_header = FlippedView.alloc().initWithFrame_(rect(0, 0, 480, 154))
-        root.addSubview_(self.details_header)
+        self.details_header = header
+        self.details_scroll = scroll
+        self.details_footer = footer
         # Provider-dependent; filled in by render_details on every state change.
         self.header_title = text_label(self.details_header, "", T.PAGE_INSET, 14, 432,
                                        role="title", bold=True)
@@ -831,18 +975,6 @@ class MonitorUI:
         self.header_reason.setMaximumNumberOfLines_(2)
         self.header_reason.setLineBreakMode_(A.NSLineBreakByTruncatingTail)
         self.header_reason.setFrame_(rect(T.PAGE_INSET, 94, 480 - 2 * T.PAGE_INSET, 48))
-        self.details_scroll = A.NSScrollView.alloc().initWithFrame_(rect(0, 154, 480, 438))
-        self.details_scroll.setHasVerticalScroller_(True)
-        self.details_scroll.setBorderType_(A.NSNoBorder)
-        self.details_scroll.setDrawsBackground_(False)
-        root.addSubview_(self.details_scroll)
-        self.details_footer = T.SurfaceView.alloc().initWithFrame_(rect(0, 592, 480, 58))
-        self.details_footer.setWantsLayer_(True)
-        self.details_footer.fill = "page"
-        root.addSubview_(self.details_footer)
-        # The one line the shell still draws: a seam separating the fixed action
-        # bar from scrolling content, the way a sheet separates its buttons.
-        _stretch(T.surface(self.details_footer, 0, 0, 480, T.SEAM_HEIGHT, fill="seam"))
         self.primary_button = button(self.details_footer, "立即刷新", 18, 12, 124, self.actions, "refresh", key="\r")
         self.settings_button = button(self.details_footer, "设置…", 150, 12, 100, self.actions, "settings")
         self.close_button = button(self.details_footer, "关闭", 354, 12, 108, self.actions, "close-details", key="\x1b")
@@ -897,11 +1029,7 @@ class MonitorUI:
     def render_details_document(self):
         if not hasattr(self, "details_scroll"):
             return
-        origin = self.details_scroll.contentView().bounds().origin
-        viewport_width = self.details_scroll.contentView().bounds().size.width
-        content_width = max(1, viewport_width - 24)
-        width = max(1, content_width - 48)
-        content = FlippedView.alloc().initWithFrame_(rect(0, 0, content_width, 438))
+        content, origin, content_width, width = document_begin(self.details_scroll)
         y = 12
         snapshot = self.state.snapshot
         reason = self.header_reason.stringValue()
@@ -919,7 +1047,7 @@ class MonitorUI:
                     y += label(content, "暂无数据", T.PAGE_INSET + T.GUTTER, y, width,
                                role="body", color=SECONDARY) + 14
                 else:
-                    y += label(content, f"剩余 {window.remaining_percent:.1f}%",
+                    y += label(content, f"剩余 {display_remaining(window):.1f}%",
                                T.PAGE_INSET + T.GUTTER, y, width, role="metric", bold=True,
                                numeric=True) + 2
                     progress = A.NSProgressIndicator.alloc().initWithFrame_(
@@ -933,9 +1061,9 @@ class MonitorUI:
                     progress.setIndeterminate_(False)
                     progress.setMinValue_(0)
                     progress.setMaxValue_(100)
-                    progress.setDoubleValue_(max(0, min(100, window.remaining_percent)))
+                    progress.setDoubleValue_(display_remaining(window))
                     progress.setAccessibilityLabel_(f"{WINDOW_LABELS[kind]}剩余容量")
-                    progress.setAccessibilityValueDescription_(f"剩余 {window.remaining_percent:.1f}%")
+                    progress.setAccessibilityValueDescription_(f"剩余 {display_remaining(window):.1f}%")
                     content.addSubview_(progress)
                     y += 19
                     text = f"已用 {window.used_percent:.1f}%"
@@ -991,11 +1119,7 @@ class MonitorUI:
             card_surface(content, start_y, max(1, content_width - 24),
                          y - T.GUTTER - start_y, x=T.PAGE_INSET)
             y += T.GROUP_GAP
-        content.setFrameSize_(F.NSMakeSize(content_width, y + 12))
-        self.details_scroll.setDocumentView_(content)
-        max_y = max(0, content.frame().size.height - self.details_scroll.contentView().bounds().size.height)
-        self.details_scroll.contentView().scrollToPoint_(F.NSMakePoint(0, min(origin.y, max_y)))
-        self.details_scroll.reflectScrolledClipView_(self.details_scroll.contentView())
+        document_end(self.details_scroll, content, content_width, y, origin)
 
     # --- History window ------------------------------------------------------
 
@@ -1010,15 +1134,12 @@ class MonitorUI:
         self.activate(self.history)
 
     def create_history_shell(self):
-        root = T.SurfaceView.alloc().initWithFrame_(self.history.contentView().bounds())
-        root.setAutoresizingMask_(A.NSViewWidthSizable | A.NSViewHeightSizable)
-        root.setWantsLayer_(True)
-        root.fill = "page"
-        self.history.setContentView_(root)
+        root, header, scroll, footer = window_scaffold(
+            self.history, HISTORY_WIDTH, HISTORY_HEADER_HEIGHT, HISTORY_FOOTER_HEIGHT)
         self.history_root = root
-        self.history_header = FlippedView.alloc().initWithFrame_(
-            rect(0, 0, HISTORY_WIDTH, HISTORY_HEADER_HEIGHT))
-        root.addSubview_(self.history_header)
+        self.history_header = header
+        self.history_scroll = scroll
+        self.history_footer = footer
         self.history_title = text_label(
             self.history_header, HISTORY_WINDOW_TITLE, T.PAGE_INSET, 14,
             HISTORY_WIDTH - 2 * T.PAGE_INSET, role="title", bold=True)
@@ -1038,21 +1159,6 @@ class MonitorUI:
         self.history_range_control.setAction_("menuAction:")
         self.history_range_control.setIdentifier_("history-range")
         self.history_header.addSubview_(self.history_range_control)
-        self.history_scroll = A.NSScrollView.alloc().initWithFrame_(
-            rect(0, HISTORY_HEADER_HEIGHT, HISTORY_WIDTH,
-                 HISTORY_HEIGHT - HISTORY_HEADER_HEIGHT - HISTORY_FOOTER_HEIGHT))
-        self.history_scroll.setHasVerticalScroller_(True)
-        self.history_scroll.setBorderType_(A.NSNoBorder)
-        self.history_scroll.setDrawsBackground_(False)
-        root.addSubview_(self.history_scroll)
-        self.history_footer = T.SurfaceView.alloc().initWithFrame_(
-            rect(0, HISTORY_HEIGHT - HISTORY_FOOTER_HEIGHT, HISTORY_WIDTH,
-                 HISTORY_FOOTER_HEIGHT))
-        self.history_footer.setWantsLayer_(True)
-        self.history_footer.fill = "page"
-        root.addSubview_(self.history_footer)
-        _stretch(T.surface(self.history_footer, 0, 0, HISTORY_WIDTH,
-                           T.SEAM_HEIGHT, fill="seam"))
         self.history_refresh_button = button(
             self.history_footer, "立即刷新", 18, 12, 124, self.actions, "refresh", key="\r")
         self.history_close_button = button(
@@ -1104,11 +1210,7 @@ class MonitorUI:
     def render_history_document(self):
         if not hasattr(self, "history_scroll"):
             return
-        origin = self.history_scroll.contentView().bounds().origin
-        viewport_width = self.history_scroll.contentView().bounds().size.width
-        content_width = max(1, viewport_width - 24)
-        width = max(1, content_width - 48)
-        content = FlippedView.alloc().initWithFrame_(rect(0, 0, content_width, 438))
+        content, origin, content_width, width = document_begin(self.history_scroll)
         y = 12
         snapshot = self.state.snapshot
         # Deterministic between refreshes, honest right edge when stale.
@@ -1171,13 +1273,7 @@ class MonitorUI:
                 card_surface(content, start_y, max(1, content_width - 24),
                              y - start_y - 4, x=T.PAGE_INSET)
                 y += 6
-        content.setFrameSize_(F.NSMakeSize(content_width, y + 12))
-        self.history_scroll.setDocumentView_(content)
-        max_y = max(0, content.frame().size.height
-                    - self.history_scroll.contentView().bounds().size.height)
-        self.history_scroll.contentView().scrollToPoint_(
-            F.NSMakePoint(0, min(origin.y, max_y)))
-        self.history_scroll.reflectScrolledClipView_(self.history_scroll.contentView())
+        document_end(self.history_scroll, content, content_width, y, origin)
 
     def _history_table(self, content, geometry, kind, y, width):
         """The chart's table twin: every bucketed sample, newest first, so no
@@ -1368,18 +1464,17 @@ class MonitorUI:
 
     def sync_card_visibility(self):
         if self.preferences.desktop_mode:
-            level = Quartz.CGWindowLevelForKey(Quartz.kCGDesktopIconWindowLevelKey) + 1
-            behavior = (A.NSWindowCollectionBehaviorCanJoinAllSpaces
-                        | A.NSWindowCollectionBehaviorStationary
-                        | A.NSWindowCollectionBehaviorIgnoresCycle
-                        | A.NSWindowCollectionBehaviorFullScreenNone)
+            level = DESKTOP_CARD_LEVEL
+            behavior = DESKTOP_CARD_BEHAVIOR
         else:
             level = A.NSFloatingWindowLevel if self.preferences.topmost else A.NSNormalWindowLevel
-            behavior = A.NSWindowCollectionBehaviorMoveToActiveSpace
+            behavior = FLOATING_CARD_BEHAVIOR
         self.card.setLevel_(level)
         self.card.setCollectionBehavior_(behavior)
         if self.preferences.visible:
             self.card.orderFrontRegardless()
+            # Catch up on any state published while the card was hidden.
+            self.render_card()
         else:
             self.card.orderOut_(None)
 
@@ -1547,6 +1642,11 @@ class MonitorUI:
         status = self.notifier.authorization_status()
         if status == "authorized":
             return "系统通知已授权。", SECONDARY
+        if getattr(self.notifier, "legacy_dead", False):
+            # The compatibility fallback was removed by the system; without it
+            # a denied/unavailable UN path cannot deliver at all. Do not fall
+            # through to the "not packaged as .app" copy, which would mislead.
+            return "系统通知组件不可用：告警可能无法送达。", T.tone("warning")
         if status == "legacy":
             return "系统通知可用（兼容模式）。", SECONDARY
         if status == "denied":
@@ -1574,6 +1674,135 @@ class MonitorUI:
             body, text, T.PAGE_INSET, y, field_width, 12, color=color))
         self.alert_status_label.setAccessibilityLabel_("系统通知状态")
         y += self.alert_status_label.frame().size.height + T.ROW_GAP
+        return end_group(body, card_start, y, width)
+
+    def _build_credentials_group(self, body, y, field_width, width, spec, region, interval):
+        """The monitor-credentials group as its own builder (see _build_alert_group)."""
+        y = group_title(body, f"连接{spec.label}", y, field_width,
+                        spec.credential_note.format(store=self.storage.credential_store_name))
+        card_start = y
+        y += T.GUTTER
+        self.help_expanded = False
+        self.help_button = _pin_left(button(body, "凭据说明", T.PAGE_INSET, y, 116,
+                                            self.actions, "credential-help",
+                                            bezel="recessed", height=22))
+        self.help_button.setImage_(A.NSImage.imageWithSystemSymbolName_accessibilityDescription_("chevron.right", None))
+        self.help_button.setImagePosition_(A.NSImageLeft)
+        self.help_button.setButtonType_(A.NSButtonTypeOnOff)
+        self.help_button.setAccessibilityLabel_("展开凭据说明")
+        y += 22 + T.ROW_GAP
+        self.fields = {}
+        self.field_wells = {}
+        ak_label = spec.access_key_label
+        sk_label = spec.secret_key_label
+        for key, title, value, secure in (
+            ("ak", ak_label, self.existing.access_key_id if self.existing else "", False),
+            ("sk", f"{sk_label}（已保存，留空保持不变）" if self.existing else f"{sk_label}（必填）", "", True),
+            ("region", "Region", region, False),
+            ("interval", "刷新间隔（分钟，5–1440）", interval, False),
+        ):
+            y, self.fields[key], self.field_wells[key] = form_row(
+                body, title, value, secure, y, field_width)
+            y += T.ROW_GAP
+        return end_group(body, card_start, y, width)
+
+    def _build_claude_group(self, body, y, field_width, width, provider, spec,
+                            claude_model, claude_custom, claude_base_url,
+                            claude_auto_model, claude_auto_custom,
+                            claude_subagent_model, claude_subagent_custom):
+        """The Claude Code hookup group as its own builder."""
+        y = group_title(body, "Claude Code 接入", y, field_width,
+                        "选择模型后点击下方按钮，把服务商接入信息写入 Claude Code 本地配置。")
+        card_start = y
+        y += T.GUTTER
+        # The effective catalogue is the static list merged with any cached live
+        # models, so a plan's newly shipped models appear without a hand edit.
+        options = self._effective_claude_options(provider)
+        self._claude_options = options
+        known = [option.id for option in options]
+        # Refresh row: a manual trigger plus live status. Auto-fetch also runs on
+        # open / provider switch, but the button lets the user force a re-pull
+        # (e.g. right after the vendor ships a model) without reopening the dialog.
+        self.model_refresh_button = _pin_left(button(
+            body, "刷新模型列表", T.PAGE_INSET, y, 130,
+            self.actions, "refresh-models", bezel="recessed", height=22))
+        self.model_refresh_button.setAccessibilityLabel_("在线刷新模型列表")
+        status_text, status_tone = self._catalog_status_for(provider)
+        status_color = SECONDARY if status_tone == "neutral" else T.tone(status_tone)
+        self.model_status_label = _stretch(text_label(
+            body, status_text, T.PAGE_INSET + 140, y + 3, field_width - 140, 12,
+            color=status_color))
+        self.model_status_label.setAccessibilityLabel_("模型列表状态")
+        y += 22 + T.ROW_GAP
+        # Build keeps the original main-popup convention: an id outside the
+        # catalogue (or empty) lands on the custom marker, not on item 0.
+        index = model_popup_index(known, claude_model, "", empty_index=len(known))
+        y, model_popup = popup_row(
+            body, "模型", y, field_width, ModelPopup.titles(options), index)
+        model_popup.setAccessibilityLabel_("模型")
+        self.model_popup = model_popup
+        self._model_popups["model"] = ModelPopup(model_popup, "model")
+        y += T.ROW_GAP
+        y, self.fields["model"], self.field_wells["model"] = form_row(
+            body, "自定义模型 ID（在此填写时优先于上方选择）", claude_custom, False,
+            y, field_width)
+        y += T.ROW_GAP
+        # Optional auto mode classifier. "不设置" leaves CLAUDE_CODE_AUTO_MODE_MODEL
+        # entirely alone -- not written, not backfilled, not removed.
+        auto_index = model_popup_index(known, claude_auto_model, claude_auto_custom, offset=1)
+        y, auto_popup = popup_row(
+            body, "Auto mode 分类模型（可选）", y, field_width,
+            ModelPopup.titles(options, AUTO_MODEL_PLACEHOLDER), auto_index)
+        auto_popup.setAccessibilityLabel_("Auto mode 分类模型")
+        self.auto_popup = auto_popup
+        self._model_popups["auto_model"] = ModelPopup(
+            auto_popup, "auto_model", offset=1, placeholder=AUTO_MODEL_PLACEHOLDER)
+        y += T.ROW_GAP
+        y += stretch_label(
+            body,
+            "Auto mode 用该模型判断每条命令是否安全。建议选轻量模型：分类模型偏重时判断可能超时，工具调用会被拦下重试。",
+            y, field_width, 12, color=T.tone("info")) + T.ROW_GAP
+        y, self.fields["auto_model"], self.field_wells["auto_model"] = form_row(
+            body, "Auto mode 自定义模型 ID（优先于上方选择；留空且选「不设置」时不写入）",
+            claude_auto_custom, False, y, field_width)
+        y += T.ROW_GAP
+        # Optional explicit subagent model. Unlike auto mode, "default" keeps the
+        # tier rule: an existing CLAUDE_CODE_SUBAGENT_MODEL is preserved and an
+        # absent one is backfilled with the main model; a choice overrides both.
+        subagent_index = model_popup_index(
+            known, claude_subagent_model, claude_subagent_custom, offset=1)
+        y, subagent_popup = popup_row(
+            body, "Subagent 模型（可选）", y, field_width,
+            ModelPopup.titles(options, SUBAGENT_MODEL_PLACEHOLDER), subagent_index)
+        subagent_popup.setAccessibilityLabel_("Subagent 模型")
+        self.subagent_popup = subagent_popup
+        self._model_popups["subagent_model"] = ModelPopup(
+            subagent_popup, "subagent_model", offset=1,
+            placeholder=SUBAGENT_MODEL_PLACEHOLDER)
+        y += T.ROW_GAP
+        y, self.fields["subagent_model"], self.field_wells["subagent_model"] = form_row(
+            body, "Subagent 自定义模型 ID（优先于上方选择；留空且选「默认」时沿用现有规则）",
+            claude_subagent_custom, False, y, field_width)
+        y += T.ROW_GAP
+        # A remembered key changes the label but is never echoed into the field.
+        key_title = ("推理 API Key（已保存，留空保持不变）" if self.stored_inference_key(provider)
+                     else f"推理 API Key（必填{spec.inference_key_hint}）")
+        for key, title, value, secure in (
+            ("base_url", "Anthropic Base URL（留空使用服务商默认地址）", claude_base_url, False),
+            ("api_key", key_title, "", True),
+        ):
+            y, self.fields[key], self.field_wells[key] = form_row(
+                body, title, value, secure, y, field_width)
+            y += T.ROW_GAP
+        if not spec.claude_base_url_verified:
+            y += stretch_label(body,
+                               "⚠ 该服务商的 Anthropic 兼容端点未经验证，请填写服务商提供的地址并自行确认。",
+                               y, field_width, 12,
+                               color=T.tone("warning")) + T.ROW_GAP
+        self.apply_claude_button = _pin_left(button(body, "写入 Claude 配置", T.PAGE_INSET, y, 160,
+                                                    self.actions, "apply-claude"))
+        self.apply_claude_button.setAccessibilityLabel_("写入 Claude Code 配置")
+        y += T.BUTTON_HEIGHT + T.ROW_GAP
         return end_group(body, card_start, y, width)
 
     def build_settings(self, provider, region, interval, claude_model="",
@@ -1665,142 +1894,18 @@ class MonitorUI:
         root.addSubview_(self.settings_footer)
 
         y = T.ROW_GAP
-        # --- Group 1: monitor credentials -------------------------------------
-        # Two cards instead of one long flat column: the eye needs the surfaces
-        # to know where "connect to the provider" stops and "wire up Claude
-        # Code" starts, which the 22pt headings used to try to say instead.
-        y = group_title(body, f"连接{spec.label}", y, field_width,
-                        spec.credential_note.format(store=self.storage.credential_store_name))
-        card_start = y
-        y += T.GUTTER
-        self.help_expanded = False
-        self.help_button = _pin_left(button(body, "凭据说明", T.PAGE_INSET, y, 116,
-                                            self.actions, "credential-help",
-                                            bezel="recessed", height=22))
-        self.help_button.setImage_(A.NSImage.imageWithSystemSymbolName_accessibilityDescription_("chevron.right", None))
-        self.help_button.setImagePosition_(A.NSImageLeft)
-        self.help_button.setButtonType_(A.NSButtonTypeOnOff)
-        self.help_button.setAccessibilityLabel_("展开凭据说明")
-        y += 22 + T.ROW_GAP
-        self.fields = {}
-        self.field_wells = {}
-        ak_label = spec.access_key_label
-        sk_label = spec.secret_key_label
-        for key, title, value, secure in (
-            ("ak", ak_label, self.existing.access_key_id if self.existing else "", False),
-            ("sk", f"{sk_label}（已保存，留空保持不变）" if self.existing else f"{sk_label}（必填）", "", True),
-            ("region", "Region", region, False),
-            ("interval", "刷新间隔（分钟，5–1440）", interval, False),
-        ):
-            y, self.fields[key], self.field_wells[key] = form_row(
-                body, title, value, secure, y, field_width)
-            y += T.ROW_GAP
-        y = end_group(body, card_start, y, width)
-
-        # --- Group 2: low-quota alerts ----------------------------------------
+        # Group cards instead of one long flat column: the eye needs the
+        # surfaces to know where "connect to the provider" stops and "wire up
+        # Claude Code" starts. Each group is its own builder.
+        y = self._build_credentials_group(body, y, field_width, width, spec, region, interval)
         y = self._build_alert_group(body, y, field_width, width,
                                     alert_enabled, alert_threshold, alert_reset)
 
-        # --- Group 3: Claude Code hookup --------------------------------------
-        y = group_title(body, "Claude Code 接入", y, field_width,
-                        "选择模型后点击下方按钮，把服务商接入信息写入 Claude Code 本地配置。")
-        card_start = y
-        y += T.GUTTER
-        # The effective catalogue is the static list merged with any cached live
-        # models, so a plan's newly shipped models appear without a hand edit.
-        options = self._effective_claude_options(provider)
-        self._claude_options = options
-        known = [option.id for option in options]
-        # Refresh row: a manual trigger plus live status. Auto-fetch also runs on
-        # open / provider switch, but the button lets the user force a re-pull
-        # (e.g. right after the vendor ships a model) without reopening the dialog.
-        self.model_refresh_button = _pin_left(button(
-            body, "刷新模型列表", T.PAGE_INSET, y, 130,
-            self.actions, "refresh-models", bezel="recessed", height=22))
-        self.model_refresh_button.setAccessibilityLabel_("在线刷新模型列表")
-        status_text, status_tone = self._catalog_status_for(provider)
-        status_color = SECONDARY if status_tone == "neutral" else T.tone(status_tone)
-        self.model_status_label = _stretch(text_label(
-            body, status_text, T.PAGE_INSET + 140, y + 3, field_width - 140, 12,
-            color=status_color))
-        self.model_status_label.setAccessibilityLabel_("模型列表状态")
-        y += 22 + T.ROW_GAP
-        index = known.index(claude_model) if claude_model in known else len(known)
-        y, model_popup = popup_row(
-            body, "模型", y, field_width,
-            [option.label for option in options] + ["自定义模型 ID…"], index)
-        model_popup.setAccessibilityLabel_("模型")
-        self.model_popup = model_popup
-        y += T.ROW_GAP
-        y, self.fields["model"], self.field_wells["model"] = form_row(
-            body, "自定义模型 ID（在此填写时优先于上方选择）", claude_custom, False,
-            y, field_width)
-        y += T.ROW_GAP
-        # Optional auto mode classifier. "不设置" leaves CLAUDE_CODE_AUTO_MODE_MODEL
-        # entirely alone -- not written, not backfilled, not removed.
-        auto_labels = (["不设置（保持现状）"]
-                       + [option.label for option in options]
-                       + ["自定义模型 ID…"])
-        if claude_auto_custom:
-            auto_index = len(auto_labels) - 1
-        elif claude_auto_model in known:
-            auto_index = 1 + known.index(claude_auto_model)
-        else:
-            auto_index = 0
-        y, auto_popup = popup_row(body, "Auto mode 分类模型（可选）", y, field_width,
-                                  auto_labels, auto_index)
-        auto_popup.setAccessibilityLabel_("Auto mode 分类模型")
-        self.auto_popup = auto_popup
-        y += T.ROW_GAP
-        y += stretch_label(
-            body,
-            "Auto mode 用该模型判断每条命令是否安全。建议选轻量模型：分类模型偏重时判断可能超时，工具调用会被拦下重试。",
-            y, field_width, 12, color=T.tone("info")) + T.ROW_GAP
-        y, self.fields["auto_model"], self.field_wells["auto_model"] = form_row(
-            body, "Auto mode 自定义模型 ID（优先于上方选择；留空且选「不设置」时不写入）",
-            claude_auto_custom, False, y, field_width)
-        y += T.ROW_GAP
-        # Optional explicit subagent model. Unlike auto mode, "default" keeps the
-        # tier rule: an existing CLAUDE_CODE_SUBAGENT_MODEL is preserved and an
-        # absent one is backfilled with the main model; a choice overrides both.
-        subagent_labels = (["默认（保持现有值；为空时填入主模型）"]
-                           + [option.label for option in options]
-                           + ["自定义模型 ID…"])
-        if claude_subagent_custom:
-            subagent_index = len(subagent_labels) - 1
-        elif claude_subagent_model in known:
-            subagent_index = 1 + known.index(claude_subagent_model)
-        else:
-            subagent_index = 0
-        y, subagent_popup = popup_row(body, "Subagent 模型（可选）", y, field_width,
-                                      subagent_labels, subagent_index)
-        subagent_popup.setAccessibilityLabel_("Subagent 模型")
-        self.subagent_popup = subagent_popup
-        y += T.ROW_GAP
-        y, self.fields["subagent_model"], self.field_wells["subagent_model"] = form_row(
-            body, "Subagent 自定义模型 ID（优先于上方选择；留空且选「默认」时沿用现有规则）",
-            claude_subagent_custom, False, y, field_width)
-        y += T.ROW_GAP
-        # A remembered key changes the label but is never echoed into the field.
-        key_title = ("推理 API Key（已保存，留空保持不变）" if self.stored_inference_key(provider)
-                     else f"推理 API Key（必填{spec.inference_key_hint}）")
-        for key, title, value, secure in (
-            ("base_url", "Anthropic Base URL（留空使用服务商默认地址）", claude_base_url, False),
-            ("api_key", key_title, "", True),
-        ):
-            y, self.fields[key], self.field_wells[key] = form_row(
-                body, title, value, secure, y, field_width)
-            y += T.ROW_GAP
-        if not spec.claude_base_url_verified:
-            y += stretch_label(body,
-                               "⚠ 该服务商的 Anthropic 兼容端点未经验证，请填写服务商提供的地址并自行确认。",
-                               y, field_width, 12,
-                               color=T.tone("warning")) + T.ROW_GAP
-        self.apply_claude_button = _pin_left(button(body, "写入 Claude 配置", T.PAGE_INSET, y, 160,
-                                                    self.actions, "apply-claude"))
-        self.apply_claude_button.setAccessibilityLabel_("写入 Claude Code 配置")
-        y += T.BUTTON_HEIGHT + T.ROW_GAP
-        y = end_group(body, card_start, y, width)
+        y = self._build_claude_group(
+            body, y, field_width, width, provider, spec,
+            claude_model, claude_custom, claude_base_url,
+            claude_auto_model, claude_auto_custom,
+            claude_subagent_model, claude_subagent_custom)
 
         # The credential walkthrough stays at the document's end, so expanding it
         # only grows the scrollable height -- no window resize and no buttons to
@@ -1817,16 +1922,16 @@ class MonitorUI:
         # Explicit order: the Claude fields sit between the monitor settings and
         # the help toggle, and the write button carries no key equivalent so an
         # accidental Enter can never trigger an external config change.
-        ordered = [popup, self.fields["ak"], self.fields["sk"], self.fields["region"],
+        ordered = [self.provider_popup, self.fields["ak"], self.fields["sk"], self.fields["region"],
                    self.fields["interval"],
                    self.alert_enabled_button, self.fields["alert_threshold"],
                    self.alert_reset_button, self.model_refresh_button,
-                   model_popup, self.fields["model"],
-                   auto_popup, self.fields["auto_model"],
-                   subagent_popup, self.fields["subagent_model"],
+                   self.model_popup, self.fields["model"],
+                   self.auto_popup, self.fields["auto_model"],
+                   self.subagent_popup, self.fields["subagent_model"],
                    self.fields["base_url"], self.fields["api_key"], self.help_button,
                    self.cancel_button, self.apply_claude_button, self.save_button]
-        for current, following in zip(ordered, ordered[1:] + [popup]):
+        for current, following in zip(ordered, ordered[1:] + [self.provider_popup]):
             current.setNextKeyView_(following)
         self._settings_body_height = y
         self.settings.setContentMinSize_(F.NSMakeSize(SETTINGS_WIDTH, SETTINGS_MIN_HEIGHT))
@@ -1937,19 +2042,13 @@ class MonitorUI:
         prefs deliberately exclude the inference key — that is vault-only.
         """
         known = [option.id for option in self._claude_options]
-        index = self.model_popup.indexOfSelectedItem()
-        popup = known[index] if 0 <= index < len(known) else ""
+        # Placeholder and custom-marker selections read as ""; the custom text
+        # field wins over the popup (see ClaudeProviderPrefs below).
+        popup = self._model_popups["model"].value(known)
         custom = str(self.fields["model"].stringValue()).strip()
-        # The auto popup is shifted by the leading "不设置" entry; the last entry
-        # is the custom marker, whose value is read from the text field instead.
-        auto_index = self.auto_popup.indexOfSelectedItem()
-        auto_popup = (known[auto_index - 1]
-                      if 1 <= auto_index <= len(known) else "")
+        auto_popup = self._model_popups["auto_model"].value(known)
         auto_custom = str(self.fields["auto_model"].stringValue()).strip()
-        # The subagent popup shares the auto popup's leading-entry offset.
-        subagent_index = self.subagent_popup.indexOfSelectedItem()
-        subagent_popup = (known[subagent_index - 1]
-                          if 1 <= subagent_index <= len(known) else "")
+        subagent_popup = self._model_popups["subagent_model"].value(known)
         subagent_custom = str(self.fields["subagent_model"].stringValue()).strip()
         base_url = str(self.fields["base_url"].stringValue()).strip()
         key = str(self.fields["api_key"].stringValue())
@@ -2082,45 +2181,16 @@ class MonitorUI:
                 or self.subagent_popup is None):
             return
         popup, custom, _base, _key, prefs = self.claude_form_values()
-        current_auto = prefs.auto_mode_custom_model or prefs.auto_mode_model
-        current_subagent = prefs.subagent_custom_model or prefs.subagent_model
         known = [option.id for option in options]
-        labels = [option.label for option in options]
-        self.model_popup.removeAllItems()
-        self.model_popup.addItemsWithTitles_(labels + ["自定义模型 ID…"])
-        if custom:
-            self.model_popup.selectItemAtIndex_(len(known))
-        elif popup in known:
-            self.model_popup.selectItemAtIndex_(known.index(popup))
-        elif popup:
-            self.fields["model"].setStringValue_(popup)
-            self.model_popup.selectItemAtIndex_(len(known))
-        else:
-            self.model_popup.selectItemAtIndex_(0)
-        self.auto_popup.removeAllItems()
-        self.auto_popup.addItemsWithTitles_(
-            ["不设置（保持现状）"] + labels + ["自定义模型 ID…"])
-        if prefs.auto_mode_custom_model:
-            self.auto_popup.selectItemAtIndex_(len(known) + 1)
-        elif current_auto in known:
-            self.auto_popup.selectItemAtIndex_(1 + known.index(current_auto))
-        elif current_auto:
-            self.fields["auto_model"].setStringValue_(current_auto)
-            self.auto_popup.selectItemAtIndex_(len(known) + 1)
-        else:
-            self.auto_popup.selectItemAtIndex_(0)
-        self.subagent_popup.removeAllItems()
-        self.subagent_popup.addItemsWithTitles_(
-            ["默认（保持现有值；为空时填入主模型）"] + labels + ["自定义模型 ID…"])
-        if prefs.subagent_custom_model:
-            self.subagent_popup.selectItemAtIndex_(len(known) + 1)
-        elif current_subagent in known:
-            self.subagent_popup.selectItemAtIndex_(1 + known.index(current_subagent))
-        elif current_subagent:
-            self.fields["subagent_model"].setStringValue_(current_subagent)
-            self.subagent_popup.selectItemAtIndex_(len(known) + 1)
-        else:
-            self.subagent_popup.selectItemAtIndex_(0)
+        self._model_popups["model"].repopulate(options, known, popup, custom, self.fields)
+        self._model_popups["auto_model"].repopulate(
+            options, known,
+            prefs.auto_mode_custom_model or prefs.auto_mode_model,
+            prefs.auto_mode_custom_model, self.fields)
+        self._model_popups["subagent_model"].repopulate(
+            options, known,
+            prefs.subagent_custom_model or prefs.subagent_model,
+            prefs.subagent_custom_model, self.fields)
         self._claude_options = options
 
     def show_form_message(self, text, tone="error"):

@@ -8,26 +8,17 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from urllib.parse import quote
 
 from .models import ConfigurationError
+from .signing_common import EMPTY_BODY_SHA256, SignedRequest, sha256_hex
 
 OPENAPI_HOST = "open.volcengineapi.com"
 API_VERSION = "2024-01-01"
 SERVICE = "ark"
 CONTENT_TYPE = "application/json; charset=utf-8"
 SIGNED_HEADERS = "host;x-date;x-content-sha256;content-type"
-EMPTY_BODY_SHA256 = hashlib.sha256(b"").hexdigest()
-
-
-@dataclass(frozen=True)
-class SignedRequest:
-    method: str
-    url: str
-    headers: dict[str, str]
-    body: bytes
 
 
 def canonical_query(action: str, region: str) -> str:
@@ -76,7 +67,7 @@ def sign_request(
     credential_scope = f"{short_date}/{region}/{SERVICE}/request"
     string_to_sign = (
         f"HMAC-SHA256\n{x_date}\n{credential_scope}\n"
-        f"{_sha256_hex(canonical_request.encode('utf-8'))}"
+        f"{sha256_hex(canonical_request.encode('utf-8'))}"
     )
 
     k_date = _hmac(secret_access_key.encode("utf-8"), short_date.encode("ascii"))
@@ -108,10 +99,6 @@ def sign_request(
 
 def _uri_encode(value: str) -> str:
     return quote(value, safe="-_.~", encoding="utf-8", errors="strict")
-
-
-def _sha256_hex(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
 
 
 def _hmac(key: bytes, value: bytes) -> bytes:

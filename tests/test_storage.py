@@ -5,6 +5,7 @@ import pytest
 
 from token_plan_monitor.history import HISTORY_MAX_ROWS, HistoryEntry, account_fingerprint
 from token_plan_monitor.models import (
+    DEFAULT_PROVIDER,
     AlertSettings,
     CacheError,
     ClaudeProviderPrefs,
@@ -15,12 +16,14 @@ from token_plan_monitor.models import (
     UsageSnapshot,
     WidgetPreferences,
 )
-from token_plan_monitor.storage import (
-    AK_USERNAME,
-    KEYRING_SERVICE,
-    SK_USERNAME,
-    Storage,
-)
+from token_plan_monitor.providers import get_provider
+from token_plan_monitor.storage import KEYRING_SERVICE, Storage
+
+# Vault entry names of the default provider, derived here rather than exported
+# from storage: production code addresses them via the provider spec only.
+_DEFAULT_SPEC = get_provider(DEFAULT_PROVIDER)
+AK_USERNAME = _DEFAULT_SPEC.access_key_username
+SK_USERNAME = _DEFAULT_SPEC.secret_key_username
 
 
 class FakeKeyring:
@@ -163,6 +166,45 @@ def test_malformed_alert_section_falls_back_field_by_field(tmp_path):
     loaded = storage.load_settings()
     assert loaded.refresh_minutes == 30
     assert loaded.alert == AlertSettings()
+
+
+def test_one_bad_field_defaults_alone_and_keeps_the_rest(tmp_path):
+    # Review P0-5: a single invalid field used to reset provider, region,
+    # refresh and alerts together, silently. Each bad field now defaults on
+    # its own while every good field survives.
+    storage = Storage(tmp_path, FakeKeyring())
+    good = {"provider": "bailian", "region": "cn-beijing", "refresh_minutes": 30}
+
+    def load_with(**overrides):
+        storage.config_path.write_text(
+            json.dumps({"schema_version": 1, "settings": {**good, **overrides}}),
+            encoding="utf-8",
+        )
+        return storage.load_settings()
+
+    loaded = load_with(refresh_minutes="15")
+    assert loaded.provider == "bailian"
+    assert loaded.region == "cn-beijing"
+    assert loaded.refresh_minutes == 15
+    assert load_with(refresh_minutes=1).refresh_minutes == 15
+    assert load_with(refresh_minutes=True).refresh_minutes == 15
+
+    loaded = load_with(region="cn-beijing@evil.example.com/")
+    assert loaded.region == "cn-beijing"
+    assert loaded.provider == "bailian"
+    assert loaded.refresh_minutes == 30
+    # Well-formed but outside bailian's region allowlist.
+    assert load_with(region="cn-shanghai").region == "cn-beijing"
+
+    loaded = load_with(provider="openai")
+    assert loaded.provider == "volcengine"
+    assert loaded.refresh_minutes == 30
+
+    # A wholly non-object settings section still defaults the document.
+    storage.config_path.write_text(
+        json.dumps({"schema_version": 1, "settings": "bad"}), encoding="utf-8"
+    )
+    assert storage.load_settings() == Settings()
 
 
 def test_alert_settings_constructor_rejects_invalid_values():
@@ -428,6 +470,54 @@ def test_history_rotation_drops_rows_past_the_age_cap(tmp_path, monkeypatch):
     kept = storage.load_history("volcengine")
     assert ancient not in kept
     assert len(kept) == 3
+
+
+def test_history_age_cap_fires_without_the_row_cap(tmp_path):
+    # Review P2-13: low-frequency history never reached the 10k row cap, so
+    # the 90-day prune never ran and stale rows survived forever. The age cap
+    # must fire on every append, far below the row cap.
+    storage = Storage(tmp_path, FakeKeyring())
+    path = storage.history_path("volcengine")
+    path.parent.mkdir(parents=True)
+    stale = [
+        history_entry(minutes=-days * 24 * 60, percent=20.0 + days % 7)
+        for days in range(1000, 90, -1)
+    ]
+    recent = [history_entry(minutes=-days * 24 * 60, percent=30.0) for days in range(80, 0, -1)]
+    storage._write_history(path, stale + recent)
+
+    kept = storage.append_history(history_entry(), "volcengine")
+
+    assert len(kept) == 81  # 80 recent + the new row; 910 stale rows dropped
+    assert len(storage.load_history("volcengine", limit=HISTORY_MAX_ROWS)) == 81
+    assert len(path.read_text(encoding="utf-8").splitlines()) == 81
+
+
+def test_history_deduped_append_still_prunes_stale_rows(tmp_path):
+    # Even a suppressed (unchanged-values) append must enforce the age cap.
+    storage = Storage(tmp_path, FakeKeyring())
+    path = storage.history_path("volcengine")
+    path.parent.mkdir(parents=True)
+    ancient = history_entry(minutes=-100 * 24 * 60)
+    current = history_entry()
+    storage._write_history(path, [ancient, current])
+
+    kept = storage.append_history(history_entry(minutes=5), "volcengine")
+
+    assert kept == [current]  # deduped, yet the 100-day-old row is gone
+    assert storage.load_history("volcengine") == [current]
+
+
+def test_history_append_does_not_rewrite_when_nothing_is_pruned(tmp_path):
+    storage = Storage(tmp_path, FakeKeyring())
+    storage.append_history(history_entry(), "volcengine")
+    path = storage.history_path("volcengine")
+    before = path.read_bytes()
+    mtime = path.stat().st_mtime_ns
+    # Deduped and nothing stale: the file must be left byte-for-byte alone.
+    storage.append_history(history_entry(minutes=5), "volcengine")
+    assert path.read_bytes() == before
+    assert path.stat().st_mtime_ns == mtime
 
 
 def test_history_load_limit_defaults_below_the_retention_cap(tmp_path):

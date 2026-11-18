@@ -11,6 +11,8 @@ from token_plan_monitor.models import (
 from token_plan_monitor.presentation import (
     PLAN_LABELS,
     compact_remaining,
+    format_datetime,
+    history_context_line,
     hover_summary,
     menu_lines,
     state_tone,
@@ -49,6 +51,37 @@ def test_hover_is_concise_and_menu_has_all_three_windows():
     assert "每月：剩余 8.6% · 已用 91.4%" in lines
     assert "更新于" in lines[0]
     assert all("AFP" not in line for line in lines)
+
+
+def test_display_clamps_out_of_range_remaining_but_keeps_reported_used():
+    # Overage (used > quota) makes remaining negative; the UI must show 0.0%,
+    # while the model keeps the reported value for charts/alerts/trends.
+    state = sample_state()
+    over = replace(state.snapshot.windows[0], used_percent=103.2)
+    assert over.remaining_percent < 0
+    state = replace(state, snapshot=replace(state.snapshot, windows=(over,)))
+    assert compact_remaining(state, "five_hour") == "0.0%"
+    line = menu_lines(state)[1]
+    assert "剩余 0.0%" in line
+    assert "已用 103.2%" in line
+    negative = replace(state.snapshot.windows[0], used_percent=-5.0)
+    state = replace(state, snapshot=replace(state.snapshot, windows=(negative,)))
+    assert compact_remaining(state, "five_hour") == "100.0%"
+
+
+def test_history_context_line_labels_data_age_not_failed_attempt():
+    # A stale state keeps the previous snapshot: "更新于" must name the data's
+    # query time (like the tray menu), not the later failed attempt.
+    state = replace(
+        sample_state(),
+        status="stale",
+        last_attempt_at=datetime(2026, 11, 3, 10, 0, tzinfo=UTC),
+    )
+    line = history_context_line(state)
+    assert f"更新于 {format_datetime(state.snapshot.queried_at)}" in line
+    # Without a snapshot there is no data age: the attempt time is all there is.
+    bare = replace(state, snapshot=None)
+    assert f"更新于 {format_datetime(state.last_attempt_at)}" in history_context_line(bare)
 
 
 def test_missing_windows_and_empty_states_are_explicit():

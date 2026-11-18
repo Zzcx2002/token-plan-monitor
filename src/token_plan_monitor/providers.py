@@ -12,14 +12,13 @@ from typing import Any
 
 from .bailian import BailianClient
 from .models import (
-    DEFAULT_PROVIDER,
     PROVIDER_BAILIAN,
-    PROVIDER_IDS,
     PROVIDER_LABELS,
     PROVIDER_VOLCENGINE,
     ConfigurationError,
     Credentials,
     Settings,
+    validate_region,
 )
 from .volcengine import VolcengineClient
 
@@ -65,7 +64,16 @@ class ProviderSpec:
     def default_claude_base_url(self, region: str) -> str:
         if not self.claude_base_url_template:
             return ""
-        return self.claude_base_url_template.format(region=region or self.default_region)
+        # The region lands inside the URL's hostname, so it must pass the same
+        # validation as the apply path. This is a default-URL generator, not an
+        # input validator: an invalid region falls back to the provider default
+        # instead of raising, so a hostile form value can never move the host.
+        candidate = (region or "").strip() or self.default_region
+        try:
+            candidate = validate_region(self.id, candidate)
+        except ConfigurationError:
+            candidate = self.default_region
+        return self.claude_base_url_template.format(region=candidate)
 
 
 #: Token Plan supported text/multimodal chat models, transcribed from the
@@ -158,10 +166,6 @@ def get_provider(provider: str) -> ProviderSpec:
     return spec
 
 
-def default_region(provider: str) -> str:
-    return get_provider(provider).default_region
-
-
 def create_client(settings: Settings, credentials: Credentials) -> Any:
     """Build the quota client for `settings.provider`.
 
@@ -169,7 +173,3 @@ def create_client(settings: Settings, credentials: Credentials) -> Any:
     and its tests can inject a stub without knowing about providers.
     """
     return get_provider(settings.provider).client(settings, credentials)
-
-
-DEFAULT_PROVIDER_ID = DEFAULT_PROVIDER
-SUPPORTED_PROVIDER_IDS = PROVIDER_IDS

@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -65,21 +66,63 @@ def verify_binaries(app):
     print(f"Verified {count} arm64 binaries, deployment targets <= macOS 14")
 
 
+def _normalize(name):
+    return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
+# Build/test-time pins that never ship inside the app bundle.
+_NON_SHIPPING_PINS = {"altgraph", "iniconfig", "macholib", "modulegraph", "pytest"}
+
+
 def verify_resources(app):
+    """License completeness without hardcoded version-named filenames.
+
+    1) licenses/ is copied wholesale: every source file must be in the bundle
+       (a pin bump renames files; a fixed list would silently go stale).
+    2) Every shipping pinned dependency must have a version-named license
+       file, so a bump without a license rename fails the build.
+    3) The interpreter license must name the running Python exactly.
+    """
     resources = app / "Contents/Resources"
-    required = [
-        resources / "LICENSE",
-        resources / "THIRD_PARTY_NOTICES.md",
-        resources / "licenses/Python-3.13.9.txt",
-        resources / "licenses/Certifi-2026.10.23.txt",
-        resources / "licenses/Pillow-12.3.0-and-native-libraries.txt",
-        resources / "licenses/PyObjC-12.2.2.txt",
-        resources / "licenses/OpenSSL-3.0.18.txt",
-        resources / "licenses/ZlibNG-2.3.3.md",
-    ]
-    missing = [str(path.relative_to(app)) for path in required if not path.is_file()]
+    for name in ("LICENSE", "THIRD_PARTY_NOTICES.md"):
+        if not (resources / name).is_file():
+            raise RuntimeError(f"Missing bundled resource: {name}")
+    source_licenses = ROOT / "licenses"
+    bundled = resources / "licenses"
+    expected = {
+        path.relative_to(source_licenses)
+        for path in source_licenses.rglob("*") if path.is_file()
+    }
+    actual = {
+        path.relative_to(bundled)
+        for path in bundled.rglob("*") if path.is_file()
+    } if bundled.is_dir() else set()
+    missing = sorted(str(path) for path in expected - actual)
     if missing:
         raise RuntimeError(f"Missing bundled license resources: {', '.join(missing)}")
+
+    license_names = {_normalize(path.name) for path in expected}
+    uncovered = []
+    for line in (ROOT / "requirements-macos-build.txt").read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "==" not in line:
+            continue
+        package = line.split("==")[0].strip()
+        if package.lower() in _NON_SHIPPING_PINS:
+            continue
+        # One PyObjC license covers the whole framework family.
+        prefix = _normalize(package)
+        if prefix.startswith("pyobjc"):
+            prefix = "pyobjc"
+        if not any(name.startswith(prefix) for name in license_names):
+            uncovered.append(package)
+    if uncovered:
+        raise RuntimeError(
+            f"Pinned dependencies without a license file: {', '.join(uncovered)}")
+
+    interpreter = platform.python_version()
+    if not any(path.name.startswith(f"Python-{interpreter}") for path in expected):
+        raise RuntimeError(f"No license file for the running Python {interpreter}")
     print("Verified project and third-party license resources")
 
 

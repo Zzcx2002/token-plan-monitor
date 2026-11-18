@@ -13,11 +13,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 from .models import CacheError, ConfigurationError
 
@@ -113,6 +114,26 @@ def is_absent(value: Any) -> bool:
     return isinstance(value, str) and not value.strip()
 
 
+def url_transport_error(parsed: SplitResult) -> str | None:
+    """Transport checks for any URL that will carry the inference key.
+
+    Returns an error message, or None when the URL is https (local debug hosts
+    excepted) and carries no userinfo. Shared by the apply path
+    (`normalize_base_url`) and the model-catalog fetch so both enforce the same
+    policy: the key never leaves over plaintext HTTP or to a host smuggled in
+    through userinfo.
+    """
+    if parsed.scheme != "https" and parsed.hostname not in ("localhost", "127.0.0.1"):
+        return "Base URL 必须使用 https（本机调试可用 http://localhost）"
+    if "@" in parsed.netloc:
+        # Everything before the @ is userinfo, not the host. A URL like
+        # https://token-plan.cn-beijing@evil.example.com/... reads as a template
+        # instance but sends the key to evil.example.com -- and a path-based
+        # pass-through would hand it back untouched because its path looks right.
+        return "Base URL 不能包含用户名或密码（形如 https://user:pass@host）"
+    return None
+
+
 def normalize_base_url(raw: str) -> tuple[str, str | None]:
     """Return (anthropic base URL, value it was rewritten from).
 
@@ -127,16 +148,11 @@ def normalize_base_url(raw: str) -> tuple[str, str | None]:
     except ValueError as exc:
         raise ConfigurationError("Base URL 格式无效") from exc
 
-    if parsed.scheme != "https" and parsed.hostname not in ("localhost", "127.0.0.1"):
-        raise ConfigurationError("Base URL 必须使用 https（本机调试可用 http://localhost）")
+    transport_error = url_transport_error(parsed)
+    if transport_error is not None:
+        raise ConfigurationError(transport_error)
     if not parsed.netloc:
         raise ConfigurationError("Base URL 缺少主机名")
-    if "@" in parsed.netloc:
-        # Everything before the @ is userinfo, not the host. A URL like
-        # https://token-plan.cn-beijing@evil.example.com/... reads as a template
-        # instance but sends the key to evil.example.com -- and the pass-through
-        # below would hand it back untouched because its path looks right.
-        raise ConfigurationError("Base URL 不能包含用户名或密码（形如 https://user:pass@host）")
 
     if ANTHROPIC_PATH in parsed.path:
         return trimmed, None
@@ -428,8 +444,13 @@ def read_document_at(path: Path) -> tuple[dict[str, Any] | None, bool]:
     return parse_settings_document(text), had_comments
 
 
+#: Newest app-named backups to keep. Every backup after the first apply holds
+#: a plaintext inference key, so they must not accumulate forever (review P0-6).
+BACKUP_KEEP_COUNT = 5
+
+
 def backup_file(path: Path, now: float) -> Path | None:
-    """Copy `path` aside at owner-only permissions, then tighten older copies.
+    """Copy `path` aside at owner-only permissions, then tighten and prune older copies.
 
     The backup holds the previous settings.json, which after the first apply
     contains a plaintext ANTHROPIC_AUTH_TOKEN. `write_bytes` created it 0644 (the
@@ -464,7 +485,30 @@ def backup_file(path: Path, now: float) -> Path | None:
         _discard(temporary)
         raise ClaudeConfigError(f"无法备份 {path.name}") from exc
     _tighten_legacy_backups(path)
+    _prune_old_backups(path)
     return target
+
+
+def _prune_old_backups(path: Path) -> None:
+    """Keep only the newest BACKUP_KEEP_COUNT app-named backups.
+
+    Ordered by the epoch in the name, not mtime, so the caller's injected
+    clock keeps the behavior deterministic. Same app-only naming filter as
+    `_tighten_legacy_backups`: a hand-made `settings.json.bak.20261110-160522`
+    is never ours to delete. Best effort -- a failed unlink must not fail the
+    write that just succeeded.
+    """
+    owned: list[tuple[int, Path]] = []
+    for candidate in path.parent.glob(f"{path.name}.bak.*"):
+        suffix = candidate.name.rsplit(".bak.", 1)[-1]
+        if suffix.isdigit():
+            owned.append((int(suffix), candidate))
+    owned.sort(key=lambda pair: pair[0], reverse=True)
+    for _, stale in owned[BACKUP_KEEP_COUNT:]:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
 
 
 def _tighten_legacy_backups(path: Path) -> None:
@@ -485,26 +529,32 @@ def _tighten_legacy_backups(path: Path) -> None:
 
 
 def write_document_atomic(path: Path, document: Mapping[str, Any]) -> None:
-    """Write pretty JSON with owner-only permissions."""
+    """Write pretty JSON with owner-only permissions.
+
+    The temp name is unique (mkstemp, 0600 from creation): a fixed `.tmp`
+    would let a crash leftover block every later apply with O_EXCL, and two
+    writers would clobber each other's temp. Rename stays atomic.
+    """
     payload = (json.dumps(document, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
-    temporary = path.with_name(f"{path.name}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=path.parent, prefix=f"{path.name}.", suffix=".tmp"
+        )
+        temporary = Path(temporary_name)
         try:
             with os.fdopen(descriptor, "wb") as handle:
                 handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
+            os.replace(temporary, path)
+            # Tighten a pre-existing 0644 file: it is about to hold a token.
+            os.chmod(path, 0o600)
         except OSError:
+            # Cleanup must never replace the real cause with its own error.
             _discard(temporary)
             raise
-        os.replace(temporary, path)
-        # Tighten a pre-existing 0644 file: it is about to hold a token.
-        os.chmod(path, 0o600)
     except OSError as exc:
-        # Cleanup must never replace the real cause with its own error.
-        _discard(temporary)
         raise CacheError(f"无法写入 {path.name}") from exc
 
 

@@ -119,6 +119,27 @@ def test_should_append_records_changes_immediately_and_dedupes_idle_repeats():
     )
 
 
+def test_should_append_records_absolute_quota_changes_at_constant_percent():
+    # Plan upgrade: quota and used both double while percent and reset stay
+    # put. The step must land in history or absolute-value trends understate
+    # the consumption rate (review P2-14).
+    before = make_entry(percent=50.0, quota=5000.0, used=2500.0)
+    after = make_entry(percent=50.0, minutes=1, quota=10000.0, used=5000.0)
+    assert should_append(before, after) is True
+    # Quota-only / used-only changes count too, including None -> value.
+    assert should_append(
+        before, make_entry(percent=50.0, minutes=1, quota=10000.0, used=2500.0)
+    ) is True
+    assert should_append(
+        before, make_entry(percent=50.0, minutes=1, quota=5000.0, used=2600.0)
+    ) is True
+    assert should_append(make_entry(), make_entry(minutes=1, quota=5000.0)) is True
+    # Identical absolute values still dedupe within the gap.
+    assert should_append(
+        before, make_entry(percent=50.0, minutes=5, quota=5000.0, used=2500.0)
+    ) is False
+
+
 def test_prune_enforces_age_and_count_caps():
     now = BASE_TIME
     old = make_entry(minutes=-100 * 24 * 60)  # 100 days ago

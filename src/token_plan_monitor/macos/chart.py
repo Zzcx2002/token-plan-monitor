@@ -113,6 +113,8 @@ class ChartView(A.NSView):
         self._color_layers = []   # (layer, role) pairs re-resolved on appearance
         self._crosshair = None
         self._tooltip = None
+        self._tooltip_sample = None
+        self._tooltip_plot_width = None
         self._tracking_area = None
         return self
 
@@ -128,6 +130,8 @@ class ChartView(A.NSView):
         self._color_layers = []
         self._crosshair = None
         self._tooltip = None
+        self._tooltip_sample = None
+        self._tooltip_plot_width = None
         Quartz.CATransaction.begin()
         Quartz.CATransaction.setDisableActions_(True)
         try:
@@ -330,16 +334,26 @@ class ChartView(A.NSView):
         return history_tooltip_lines(sample, self.unit_label)
 
     def show_tooltip_at(self, x_plot: float) -> None:
-        lines = self.tooltip_lines_at(x_plot)
-        if lines is None or self.geometry is None:
+        if self.geometry is None:
             self.hide_tooltip()
             return
+        # One snap lookup per move (tooltip_lines_at used to repeat it).
         sample = nearest_sample(self.geometry, x_plot)
+        if sample is None:
+            self.hide_tooltip()
+            return
+        lines = history_tooltip_lines(sample, self.unit_label)
         plot_width = self._plot_width()
         crosshair_x = Y_AXIS_WIDTH + x_scale(
             sample.queried_at, self.geometry.range_start, self.geometry.range_end, plot_width)
         self._crosshair.setFrame_(_rect(crosshair_x, 0, 1, self.geometry.plot_height))
         self._crosshair.setHidden_(False)
+        if (self._tooltip is not None and sample == self._tooltip_sample
+                and plot_width == self._tooltip_plot_width):
+            # Same snapped sample at the same width: the panel already shows
+            # these lines here. Rebuilding the view tree on every mouse event
+            # was the hover-path cost; the crosshair above still tracks live.
+            return
         self._remove_tooltip()
         # Value leads (13 semibold), labels follow (caption) -- the legend's
         # hierarchy inverted, because here the reader wants the number.
@@ -365,6 +379,8 @@ class ChartView(A.NSView):
             panel.addSubview_(view)
             y += heights[index] + gap
         self._tooltip = panel
+        self._tooltip_sample = sample
+        self._tooltip_plot_width = plot_width
 
     def hide_tooltip(self) -> None:
         if self._crosshair is not None:
@@ -375,6 +391,8 @@ class ChartView(A.NSView):
         if self._tooltip is not None:
             self._tooltip.removeFromSuperview()
             self._tooltip = None
+        self._tooltip_sample = None
+        self._tooltip_plot_width = None
 
     def chart_layers(self) -> list:
         """Direct sublayers for smoke assertions (by name, never color reads)."""

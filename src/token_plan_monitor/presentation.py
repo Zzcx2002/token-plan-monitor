@@ -49,9 +49,19 @@ def _windows(state: MonitorViewState) -> dict[str, QuotaWindow]:
     return {window.kind: window for window in state.snapshot.windows}
 
 
+def display_remaining(window: QuotaWindow) -> float:
+    """Remaining percent clamped for DISPLAY only.
+
+    The model keeps the reported value: overage pushes used past quota and
+    remaining goes negative. Charts clamp for drawing, alerts and trends read
+    the raw number; text surfaces use this so the UI never shows "剩余 -3.2%".
+    """
+    return max(0.0, min(100.0, window.remaining_percent))
+
+
 def compact_remaining(state: MonitorViewState, kind: str) -> str:
     window = _windows(state).get(kind)
-    return f"{window.remaining_percent:.1f}%" if window is not None else "—"
+    return f"{display_remaining(window):.1f}%" if window is not None else "—"
 
 
 def lowest_windows(state: MonitorViewState) -> frozenset[str]:
@@ -109,7 +119,7 @@ def menu_window_line(state: MonitorViewState, kind: str) -> str:
     if window is None:
         return f"{label}：暂无数据"
     return (
-        f"{label}：剩余 {window.remaining_percent:.1f}% · "
+        f"{label}：剩余 {display_remaining(window):.1f}% · "
         f"已用 {window.used_percent:.1f}%"
     )
 
@@ -209,8 +219,11 @@ def history_context_line(state: MonitorViewState) -> str:
             or PLAN_LABELS.get(state.snapshot.plan_type, state.snapshot.plan_type)
         )
     parts.append("当前账号")
-    updated = state.last_attempt_at or (
-        state.snapshot.queried_at if state.snapshot is not None else None
+    # "更新于" names the data's age, not the last attempt: a failed refresh
+    # keeps the previous snapshot, and labelling it with the failure time
+    # disagreed with the tray menu (menu_context_line) for the same state.
+    updated = (
+        state.snapshot.queried_at if state.snapshot is not None else state.last_attempt_at
     )
     parts.append(f"更新于 {format_datetime(updated)}" if updated else status_text(state))
     return " · ".join(parts)

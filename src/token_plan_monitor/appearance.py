@@ -36,7 +36,6 @@ class Theme:
     name: str
     colors: Mapping[str, str]
     shadow_opacity: float
-    radius: int = 20
 
 
 LIGHT = Theme("light", MappingProxyType({

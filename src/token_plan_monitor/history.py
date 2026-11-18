@@ -103,8 +103,11 @@ def parse_line(line: str) -> HistoryEntry | None:
 
 
 def _values_signature(entry: HistoryEntry) -> tuple:
+    # Absolute quota/used are part of the signature: a plan upgrade can double
+    # both while leaving used_percent and reset_at unchanged, and that step
+    # must still be recorded or absolute-value trends understate the rate.
     return tuple(
-        (window.kind, window.used_percent, window.reset_at)
+        (window.kind, window.used_percent, window.reset_at, window.quota, window.used)
         for window in sorted(entry.windows, key=lambda window: window.kind)
     )
 

@@ -216,3 +216,12 @@ def test_non_json_success_is_parse_error():
     client, _ = make_client(FakeResponse(None, json_error=ValueError("bad json")))
     with pytest.raises(ParseError):
         client.query()
+
+
+def test_close_releases_the_session_and_tolerates_fakes_without_close():
+    client, session = make_client()
+    client.close()  # FakeSession has no close(): the guard must not raise
+    closed = []
+    session.close = lambda: closed.append(1)
+    client.close()
+    assert closed == [1]

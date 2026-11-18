@@ -3,7 +3,7 @@ import time
 import pytest
 from datetime import UTC, datetime, timedelta
 
-from token_plan_monitor.history import HistoryEntry, account_fingerprint
+from token_plan_monitor.history import HistoryEntry, account_fingerprint, entry_from_snapshot
 from token_plan_monitor.models import (
     AlertSettings,
     CacheError,
@@ -171,6 +171,203 @@ def test_settings_revision_discards_old_credential_result(tmp_path):
     finally:
         release.set()
         monitor.stop()
+
+
+def test_resaving_identical_settings_keeps_the_in_flight_result(tmp_path):
+    storage = configured_storage(tmp_path)
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    class BlockingClient:
+        def query(self):
+            calls.append(1)
+            entered.set()
+            if not release.wait(2):
+                raise TimeoutError("test release failed")
+            return snapshot()
+
+    monitor = UsageMonitor(
+        storage,
+        client_factory=lambda settings, credentials: BlockingClient(),
+    )
+    try:
+        monitor.start()
+        assert entered.wait(2)
+        revision = monitor.get_state().revision
+        # Saving the very same settings mid-query must not bump the revision:
+        # the in-flight result was fetched with these exact credentials.
+        monitor.update_configuration(Settings(), Credentials("AKLT-a", "secret"))
+        assert monitor.get_state().revision == revision
+        release.set()
+        wait_for(lambda: monitor.get_state().status == "ok")
+        assert monitor.get_state().snapshot.plan_name == "Agent Plan Large"
+        assert storage.load_snapshot().plan_name == "Agent Plan Large"
+        history = storage.load_history("volcengine", account_fingerprint("AKLT-a"))
+        assert len(history) == 1
+        time.sleep(0.05)
+        assert len(calls) == 1
+    finally:
+        release.set()
+        monitor.stop()
+
+
+def test_threshold_change_mid_flight_keeps_the_result_and_lands_new_threshold(tmp_path):
+    storage = configured_storage(tmp_path)
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    class BlockingClient:
+        def query(self):
+            calls.append(1)
+            entered.set()
+            if not release.wait(2):
+                raise TimeoutError("test release failed")
+            return snapshot(percent=95)
+
+    monitor = UsageMonitor(
+        storage, client_factory=lambda settings, credentials: BlockingClient()
+    )
+    try:
+        monitor.start()
+        assert entered.wait(2)
+        # Same account, only the alert threshold changes: the in-flight query
+        # was fetched from the same source and must survive (review P2-15).
+        monitor.update_configuration(
+            Settings(alert=AlertSettings(threshold_percent=45)),
+            Credentials("AKLT-a", "secret"),
+        )
+        assert monitor.get_state().alert_threshold_percent == 45
+        release.set()
+        wait_for(lambda: monitor.get_state().status == "ok")
+        state = monitor.get_state()
+        assert state.snapshot is not None
+        # The result publishes with the NEW threshold, not the captured one.
+        assert state.alert_threshold_percent == 45
+        assert len(storage.load_history("volcengine", account_fingerprint("AKLT-a"))) == 1
+        time.sleep(0.05)
+        assert len(calls) == 1
+    finally:
+        release.set()
+        monitor.stop()
+
+
+def test_interval_change_alone_does_not_force_a_requery(tmp_path):
+    storage = configured_storage(tmp_path)
+    calls = []
+
+    class CountingClient:
+        def query(self):
+            calls.append(1)
+            return snapshot()
+
+    monitor = UsageMonitor(
+        storage, client_factory=lambda settings, credentials: CountingClient()
+    )
+    try:
+        monitor.start()
+        wait_for(lambda: monitor.get_state().status == "ok")
+        monitor.update_configuration(
+            Settings(refresh_minutes=30), Credentials("AKLT-a", "secret")
+        )
+        time.sleep(0.05)
+        assert len(calls) == 1
+        assert monitor.get_state().snapshot is not None
+    finally:
+        monitor.stop()
+
+
+def test_resaving_identical_settings_while_idle_does_not_requery(tmp_path):
+    storage = configured_storage(tmp_path)
+    calls = []
+
+    class CountingClient:
+        def query(self):
+            calls.append(1)
+            return snapshot()
+
+    monitor = UsageMonitor(
+        storage, client_factory=lambda settings, credentials: CountingClient()
+    )
+    try:
+        monitor.start()
+        wait_for(lambda: monitor.get_state().status == "ok")
+        revision = monitor.get_state().revision
+        monitor.update_configuration(Settings(), Credentials("AKLT-a", "secret"))
+        time.sleep(0.05)
+        assert len(calls) == 1
+        assert monitor.get_state().revision == revision
+        assert monitor.get_state().snapshot is not None
+    finally:
+        monitor.stop()
+
+
+def test_client_is_reused_across_refreshes_and_rebuilt_on_region_change(tmp_path):
+    storage = configured_storage(tmp_path)
+    instances = []
+    calls = []
+
+    class RecordingClient:
+        def __init__(self, settings):
+            self.region = settings.region
+            self.closed = False
+            instances.append(self)
+
+        def query(self):
+            calls.append(1)
+            return snapshot()
+
+        def close(self):
+            self.closed = True
+
+    monitor = UsageMonitor(
+        storage,
+        client_factory=lambda settings, credentials: RecordingClient(settings),
+    )
+    try:
+        monitor.start()
+        wait_for(lambda: len(calls) == 1)
+        monitor.request_refresh()
+        wait_for(lambda: len(calls) == 2)
+        # Same (provider, region, credentials): one client serves both refreshes.
+        assert len(instances) == 1
+        monitor.update_configuration(
+            Settings(region="cn-shanghai"), Credentials("AKLT-a", "secret")
+        )
+        wait_for(lambda: len(calls) == 3)
+        assert [client.region for client in instances] == ["cn-beijing", "cn-shanghai"]
+        # The retired client's session is closed on the monitor thread.
+        assert instances[0].closed is True
+        assert instances[1].closed is False
+    finally:
+        monitor.stop()
+    # Loop exit retires the live client too.
+    wait_for(lambda: instances[-1].closed)
+
+
+def test_monitor_can_restart_after_stop(tmp_path):
+    storage = configured_storage(tmp_path)
+    calls = []
+
+    class CountingClient:
+        def query(self):
+            calls.append(1)
+            return snapshot()
+
+    monitor = UsageMonitor(
+        storage, client_factory=lambda settings, credentials: CountingClient()
+    )
+    monitor.start()
+    wait_for(lambda: len(calls) == 1)
+    monitor.stop()
+    # The loop is fully stopped and its state cleared for a fresh start.
+    assert monitor._thread is None
+    monitor.start()
+    wait_for(lambda: len(calls) == 2)
+    assert monitor.get_state().status == "ok"
+    assert monitor.get_state().snapshot is not None
+    monitor.stop()
 
 
 def test_missing_credentials_never_starts_a_request(tmp_path):
@@ -536,6 +733,11 @@ def test_unconfigured_startup_carries_no_history(tmp_path):
 
 def test_history_read_failure_blanks_rows_but_not_the_refresh(tmp_path):
     class BrokenReadStorage(Storage):
+        # The refresh's single read now happens inside append_history; the
+        # fallback load_history must fail too for the rows to blank out.
+        def append_history(self, entry, provider):
+            raise CacheError("disk on fire")
+
         def load_history(self, provider, account=None, limit=2000):
             raise CacheError("disk on fire")
 
@@ -552,6 +754,36 @@ def test_history_read_failure_blanks_rows_but_not_the_refresh(tmp_path):
         assert state.snapshot is not None
         assert state.history == ()
         # Like a failed append, a failed read is logged, never a UI warning.
+        assert state.error is None
+    finally:
+        monitor.stop()
+
+
+def test_history_write_failure_still_shows_rows_via_the_read_fallback(tmp_path):
+    class WriteOnlyFailureStorage(Storage):
+        def append_history(self, entry, provider):
+            raise CacheError("disk full")
+
+    storage = WriteOnlyFailureStorage(tmp_path, FakeKeyring())
+    storage.save_settings(Settings())
+    storage.save_credentials(Credentials("AKLT-a", "secret"))
+    # Seed one row through the real writer before the monitor starts.
+    Storage.append_history(
+        storage,
+        entry_from_snapshot(snapshot(), account_fingerprint("AKLT-a")),
+        "volcengine",
+    )
+    monitor = UsageMonitor(
+        storage, client_factory=lambda *_: StaticClient(snapshot())
+    )
+    try:
+        monitor.start()
+        wait_for(lambda: monitor.get_state().status == "ok")
+        state = monitor.get_state()
+        assert state.snapshot is not None
+        # A write-only fault must not blank the history: the fallback read
+        # still serves the rows that are already on disk.
+        assert len(state.history) == 1
         assert state.error is None
     finally:
         monitor.stop()

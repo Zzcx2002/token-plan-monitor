@@ -23,7 +23,7 @@ from urllib.parse import urlsplit
 
 import requests
 
-from .claude_code import ANTHROPIC_PATH
+from .claude_code import ANTHROPIC_PATH, url_transport_error
 from .models import HEAVY_ID_MARKS, MODEL_ID_PATTERN, QueryError
 from .providers import ClaudeModelOption
 
@@ -60,6 +60,12 @@ def models_url_for(base_url: str) -> str:
         raise ModelCatalogError("Base URL 格式无效") from exc
     if not parsed.netloc:
         raise ModelCatalogError("Base URL 缺少主机名")
+    # Same transport policy as the apply path (claude_code.normalize_base_url):
+    # the Bearer key below must never ride plaintext HTTP or a userinfo-smuggled
+    # host. Proxy hosts stay allowed -- the user typed them deliberately.
+    transport_error = url_transport_error(parsed)
+    if transport_error is not None:
+        raise ModelCatalogError(transport_error)
     index = parsed.path.find(ANTHROPIC_PATH)
     root_path = parsed.path[:index] if index >= 0 else parsed.path
     root = f"{parsed.scheme}://{parsed.netloc}{root_path}".rstrip("/")
@@ -118,7 +124,12 @@ def fetch_model_ids(
     http = session if session is not None else requests.Session()
     try:
         response = http.get(
-            url, headers={"Authorization": f"Bearer {api_key}"}, timeout=timeout
+            url,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=timeout,
+            # A redirect could forward the Bearer key to another host; the
+            # control-plane clients already refuse redirects for this reason.
+            allow_redirects=False,
         )
     except requests.RequestException as exc:
         raise ModelCatalogError("无法连接模型列表接口") from exc

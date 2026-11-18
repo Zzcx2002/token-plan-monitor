@@ -11,15 +11,14 @@ from __future__ import annotations
 import hashlib
 import hmac
 import uuid
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from urllib.parse import quote
 
 from .models import ConfigurationError
+from .signing_common import EMPTY_BODY_SHA256, SignedRequest, sha256_hex
 
 ALGORITHM = "ACS3-HMAC-SHA256"
 CONTENT_TYPE = "application/json"
-EMPTY_BODY_SHA256 = hashlib.sha256(b"").hexdigest()
 
 # Model Studio control plane, used to mint a console access token from AK/SK.
 MODEL_STUDIO_HOSTS = {
@@ -47,14 +46,6 @@ CONSOLE_GATEWAY_PRODUCT = "sfm_bailian"
 OFFICIAL_HOSTS = frozenset(
     set(MODEL_STUDIO_HOSTS.values()) | set(CONSOLE_GATEWAY_HOSTS.values())
 )
-
-
-@dataclass(frozen=True)
-class SignedRequest:
-    method: str
-    url: str
-    headers: dict[str, str]
-    body: bytes
 
 
 def canonical_query(params: dict[str, str] | None) -> str:
@@ -115,7 +106,7 @@ def sign_request(
     canonical_request = "\n".join(
         (method, path, query, canonical_headers, signed_headers, content_hash)
     )
-    string_to_sign = f"{ALGORITHM}\n{_sha256_hex(canonical_request.encode('utf-8'))}"
+    string_to_sign = f"{ALGORITHM}\n{sha256_hex(canonical_request.encode('utf-8'))}"
     signature = hmac.new(
         secret_access_key.encode("utf-8"), string_to_sign.encode("utf-8"), hashlib.sha256
     ).hexdigest()
@@ -151,7 +142,3 @@ def console_gateway(region: str) -> tuple[str, str]:
 def _uri_encode(value: str) -> str:
     # quote() already escapes !'()*, matching RFC 3986 strict encoding.
     return quote(value, safe="", encoding="utf-8", errors="strict")
-
-
-def _sha256_hex(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
