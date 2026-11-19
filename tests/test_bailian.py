@@ -8,11 +8,13 @@ import requests
 from token_plan_monitor.aliyun_signer import EMPTY_BODY_SHA256
 from token_plan_monitor.bailian import (
     CODING_PLAN_USAGE_API,
+    TOKEN_PLAN_SUBSCRIPTION_API,
     TOKEN_PLAN_USAGE_API,
     BailianClient,
     _reject_unofficial_host,
     parse_coding_plan_windows,
     parse_token_plan_windows,
+    token_plan_spec_suffix,
     unwrap_console_payload,
     valid_coding_plan_instance,
 )
@@ -86,6 +88,11 @@ def gateway_failure(error_code, message="denied", status=200):
         "code": "200",
         "data": {"success": False, "errorCode": error_code, "errorMsg": message},
     }, status=status)
+
+
+def subscription_payload(spec="standard"):
+    return {"instanceCode": "sfm_tokenplansolo_public_cn-test", "specCode": spec,
+            "status": "VALID"}
 
 
 def coding_payload():
@@ -188,14 +195,40 @@ def test_query_uses_token_plan_windows_when_present():
     client, session = make_client(
         token_response(),
         gateway({"per5HourPercentage": 0.43, "per5HourResetTime": RESET_MS}),
+        gateway(subscription_payload()),
     )
     snapshot = client.query()
     assert snapshot.plan_type == "token_plan"
-    assert snapshot.plan_name == "Token Plan 个人版"
+    assert snapshot.plan_name == "Token Plan 个人版 Standard"
     assert snapshot.windows[0].kind == "five_hour"
     assert snapshot.windows[0].used_percent == 43.0
     assert snapshot.windows[0].quota is None
-    assert len(session.calls) == 2
+    assert len(session.calls) == 3
+    assert TOKEN_PLAN_SUBSCRIPTION_API.replace("/", "%2F") in session.calls[2]["url"]
+
+
+def test_token_plan_tier_is_decoration_and_survives_subscription_failure():
+    client, _ = make_client(
+        token_response(),
+        gateway({"per1MonthPercentage": 0.43, "per1MonthResetTime": RESET_MS}),
+        gateway_failure("InvalidParameter", "bad arg"),
+    )
+    snapshot = client.query()
+    assert snapshot.plan_name == "Token Plan 个人版"
+    assert snapshot.windows[0].used_percent == 43.0
+
+
+def test_token_plan_spec_suffix_capitalises_and_tolerates_missing_shapes():
+    assert token_plan_spec_suffix(subscription_payload("lite")) == " Lite"
+    assert token_plan_spec_suffix(subscription_payload("essential")) == " Essential"
+    assert token_plan_spec_suffix(subscription_payload("pro")) == " Pro"
+    assert token_plan_spec_suffix(subscription_payload("  standard ")) == " Standard"
+    assert token_plan_spec_suffix({}) == ""
+    assert token_plan_spec_suffix({"specCode": "  "}) == ""
+    assert token_plan_spec_suffix({"specCode": 3}) == ""
+    # A 404 body wrapped in a success envelope carries no specCode.
+    assert token_plan_spec_suffix({"path": "/x", "error": "Not Found", "status": 404}) == ""
+    assert token_plan_spec_suffix([]) == ""
 
 
 def test_second_query_reuses_the_cached_bearer_token():
@@ -205,14 +238,18 @@ def test_second_query_reuses_the_cached_bearer_token():
     client, session = make_client(
         token_response(),
         gateway({"per5HourPercentage": 0.43, "per5HourResetTime": RESET_MS}),
+        gateway(subscription_payload()),
         gateway({"per5HourPercentage": 0.44, "per5HourResetTime": RESET_MS}),
+        gateway(subscription_payload()),
     )
     client.query()
     second = client.query()
     assert second.windows[0].used_percent == 44.0
-    assert len(session.calls) == 3  # one token mint + two gateway calls
+    # One token mint + two gateway calls per query (usage + subscription).
+    assert len(session.calls) == 5
     assert session.calls[1]["headers"]["Authorization"] == "Bearer token-1"
     assert session.calls[2]["headers"]["Authorization"] == "Bearer token-1"
+    assert session.calls[4]["headers"]["Authorization"] == "Bearer token-1"
 
 
 def test_close_releases_the_session_and_tolerates_fakes_without_close():
@@ -225,9 +262,13 @@ def test_close_releases_the_session_and_tolerates_fakes_without_close():
 
 
 def test_token_request_is_signed_against_model_studio_with_empty_body():
-    client, session = make_client(token_response(), gateway({"per1MonthPercentage": 0.1}))
+    client, session = make_client(
+        token_response(),
+        gateway({"per1MonthPercentage": 0.1}),
+        gateway(subscription_payload()),
+    )
     client.query()
-    token_call, gateway_call = session.calls
+    token_call, gateway_call, _subscription_call = session.calls
     assert token_call["url"].startswith("https://modelstudio.cn-beijing.aliyuncs.com/")
     assert token_call["data"] == b""
     assert token_call["headers"]["x-acs-content-sha256"] == EMPTY_BODY_SHA256
@@ -237,7 +278,11 @@ def test_token_request_is_signed_against_model_studio_with_empty_body():
 
 
 def test_gateway_call_is_form_encoded_with_bearer_token():
-    client, session = make_client(token_response(), gateway({"per1MonthPercentage": 0.1}))
+    client, session = make_client(
+        token_response(),
+        gateway({"per1MonthPercentage": 0.1}),
+        gateway(subscription_payload()),
+    )
     client.query()
     gateway_call = session.calls[1]
     parsed = urlsplit(gateway_call["url"])
@@ -283,6 +328,7 @@ def test_expired_console_token_is_minted_once_and_retried():
         gateway_failure("Console.NotLogined"),
         token_response("token-2"),
         gateway({"per1MonthPercentage": 0.2}),
+        gateway(subscription_payload()),
     )
     snapshot = client.query()
     assert snapshot.windows[0].used_percent == 20.0

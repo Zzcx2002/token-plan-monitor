@@ -160,8 +160,8 @@ def test_card_resize_anchors_opposite_edges():
 
 def test_card_resize_enforces_minimum_without_moving_anchored_edges():
     frame = (100, 200, 384, 160)
-    assert resize_card_frame(frame, 1000, 1000, frozenset({"left", "bottom"})) == (164, 200, 320, 160)
-    assert resize_card_frame(frame, -1000, -1000, frozenset({"right", "top"})) == (100, 200, 320, 160)
+    assert resize_card_frame(frame, 1000, 1000, frozenset({"left", "bottom"})) == (164, 227, 320, 133)
+    assert resize_card_frame(frame, -1000, -1000, frozenset({"right", "top"})) == (100, 200, 320, 133)
 
 
 def test_card_resize_and_restore_respect_screen_bounds():
@@ -169,8 +169,8 @@ def test_card_resize_and_restore_respect_screen_bounds():
     screen = (-400, -200, 600, 500)
     assert resize_card_frame(frame, 1000, 1000, frozenset({"right", "top"}), screen) == (-300, -100, 500, 400)
     assert fit_card_size(-300, -100, 1000, 1000, [screen]) == (600, 500)
-    assert fit_card_size(-300, -100, 100, 100, [screen]) == (320, 160)
-    assert fit_card_size(0, 0, 100, 100, [(0, 0, 200, 100)]) == (320, 160)
+    assert fit_card_size(-300, -100, 100, 100, [screen]) == (320, 133)
+    assert fit_card_size(0, 0, 100, 100, [(0, 0, 200, 100)]) == (320, 133)
 
 
 def test_keychain_denied_does_not_fall_back_to_files(tmp_path):

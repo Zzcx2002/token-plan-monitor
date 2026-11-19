@@ -276,7 +276,7 @@ def test_invalid_desktop_mode_falls_back_to_defaults(tmp_path, invalid):
 
 @pytest.mark.parametrize("field,invalid", [
     ("width", None), ("width", True), ("width", 384.5), ("width", "384"),
-    ("width", 319), ("height", 159), ("height", -1), ("height", 10001),
+    ("width", 319), ("height", 132), ("height", -1), ("height", 10001),
 ])
 def test_invalid_widget_dimensions_fall_back_to_defaults(tmp_path, field, invalid):
     storage = Storage(tmp_path, FakeKeyring())

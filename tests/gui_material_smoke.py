@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from gui_preview import ARTIFACTS, FakeMonitor, snapshot
 from token_plan_monitor.models import MonitorViewState, WindowTrend
-from token_plan_monitor.presentation import WINDOW_LABELS
+from token_plan_monitor.presentation import WINDOW_LABELS, card_title
 from token_plan_monitor.providers import get_provider
 from token_plan_monitor.storage import Storage
 from token_plan_monitor.ui import MonitorUI
@@ -74,12 +74,12 @@ def main():
             app.root.mainloop()
             # Desktop card: all three quota windows in WINDOW_ORDER, the single
             # lowest-remaining column carries the "· 最低" marker, the title
-            # names the active provider, and values come from the snapshot.
+            # names the provider plus plan/tier, and values come from the snapshot.
             canvas = card.card
             texts = [canvas.itemcget(item, "text") for item in canvas.find_all()
                      if canvas.type(item) == "text"]
             joined = "|".join(texts)
-            assert state.provider_label in texts
+            assert card_title(state) in texts
             for kind in ("five_hour", "weekly", "monthly"):
                 assert WINDOW_LABELS[kind] + "剩余" in joined
             assert "每周剩余 · 最低" in texts

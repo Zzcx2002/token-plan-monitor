@@ -78,6 +78,21 @@ def lowest_windows(state: MonitorViewState) -> frozenset[str]:
                      if window.remaining_percent == lowest)
 
 
+def card_title(state: MonitorViewState) -> str:
+    """Desktop-card title: provider plus the active plan/tier when known.
+
+    Shared by the desktop cards on both platforms. Before the first
+    successful query (no snapshot) the card names the provider alone;
+    legacy cached snapshots may lack plan_name, so fall back to PLAN_LABELS.
+    """
+    if state.snapshot is None:
+        return state.provider_label
+    plan = state.snapshot.plan_name or PLAN_LABELS.get(
+        state.snapshot.plan_type, state.snapshot.plan_type
+    )
+    return f"{state.provider_label} · {plan}"
+
+
 def hover_summary(state: MonitorViewState) -> str:
     heading = f"{state.provider_label} · {status_text(state)}"
     if state.snapshot is not None:

@@ -32,10 +32,11 @@ from ..history_chart import (
 )
 from ..presentation import (
     HISTORY_RANGE_LABELS, HISTORY_TABLE_COLLAPSE, HISTORY_TABLE_HEADERS,
-    HISTORY_TABLE_TITLE, HISTORY_WINDOW_TITLE, WINDOW_LABELS, compact_remaining,
-    display_remaining, format_datetime, format_number, history_absolute_header,
-    history_chart_title, history_context_line, history_empty_text, hover_summary,
-    menu_lines, state_tone, status_text, trend_line,
+    HISTORY_TABLE_TITLE, HISTORY_WINDOW_TITLE, WINDOW_LABELS, card_title,
+    compact_remaining, display_remaining, format_datetime, format_number,
+    history_absolute_header, history_chart_title, history_context_line,
+    history_empty_text, hover_summary, menu_lines, state_tone, status_text,
+    trend_line,
 )
 from ..providers import PROVIDERS, get_provider
 from .layout import (
@@ -1342,15 +1343,22 @@ class MonitorUI:
         size = self.card_view.bounds().size
         margin, gutter = 18, 8
         column_width = max(1, (size.width - margin * 2 - gutter * 2) / 3)
-        self.card_title.setFrame_(rect(margin, 12, 92, self.card_title.frame().size.height))
-        self.card_status.setFrame_(rect(118, 14, max(1, size.width - 136), self.card_status.frame().size.height))
+        # Title left, status right (matching the Windows card): the combined
+        # "provider · plan" title takes the space left of the status text and
+        # truncates with an ellipsis instead of wrapping past its 19pt frame.
+        # cellSizeForBounds includes the text cell's horizontal insets; the raw
+        # attributed-string width would wrap the status onto a clipped 2nd line.
+        status_width = max(1, self.card_status.cell().cellSizeForBounds_(
+            F.NSMakeRect(0, 0, 10000, 10000)).width + 2)
+        status_x = max(margin + 1, size.width - margin - status_width)
+        self.card_status.setFrame_(rect(status_x, 14, status_width, self.card_status.frame().size.height))
+        self.card_title.setFrame_(rect(margin, 12, max(1, status_x - 10 - margin), self.card_title.frame().size.height))
         for index, kind in enumerate(WINDOW_ORDER):
             x = margin + index * (column_width + gutter)
             self.card_titles[kind].setFrame_(rect(x, 46, column_width, self.card_titles[kind].frame().size.height))
             self.card_values[kind].setFrame_(rect(x, 67, column_width, self.card_values[kind].frame().size.height))
         footer_width = max(1, size.width - margin * 2 - 44)
-        self.card_updated.setFrame_(rect(margin, size.height - 52, footer_width, self.card_updated.frame().size.height))
-        self.card_hint.setFrame_(rect(margin, size.height - 25, footer_width, self.card_hint.frame().size.height))
+        self.card_updated.setFrame_(rect(margin, size.height - 25, footer_width, self.card_updated.frame().size.height))
         self.card_refresh_button.setFrame_(rect(size.width - 44, size.height - 44, 32, 32))
 
     def render_card(self):
@@ -1369,6 +1377,8 @@ class MonitorUI:
             self.materials = [effect]
             self.card_title = text_label(self.card_view, "", 18, 12, 92,
                                           role="kind", bold=True)
+            self.card_title.setMaximumNumberOfLines_(1)
+            self.card_title.setLineBreakMode_(A.NSLineBreakByTruncatingTail)
             self.card_status = text_label(self.card_view, "", 118, 14, 248, role="caption")
             self.card_titles, self.card_values = {}, {}
             for i, kind in enumerate(WINDOW_ORDER):
@@ -1385,8 +1395,6 @@ class MonitorUI:
                 self.card_values[kind].setAccessibilityLabel_(f"{WINDOW_LABELS[kind]}剩余容量")
             self.card_updated = text_label(self.card_view, "", 18, 108, 304,
                                             role="caption", color=SECONDARY, numeric=True)
-            self.card_hint = text_label(self.card_view, "拖动移动 · 边缘/角落调整大小", 18, 135, 240,
-                                         role="caption", color=SECONDARY)
             self.card_refresh_button = button(
                 self.card_view, "", 340, 116, 32, self.actions, "refresh",
                 key="\r", view_type=CardRefreshButton,
@@ -1396,7 +1404,7 @@ class MonitorUI:
             self.card_refresh_button.setAccessibilityLabel_("立即刷新")
             self.card_refresh_button.setToolTip_("立即刷新")
             self.card.setInitialFirstResponder_(self.card_refresh_button)
-        self.card_title.setStringValue_(self.state.provider_label)
+        self.card_title.setStringValue_(card_title(self.state))
         text, color = status_presentation(self.state)
         self.card_status.setStringValue_(text)
         self.card_status.setTextColor_(color)
