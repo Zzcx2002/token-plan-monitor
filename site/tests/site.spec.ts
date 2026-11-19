@@ -23,6 +23,9 @@ for (const item of pages) {
   });
 
   test(`${item.name}: no serious accessibility violations`, async ({ page }) => {
+    // Zero the hero reveal animation: axe sampled mid-fade can measure the
+    // translucent mock window below its at-rest contrast ratio under load.
+    await page.emulateMedia({ reducedMotion: 'reduce' });
     await page.goto(item.path);
     const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze();
     expect(results.violations.filter((issue) => ['serious', 'critical'].includes(issue.impact ?? ''))).toEqual([]);

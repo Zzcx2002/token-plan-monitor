@@ -16,7 +16,9 @@ from tkinter import ttk
 
 from . import claude_code
 from .appearance import (
+    MATERIAL_LABELS,
     OUTER_PADDING,
+    RADIUS,
     SECTION_GAP,
     THEME_LABELS,
     AppearancePreferences,
@@ -41,6 +43,7 @@ from .ui_graphics import (
     ScrollableBody,
     dpi_scale,
     install_window_effects,
+    is_windows_11,
     window_work_area,
 )
 from .window_chrome import WindowChrome
@@ -90,10 +93,12 @@ class SettingsDialog:
         self.entries: dict[str, ttk.Entry] = {}
         self.errors: dict[str, ttk.Label] = {}
         self.theme_var: tk.StringVar | None = None
+        self.material_var: tk.StringVar | None = None
         self.provider_var: tk.StringVar | None = None
         self.alert_enabled: tk.BooleanVar | None = None
         self.alert_reset: tk.BooleanVar | None = None
         self.original_mode: str | None = None
+        self.original_material: str | None = None
         self.provider: str = ""
         self.settings: Settings | None = None
         self.existing: Credentials | None = None
@@ -108,12 +113,14 @@ class SettingsDialog:
         app = self.app
         self.settings = app.storage.load_settings()
         self.original_mode = app.theme_mode
+        self.original_material = app.material
         window = tk.Toplevel(app.root)
         window.configure(background=app.colors["surface"])
         window.resizable(True, True)
         app._apply_icon(window)
-        install_window_effects(window, app.colors["surface"])
+        install_window_effects(window, app.colors["surface"], material=app.material)
         self.window = window
+        window._on_dpi_changed = app._on_dpi_changed
         window._geometry = WindowGeometry(
             window, app.storage, "settings", SETTINGS_MINIMUM_SIZE)
         window._chrome = WindowChrome(
@@ -147,6 +154,7 @@ class SettingsDialog:
         window.bind("<Escape>", lambda event: self.close())
 
         self.theme_var = tk.StringVar(window, app.theme_mode)
+        self.material_var = tk.StringVar(window, app.material)
         self.provider_var = tk.StringVar(window)
         stored = self.settings
         try:
@@ -185,7 +193,7 @@ class SettingsDialog:
 
         def panel(title: str) -> tk.Frame:
             outer = RoundedPanel(
-                self.form_frame, radius=14, fill=app.colors["card"],
+                self.form_frame, radius=RADIUS["panel"], fill=app.colors["card"],
                 outline=app.colors["border"], background=app.colors["surface"],
                 padding=(12, 10),
             )
@@ -218,6 +226,27 @@ class SettingsDialog:
         ttk.Label(
             appearance, text="即时预览，保存后记住选择。", style="CardMuted.TLabel"
         ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        ttk.Label(
+            appearance, text="窗口材质", style="Section.TLabel"
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(14, 0))
+        material_selector = ttk.Frame(appearance, style="Card.TFrame")
+        material_selector.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        for column, (mode, label) in enumerate(MATERIAL_LABELS.items()):
+            material_selector.columnconfigure(column, weight=1)
+            material_button = ttk.Radiobutton(
+                material_selector, text=label, value=mode, variable=self.material_var,
+                style="Theme.TRadiobutton",
+                command=lambda: app._set_material(self.material_var.get()),
+            )
+            material_button.grid(row=0, column=column, sticky="ew", padx=2)
+            # Acrylic needs the Windows 11 DWM path; on Windows 10 it renders black.
+            if mode == "acrylic" and not is_windows_11():
+                material_button.state(("disabled",))
+        ttk.Label(
+            appearance,
+            text="亚克力为磨砂透明效果；受系统限制，分层窗口会关闭文字 ClearType，实色文字最清晰。",
+            style="CardMuted.TLabel", wraplength=round(340 * dpi_scale(self.window)),
+        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(10, 0))
 
         credentials_panel = panel("账号凭据")
         note = spec.credential_note.format(store=app.storage.credential_store_name)
@@ -409,7 +438,8 @@ class SettingsDialog:
                 app.storage.save_credentials(new_credentials, self.provider)
             if new_settings != self.settings:
                 app.storage.save_settings(new_settings)
-            app.storage.save_appearance(AppearancePreferences(app.theme_mode))
+            app.storage.save_appearance(
+                AppearancePreferences(app.theme_mode, app.material))
         except QueryError as exc:
             self._show_validation_error(exc.message)
             return
@@ -511,7 +541,9 @@ class SettingsDialog:
 
     def close(self, *, commit: bool = False) -> None:
         original = self.original_mode
+        original_material = self.original_material
         self.original_mode = None
+        self.original_material = None
         app = self.app
         app.settings_window = None
         app.settings_body = None
@@ -526,8 +558,11 @@ class SettingsDialog:
         self.body = None
         self._rebuild_after = None
         self._rebuild_pending = False
-        if not commit and original is not None:
-            app._set_theme(original)
+        if not commit:
+            if original is not None:
+                app._set_theme(original)
+            if original_material is not None and original_material != app.material:
+                app._set_material(original_material)
         if app.popup is not None and app.popup.winfo_viewable():
             app.popup.focus_set()
 

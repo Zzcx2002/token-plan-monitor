@@ -180,7 +180,7 @@ The round badge on the icon changes color and mark with the status: OK, warning 
 
 | Action | Result |
 | --- | --- |
-| Plain click | does **not** open a window (opposite of Windows) |
+| Plain click | does **not** open a window (same as Windows) |
 | Drag empty area | moves the card |
 | Drag an edge / corner | resizes the card |
 | Right click / Control-click | action menu (without 打开用量详情 — details open only from the menu bar) |
@@ -201,7 +201,7 @@ Below each reset time there is a trend caption: consumption rate (about x%/hour,
 
 ### Windows
 
-Single-click the tray icon to open the usage popup (hover for a summary, right-click for the three-window detail and actions); 展开详情 expands it to show used percentages and absolute amounts. On the desktop card, a **single click opens the popup** (a drag never misfires), hover shows the summary, right click shows the menu, and edges and corners resize. The card starts top-most; you can un-pin or hide it and restore it from the tray menu 桌面卡片.
+Single-click the tray icon to open the usage popup (hover for a summary, right-click for the three-window detail and actions); 展开详情 expands it to show used percentages and absolute amounts. On the desktop card, **clicking an empty area no longer opens a window** (matching macOS): open the popup from the tray icon or the card's right-click menu (打开详细用量), and use the round arrow button at the bottom-right to refresh now — it disables itself while a refresh is in flight. Hovering shows the summary, right click shows the menu, dragging empty space moves the card, and edges and corners resize it (a drag never misfires as a refresh or a window open). The card starts top-most; you can un-pin or hide it and restore it from the tray menu 桌面卡片.
 
 ### Usage history and low-quota alerts
 
@@ -215,7 +215,7 @@ Single-click the tray icon to open the usage popup (hover for a summary, right-c
 ## Appearance
 
 - **macOS**: the usage window, Settings window and desktop card follow the system light/dark appearance with no in-app switch. Colors are all system dynamic colors or appearance-paired custom colors, so open windows redraw immediately when you change the system appearance. Accent color, button highlights and focus rings follow the system **Accent color**; card corners, shadows and materials are native and respect System Settings → Accessibility → Display → **Reduce transparency**.
-- **Windows**: follows the app theme by default, re-checked every 2 seconds; the ◐ menu in the popup corner and the three-way selector in Settings apply light / dark / system immediately, with live preview and rollback on cancel or Esc. When the system turns off **Transparency effects**, solid theme backgrounds are used instead.
+- **Windows**: follows the app theme by default, re-checked every 2 seconds; the ◐ menu in the popup corner and the three-way selector in Settings apply light / dark / system immediately, with live preview and rollback on cancel or Esc. Windows use an **opaque solid material by default**, keeping ClearType text crisp and the native system shadow. Settings also offer an optional **acrylic material** (selectable only on Windows 11 with the system **Transparency effects** toggle on; the option is disabled with an explanation on Windows 10). Acrylic frosts whatever is behind the window, but Tk layered windows force Windows to disable ClearType, so text anti-aliasing is slightly softer than in solid mode — the trade-off is stated inline in Settings. If the system turns off Transparency effects, acrylic falls back to solid automatically. Window corners are drawn by the system DWM on Windows 11 (native 8px anti-aliased corners and shadow), with a GDI region fallback on Windows 10.
 
 The Settings body scrolls; Tab, Enter to save, Esc to cancel, and native text-editing shortcuts such as ⌘C / ⌘V all work. Validation keeps what you typed and focuses the offending field; authentication or configuration errors lead with 检查凭据 (Check credentials), network errors lead with 重试 (Retry). Offline, the last successful data is retained and marked stale; after a wake, an overdue deadline triggers at most one coalesced refresh.
 

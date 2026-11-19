@@ -7,14 +7,11 @@ import logging
 import tkinter as tk
 from typing import Callable, Mapping
 
-from .ui_graphics import dpi_scale, native_handle
+from .appearance import RADIUS
+from .ui_graphics import WNDPROC, dpi_scale, is_windows_11, native_handle
 
 logger = logging.getLogger(__name__)
 LRESULT = ctypes.c_ssize_t
-# Keep the pure geometry helpers importable on macOS; WindowChrome itself is Windows-only.
-WNDPROC = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)(
-    LRESULT, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM
-)
 
 
 def resize_hit(x: int, y: int, width: int, height: int, edge: int) -> int:
@@ -48,6 +45,11 @@ class ChromeButton(tk.Canvas):
 
     def _state(self, name: str, value: bool) -> None:
         setattr(self, name, value)
+        self.draw()
+
+    def refresh_scale(self) -> None:
+        self.scale = dpi_scale(self)
+        self.configure(width=round(28*self.scale), height=round(28*self.scale))
         self.draw()
 
     def _release(self, event: tk.Event) -> None:
@@ -184,6 +186,22 @@ class WindowChrome:
                 return result
             if message == 0x112 and (wparam & 0xfff0) in (0xf020, 0xf030):
                 self._flush_size()  # Save restored size before minimizing/maximizing.
+            if message == 0x02E0:  # WM_DPICHANGED
+                # Apply the suggested physical rect first, then let Tk rebuild
+                # fonts/layout at idle (never re-enter Tcl inside the WNDPROC).
+                suggested = ctypes.cast(lparam, ctypes.POINTER(wt.RECT)).contents
+                self.user.SetWindowPos(
+                    hwnd, None, suggested.left, suggested.top,
+                    suggested.right-suggested.left, suggested.bottom-suggested.top,
+                    0x0014,  # SWP_NOZORDER | SWP_NOACTIVATE
+                )
+                new_dpi = wparam & 0xffff
+                callback = getattr(self.window, "_on_dpi_changed", None)
+                if callback is not None:
+                    self.window.after_idle(lambda: callback(int(new_dpi)))
+                self.last_region = None
+                self._schedule()
+                return 0
             if message == 0x82:  # WM_NCDESTROY
                 old = self.old_proc
                 self.user.SetWindowLongPtrW(hwnd, -4, old)
@@ -266,15 +284,26 @@ class WindowChrome:
         if key == self.last_region or min(width, height) <= 1:
             return
         self.last_region = key
+        # Windows 11: the DWM draws anti-aliased corners (attr 33); a GDI region
+        # is a 1-bit mask that would override them with jagged 20px corners.
+        if is_windows_11():
+            return
         gdi = ctypes.windll.gdi32
         gdi.CreateRoundRectRgn.argtypes = [ctypes.c_int]*6
         gdi.CreateRoundRectRgn.restype = wt.HANDLE
         self.user.SetWindowRgn.argtypes = [wt.HWND, wt.HANDLE, wt.BOOL]
-        radius = round(20*dpi_scale(self.window))
+        radius = round(RADIUS["window"]*dpi_scale(self.window))
         region = None if zoomed else gdi.CreateRoundRectRgn(0, 0, width+1, height+1, radius*2, radius*2)
         if not self.user.SetWindowRgn(self.hwnd, region, True) and region:
             gdi.DeleteObject.argtypes = [wt.HANDLE]
             gdi.DeleteObject(region)
+
+    def refresh_scale(self) -> None:
+        """Recompute cached DPI multiples after a WM_DPICHANGED."""
+        self.last_region = None
+        for button in self.buttons.values():
+            button.refresh_scale()
+        self._schedule()
 
     def set_theme(self, colors: Mapping[str, str]) -> None:
         self.colors = colors

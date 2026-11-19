@@ -11,7 +11,30 @@ from gui_theme_preview import assert_layout, pump
 from token_plan_monitor.appearance import AppearancePreferences
 from token_plan_monitor.storage import Storage
 from token_plan_monitor.ui import MonitorUI
-from token_plan_monitor.ui_graphics import dpi_scale, window_work_area
+from token_plan_monitor.ui_graphics import (
+    dpi_scale, is_windows_11, window_work_area,
+)
+
+
+def assert_no_gdi_region(chrome):
+    """On Windows 11 the DWM owns corners; a GDI region would jaggedly override them."""
+    if not is_windows_11():
+        return
+    gdi = ctypes.windll.gdi32
+    gdi.CreateRectRgn.argtypes = [ctypes.c_int] * 4
+    gdi.CreateRectRgn.restype = wt.HRGN
+    gdi.DeleteObject.argtypes = [wt.HRGN]
+    chrome.user.GetWindowRgn.argtypes = [wt.HWND, wt.HRGN]
+    chrome.user.GetWindowRgn.restype = ctypes.c_int
+    region = gdi.CreateRectRgn(0, 0, 1, 1)
+    try:
+        # No clipping region means NULLREGION (1) on older builds, or ERROR (0)
+        # on Windows 11 24H2+ for region-less windows; either way the value must
+        # stay below SIMPLEREGION (2) at every size, including maximized, so the
+        # DWM attr-33 corners stay authoritative instead of a jagged GDI clip.
+        assert chrome.user.GetWindowRgn(chrome.hwnd, region) < 2
+    finally:
+        gdi.DeleteObject(region)
 
 
 def outer_bounds(chrome):
@@ -42,12 +65,14 @@ def check_frame(window):
     assert chrome.title.bind("<Button-1>")
     assert chrome.header.bind("<Double-Button-1>")
     assert not chrome.buttons["close"].bind("<Double-Button-1>")
+    assert_no_gdi_region(chrome)
 
 
 def run(mode, scale):
     with tempfile.TemporaryDirectory(dir=ARTIFACTS) as temporary:
         storage = Storage(Path(temporary), EmptyKeyring())
         storage.save_appearance(AppearancePreferences(mode))
+        gui_smoke.simulate_monitor_dpi(round(96 * scale))
         app = MonitorUI(FakeMonitor(), storage)
         app.root.tk.call("tk", "scaling", (96/72)*scale)
         app._configure_style()

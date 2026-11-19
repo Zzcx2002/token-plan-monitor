@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from tkinter import ttk
 from typing import Mapping
 
-from .appearance import OUTER_PADDING, SECTION_GAP
+from .appearance import OUTER_PADDING, RADIUS, SECTION_GAP
 from .history_chart import (
     PLOT_HEIGHT,
     X_AXIS_HEIGHT,
@@ -63,9 +63,9 @@ from .ui_graphics import (
 from .window_chrome import WindowChrome
 from .window_geometry import WindowGeometry
 
-#: RoundedPanel(radius=14, padding=(12, 10)) reserves inset 14 + ipadx 12 on
-#: each side, so a panel eats 52 scaled px of the document's width.
-_PANEL_CHROME_X = 2 * (14 + 12)
+#: RoundedPanel reserves inset max(14, radius//2) plus ipadx 12 on each side,
+#: so a panel eats a fixed amount of the document's width at any DPI.
+_PANEL_CHROME_X = 2 * (RADIUS["panel"] + 12)
 #: Fallback plot width before the first geometry pass has measured the doc.
 _FALLBACK_PLOT_WIDTH = 360
 #: Default window height, matching the macOS history panel; taller documents
@@ -353,8 +353,9 @@ class HistoryWindow:
         window.resizable(True, True)
         window.title(HISTORY_WINDOW_TITLE)
         app._apply_icon(window)
-        install_window_effects(window, app.colors["surface"])
+        install_window_effects(window, app.colors["surface"], material=app.material)
         self.window = window
+        window._on_dpi_changed = app._on_dpi_changed
         window._geometry = WindowGeometry(window, app.storage, "history", (480, 420))
         window._chrome = WindowChrome(
             window, HISTORY_WINDOW_TITLE, app.colors, app.font_family, self.close
@@ -546,7 +547,7 @@ class HistoryWindow:
     def _empty_panel(self, text: str) -> None:
         app = self.app
         panel = RoundedPanel(
-            self.doc, radius=14, fill=app.colors["card"],
+            self.doc, radius=RADIUS["panel"], fill=app.colors["card"],
             outline=app.colors["border"], background=app.colors["surface"],
             padding=(12, 10),
         )
@@ -561,7 +562,7 @@ class HistoryWindow:
     ) -> None:
         app = self.app
         panel = RoundedPanel(
-            self.doc, radius=14, fill=app.colors["card"],
+            self.doc, radius=RADIUS["panel"], fill=app.colors["card"],
             outline=app.colors["border"], background=app.colors["surface"],
             padding=(12, 10),
         )
@@ -639,7 +640,8 @@ class HistoryWindow:
                         f"{format_number(row.used)} / {format_number(row.quota)}"
                     )
             table.insert("", "end", values=values)
-        scrollbar = ttk.Scrollbar(holder, orient="vertical", command=table.yview)
+        scrollbar = ttk.Scrollbar(holder, orient="vertical", command=table.yview,
+                                  style="Vertical.TScrollbar")
         table.configure(yscrollcommand=scrollbar.set)
         table.pack(side="left", fill="x", expand=True)
         if len(geometry.rows) > 12:

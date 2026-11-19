@@ -39,8 +39,20 @@ def _enable_dpi_awareness() -> None:
     user32 = ctypes.windll.user32
     user32.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
     user32.SetProcessDpiAwarenessContext.restype = wintypes.BOOL
-    if not user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
-        user32.SetProcessDPIAware()
+    if user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+        return
+    # Frozen builds already declare PerMonitorV2 in the embedded manifest; in
+    # that case the call above fails because awareness can only be set once.
+    try:
+        user32.GetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+        user32.AreDpiAwarenessContextsEqual.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        user32.AreDpiAwarenessContextsEqual.restype = wintypes.BOOL
+        current = user32.GetThreadDpiAwarenessContext()
+        if current and user32.AreDpiAwarenessContextsEqual(current, ctypes.c_void_p(-4)):
+            return
+    except AttributeError:
+        pass
+    user32.SetProcessDPIAware()
 
 
 def _show_already_running() -> None:
@@ -89,6 +101,14 @@ def _run_windows_self_check() -> int:
         import tkinter  # noqa: F401
         check("imports: pystray._win32, keyring Windows backend, tkinter, "
               "Pillow, requests, certifi")
+        user32 = ctypes.windll.user32
+        user32.GetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+        user32.AreDpiAwarenessContextsEqual.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        user32.AreDpiAwarenessContextsEqual.restype = wintypes.BOOL
+        awareness = user32.GetThreadDpiAwarenessContext()
+        if not user32.AreDpiAwarenessContextsEqual(awareness, ctypes.c_void_p(-4)):
+            raise AssertionError("PerMonitorV2 DPI awareness inactive; manifest missing?")
+        check("PerMonitorV2 DPI awareness active from embedded manifest")
         active_backend = keyring.get_keyring()
         if not isinstance(active_backend, windows_keyring.WinVaultKeyring):
             raise AssertionError(

@@ -10,12 +10,15 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from gui_preview import ARTIFACTS, FakeMonitor, snapshot
+from token_plan_monitor.desktop_widget import refresh_button_hit_bounds
 from token_plan_monitor.models import MonitorViewState, WindowTrend
 from token_plan_monitor.presentation import WINDOW_LABELS
 from token_plan_monitor.providers import get_provider
 from token_plan_monitor.storage import Storage
 from token_plan_monitor.ui import MonitorUI
-from token_plan_monitor.ui_graphics import native_handle
+from token_plan_monitor.ui_graphics import (
+    is_windows_11, native_handle, transparency_enabled,
+)
 
 
 class MemoryKeyring:
@@ -99,7 +102,10 @@ def main():
             partial_texts = [canvas.itemcget(item, "text") for item in canvas.find_all()
                              if canvas.type(item) == "text"]
             assert "每月剩余" in partial_texts and "—" in partial_texts
+            # Two visible windows get exactly one hairline between them.
+            assert sum(is_packed(row["separator"]) for row in app.rows.values()) == 1
             app._render_state(state)
+            assert sum(is_packed(row["separator"]) for row in app.rows.values()) == 2
             app.storage.save_snapshot(state.snapshot)
             cache_before=app.storage.snapshot_path.read_bytes()
             initial_card=card.window
@@ -137,19 +143,26 @@ def main():
                                span_seconds=60, percent_per_hour=None)
             trending = replace(state, trends=(normal, exhausting, thin))
             app._render_state(trending)
+            # Auxiliary quota-detail captions use the smaller 9pt detail styles.
+            for kind in ("five_hour", "weekly", "monthly"):
+                row = app.rows[kind]
+                assert row["reset"].cget("style") == "DetailMuted.TLabel"
+                assert row["used"].cget("style") == "DetailMuted.TLabel"
+                assert row["full_reset"].cget("style") == "DetailMuted.TLabel"
+            assert app.rows["five_hour"]["absolute"].cget("style") == "DetailMuted.TLabel"
             five_hour = app.rows["five_hour"]["trend"]
             assert is_packed(five_hour)
             assert "消耗约 2.5%/小时" in five_hour.cget("text")
             assert "约 123.4 AFP/小时" in five_hour.cget("text")
-            assert five_hour.cget("style") == "CardMuted.TLabel"
+            assert five_hour.cget("style") == "DetailMuted.TLabel"
             weekly = app.rows["weekly"]["trend"]
             assert is_packed(weekly)
             assert "耗尽" in weekly.cget("text")
-            assert weekly.cget("style") == "CardWarning.TLabel"
+            assert weekly.cget("style") == "DetailWarning.TLabel"
             monthly = app.rows["monthly"]["trend"]
             assert is_packed(monthly)
             assert monthly.cget("text") == "记录不足，持续使用后可预测"
-            assert monthly.cget("style") == "CardMuted.TLabel"
+            assert monthly.cget("style") == "DetailMuted.TLabel"
             # A later render without trends hides every caption again.
             app._render_state(state)
             for row in app.rows.values():
@@ -162,9 +175,32 @@ def main():
             light.invoke()
             assert app.theme.name=="light"
             assert app.storage.load_appearance().theme=="dark"
+            # Material selector: acrylic previews live on Windows 11 with the
+            # system transparency switch on; cancel must roll the preview back.
+            material_buttons = {
+                w.cget("value"): w for w in descendants(app.settings_window)
+                if isinstance(w, ttk.Radiobutton) and w.cget("value") in ("solid", "acrylic")
+            }
+            acrylic_available = is_windows_11() and transparency_enabled()
+            if acrylic_available:
+                material_buttons["acrylic"].invoke()
+                app.root.after(80, app.root.quit)
+                app.root.mainloop()
+                assert app.material == "acrylic"
+                card_effects = app.desktop_widget.window._window_effects
+                assert card_effects.material == "acrylic" and card_effects.layered
+                assert app.storage.load_appearance().material == "solid"
+                material_buttons["solid"].invoke()
+                app.root.after(80, app.root.quit)
+                app.root.mainloop()
+                assert app.material == "solid"
+            else:
+                assert "acrylic" in material_buttons
+                assert material_buttons["acrylic"].instate(["disabled"])
             cancel=next(w for w in descendants(app.settings_window)
                         if isinstance(w,ttk.Button) and w.cget("text")=="取消")
             cancel.invoke()
+            assert app.material == "solid"
             assert app.theme_mode=="dark" and app.theme.name=="dark"
             assert app._details_expanded
             with patch("token_plan_monitor.appearance.system_theme",return_value="light"):
@@ -177,18 +213,67 @@ def main():
             assert monitor.refreshes==0 and monitor.configuration_updates==0
             app._set_theme("light",persist=True)
             opened = []
+            refreshed = []
             card.on_open = lambda: opened.append(True)
+            card.on_refresh = lambda: refreshed.append(True)
             x, y = card.window.winfo_x(), card.window.winfo_y()
+            # Empty-space click no longer opens the popup (macOS parity).
             card._on_press(SimpleNamespace(x_root=x+40, y_root=y+40))
             card._on_release(SimpleNamespace())
-            assert len(opened) == 1
+            assert opened == [] and refreshed == []
+            # Dragging still moves and persists, and still never opens the popup.
             card._on_press(SimpleNamespace(x_root=x+40, y_root=y+40))
             card._on_drag(SimpleNamespace(x_root=x+10, y_root=y+10))
             app.root.after(80, app.root.quit)
             app.root.mainloop()
             card._on_release(SimpleNamespace())
-            assert len(opened) == 1, 'Dragging must not open the popup'
+            assert opened == [], 'Dragging must not open the popup'
             assert app.storage.load_widget_preferences().x == card.window.winfo_x()
+            # The drag above moved the window; re-read its root position before
+            # computing the refresh button's screen point.
+            x, y = card.window.winfo_x(), card.window.winfo_y()
+            # Refresh button: one click inside the hit box fires exactly one
+            # refresh, never opens the popup, and flips the pressed state.
+            canvas = card.card
+            canvas.update_idletasks()
+            hit = refresh_button_hit_bounds(canvas.winfo_width(), canvas.winfo_height(),
+                                            canvas.scale)
+            hx = x + (hit[0] + hit[2]) // 2
+            hy = y + (hit[1] + hit[3]) // 2
+            card._on_press(SimpleNamespace(x_root=hx, y_root=hy))
+            assert canvas.refresh_pressed
+            card._on_release(SimpleNamespace(x_root=hx, y_root=hy))
+            assert len(refreshed) == 1 and opened == []
+            assert not canvas.refresh_pressed
+            # A release without coordinates falls back to the stored press point.
+            card._on_press(SimpleNamespace(x_root=hx, y_root=hy))
+            card._on_release(SimpleNamespace())
+            assert len(refreshed) == 2 and opened == []
+            # Press on the button, drag off it, release: gesture cancels.
+            card._on_press(SimpleNamespace(x_root=hx, y_root=hy))
+            card._on_drag(SimpleNamespace(x_root=x+5, y_root=y+5))
+            card._on_release(SimpleNamespace(x_root=x+5, y_root=y+5))
+            assert len(refreshed) == 2 and opened == []
+            # The enabled button shows a hand cursor while hovered.
+            card._resize_cursor(SimpleNamespace(x_root=hx, y_root=hy, widget=canvas))
+            assert canvas.cget("cursor") == "hand2"
+            card._resize_cursor(SimpleNamespace(x_root=x+40, y_root=y+40, widget=canvas))
+            assert canvas.cget("cursor") == ""
+            # Disabled while refreshing or unconfigured: the gesture is
+            # consumed but never fires, and no pressed state sticks.
+            app._render_state(replace(state, is_refreshing=True))
+            assert canvas.refresh_enabled is False
+            card._on_press(SimpleNamespace(x_root=hx, y_root=hy))
+            assert not canvas.refresh_pressed
+            card._on_release(SimpleNamespace(x_root=hx, y_root=hy))
+            assert len(refreshed) == 2
+            app._render_state(MonitorViewState(status="unconfigured"))
+            assert canvas.refresh_enabled is False
+            card._on_press(SimpleNamespace(x_root=hx, y_root=hy))
+            card._on_release(SimpleNamespace(x_root=hx, y_root=hy))
+            assert len(refreshed) == 2 and opened == []
+            app._render_state(state)
+            assert canvas.refresh_enabled is True
             card.toggle_topmost()
             app.root.after(80, app.root.quit)
             app.root.mainloop()
@@ -209,8 +294,12 @@ def main():
             app.root.mainloop()
             assert card.window.winfo_viewable()
 
-            assert not hasattr(card.window,"_material_shadow")
-            assert not card.window._window_effects.shadow
+            # Solid is the default material: opaque surface, native DWM shadow,
+            # no colour key, so GDI keeps ClearType text rendering.
+            card_effects = card.window._window_effects
+            assert card_effects.material == "solid"
+            assert card_effects.shadow and not card_effects.layered
+            assert card.window.attributes("-transparentcolor") == ""
 
             app.show_popup()
             app.root.after(80, app.root.quit)
@@ -324,7 +413,7 @@ def main():
             card.close()
             app.root.after(80, app.root.quit)
             app.root.mainloop()
-            print('PASS: theme switching, system changes, persistence, rollback, no quota/keyring writes, details retention, trend captions, click, drag, topmost, hover, no outer shadow, Escape, validation, save, cancel, alert panel, tray toast')
+            print('PASS: theme switching, material preview/rollback, system changes, persistence, no quota/keyring writes, details retention, trend captions, detail styles, separators, refresh button gestures, empty-click, drag, topmost, hover, solid ClearType surface, Escape, validation, save, cancel, alert panel, tray toast')
         finally:
             app.shutdown()
         restarted=MonitorUI(Monitor(),Storage(Path(temporary),MemoryKeyring()))

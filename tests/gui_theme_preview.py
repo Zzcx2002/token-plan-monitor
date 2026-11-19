@@ -11,6 +11,7 @@ from PIL import ImageGrab
 import gui_smoke
 from gui_preview import ARTIFACTS, FakeMonitor, EmptyKeyring, scenarios
 from token_plan_monitor.appearance import AppearancePreferences
+from token_plan_monitor.desktop_widget import refresh_progress_limit
 from token_plan_monitor.storage import Storage
 from token_plan_monitor.ui import MonitorUI
 
@@ -18,6 +19,13 @@ from token_plan_monitor.ui import MonitorUI
 def pump(app:MonitorUI) -> None:
     app.root.after(120,app.root.quit)
     app.root.mainloop()
+
+
+def is_packed(widget) -> bool:
+    try:
+        return bool(widget.pack_info())
+    except tk.TclError:
+        return False
 
 
 def capture_screen(window:tk.Misc,filename:str) -> None:
@@ -45,6 +53,7 @@ def render(mode:str,scale:float) -> None:
     with tempfile.TemporaryDirectory(dir=ARTIFACTS) as temporary:
         storage=Storage(Path(temporary),EmptyKeyring())
         storage.save_appearance(AppearancePreferences(mode))
+        gui_smoke.simulate_monitor_dpi(round(96*scale))
         monitor=FakeMonitor()
         app=MonitorUI(monitor,storage)
         failures=[]
@@ -53,10 +62,19 @@ def render(mode:str,scale:float) -> None:
         app._configure_style()
         app._create_popup()
         app._create_desktop_widget()
+        # Themed scrollbars replace clam's warm-grey defaults at every DPI.
+        style = ttk.Style(app.root)
+        assert style.lookup("Vertical.TScrollbar", "troughcolor") == app.colors["trough"]
+        assert int(style.lookup("Vertical.TScrollbar", "width")) == round(10 * scale)
+        assert style.lookup("DetailMuted.TLabel", "foreground") == app.colors["muted"]
         try:
             for name,state in scenarios():
                 monitor.state=app._state=state
                 app._render_state(state)
+                if state.snapshot:
+                    # N visible quota rows carry exactly N-1 hairline separators.
+                    mapped = sum(is_packed(row["separator"]) for row in app.rows.values())
+                    assert mapped == len(state.snapshot.windows) - 1
                 app.show_popup()
                 for expanded in (False,True):
                     if app._details_expanded!=expanded:
@@ -74,6 +92,14 @@ def render(mode:str,scale:float) -> None:
                         if card.type(item)=="text":
                             x1,y1,x2,y2=card.bbox(item)
                             assert min(x1,y1)>=0 and x2<=card.winfo_width() and y2<=card.winfo_height()
+                    # The refresh button stays inside the card, and the monthly
+                    # progress bar never crosses its reserved hit zone.
+                    refresh_box=card.bbox("refresh")
+                    assert refresh_box and min(refresh_box[0],refresh_box[1])>=0
+                    assert refresh_box[2]<=card.winfo_width() and refresh_box[3]<=card.winfo_height()
+                    monthly_box=card.bbox("progress:monthly")
+                    assert monthly_box
+                    assert monthly_box[2]<=refresh_progress_limit(card.winfo_width(),card.scale)+1
                     suffix=f"{mode}-{round(scale*100)}-{name}-{'expanded' if expanded else 'collapsed'}"
                     app.desktop_widget.window.withdraw()
                     app.popup.geometry("+40+40")

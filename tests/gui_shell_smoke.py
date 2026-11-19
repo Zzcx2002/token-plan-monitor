@@ -14,7 +14,11 @@ from pathlib import Path
 
 from PIL import ImageGrab
 
-from token_plan_monitor.desktop_widget import MONITORINFO, _user32
+from token_plan_monitor.desktop_widget import (
+    MONITORINFO,
+    _user32,
+    refresh_button_hit_bounds,
+)
 
 import gui_smoke
 
@@ -368,6 +372,24 @@ def popup_visible() -> bool:
     return bool(hwnd and user32.IsWindowVisible(hwnd))
 
 
+def monitor_scale_at(x: int, y: int) -> float:
+    """Effective DPI scale of the monitor containing a physical-screen point."""
+    monitor = _user32.MonitorFromPoint(wintypes.POINT(x, y), 2)
+    if not monitor:
+        raise AssertionError("No monitor contains the desktop widget")
+    shcore = ctypes.windll.shcore
+    shcore.GetDpiForMonitor.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.POINTER(wintypes.UINT),
+        ctypes.POINTER(wintypes.UINT),
+    ]
+    shcore.GetDpiForMonitor.restype = ctypes.c_long
+    dpi_x, dpi_y = wintypes.UINT(), wintypes.UINT()
+    shcore.GetDpiForMonitor(monitor, 0, ctypes.byref(dpi_x), ctypes.byref(dpi_y))
+    return dpi_x.value / 96.0
+
+
 def load_preferences(data_dir: Path) -> dict:
     return json.loads((data_dir / "widget.json").read_text(encoding="utf-8"))["widget"]
 
@@ -463,10 +485,39 @@ def main() -> None:
             escape_native_ui()
 
             start = widget_rect()
+            # An empty-area click no longer opens the popup; the entry points
+            # stay the tray icon and the widget menu's 打开详细用量 row.
             click((start[0] + start[2]) // 2, (start[1] + start[3]) // 2)
-            wait_for(popup_visible, "Widget click did not open the full popup")
+            time.sleep(0.5)
+            assert not popup_visible(), "Empty widget click must not open the popup"
+
+            # The right-click menu still opens the full popup.
+            click((start[0] + start[2]) // 2, (start[1] + start[3]) // 2, right=True)
+            wait_for(native_menu_handle, "Widget menu did not open")
+            time.sleep(0.35)
+            click_menu("打开详细用量", menu="widget")
+            wait_for(popup_visible, "Widget menu did not open the full popup")
             user32.PostMessageW(window_handle("火山方舟订阅容量"), WM_CLOSE, 0, 0)
-            time.sleep(0.3)
+            wait_for(lambda: not popup_visible(), "Popup did not close", timeout=4)
+
+            # The bottom-right refresh button: convert its DIP hit box with the
+            # monitor's real scale and click the physical center. The fake
+            # monitor appends a count file on every request_refresh call.
+            left, top, right, bottom = start
+            scale = monitor_scale_at((left + right) // 2, (top + bottom) // 2)
+            hit_left, hit_top, hit_right, hit_bottom = refresh_button_hit_bounds(
+                right - left, bottom - top, scale
+            )
+            refresh_count = data_dir / "refresh-count.txt"
+            click(
+                left + (hit_left + hit_right) // 2,
+                top + (hit_top + hit_bottom) // 2,
+            )
+            wait_for(
+                lambda: refresh_count.exists()
+                and refresh_count.read_text(encoding="ascii") == "1",
+                "Refresh button click did not reach the monitor",
+            )
 
             user32.SetCursorPos(0, 0)
             time.sleep(0.4)
@@ -563,7 +614,8 @@ def main() -> None:
             assert_inside_work_area(widget_rect())
             stop_via_tray(process)
             processes.remove(process)
-            print("Native tray/widget smoke passed: hover, menus, click, drag, persistence, clamping, exit")
+            print("Native tray/widget smoke passed: hover, menus, empty-click no-op, menu open, "
+                  "refresh button, drag, persistence, clamping, exit")
         finally:
             escape_native_ui()
             for process in processes:

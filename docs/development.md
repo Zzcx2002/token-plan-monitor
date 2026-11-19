@@ -138,19 +138,35 @@ py -3.13 -m venv .venv
 .venv\Scripts\python.exe tests\gui_preview.py
 ```
 
-- `tests\gui_material_smoke.py`：独立假数据窗口里验证点击、拖动、置顶、悬停、隐藏恢复、无额外阴影窗口、字段内联校验、设置保存、主题保存与取消回滚、系统主题变化及主题切换不触发查询，不操作正在运行的监控实例。
-- `tests\gui_material_preview.py`：额外生成浅色、深色条纹背景下的材质对照图（`artifacts\material-*.png`）。背景模糊与内部柔和阴影以屏幕截图为准，PrintWindow 窗口截图不含完整合成效果。
-- `tests\gui_resize_smoke.py`：三档 DPI 下的最小尺寸、边缘缩放、刷新与主题切换保留尺寸、重启恢复。
-- `tests\gui_chrome_smoke.py`：完整原生窗口边界、八方向缩放命中、最大化工作区、最小化恢复、关闭回滚与正常尺寸保留；完整窗口截图在 `artifacts\chrome-*-full.png`。
-- `tests\gui_shell_smoke.py`：完整的托盘与桌面卡片原生交互检查，使用独立假数据外壳，先关闭其他监控实例再运行。它会实际操作托盘悬停/右键、卡片悬停/单击/拖动/置顶/隐藏与恢复，并通过托盘退出和重启验证偏好持久化及屏外位置校正。所有数据在临时目录，凭据后端禁用，不访问云端；截图在 `artifacts\native-*.png`。**运行期间不要移动鼠标或操作键盘。**
+- `tests\gui_material_smoke.py`：独立假数据窗口里验证点击、拖动、置顶、悬停、隐藏恢复、无额外阴影窗口、字段内联校验、设置保存、主题保存与取消回滚、系统主题变化及主题切换不触发查询，不操作正在运行的监控实例。材质相关断言：默认实色路径无 `WS_EX_LAYERED`、无透明色键、保留系统阴影；设置窗材质选择器的即时预览（亚克力生效时才分层）、Windows 10 下亚克力禁用态、取消后材质回滚。排版与卡片交互：详情辅助文字走 9pt `DetailMuted/DetailWarning` 样式、可见 N 个周期行只 pack N−1 条发丝分隔线；桌面卡片刷新按钮的按下/释放路由、拖出取消、无坐标释放回退、refreshing/unconfigured 禁用态、`hand2` 光标，以及空白处 press/release 不再打开弹窗（拖动保存位置同样不开窗）。
+- `tests\gui_material_preview.py`：按 gating 结果生成 solid / acrylic × 浅色 / 深色的材质矩阵对照图（`artifacts\material-*.png`），并逐窗口断言 `_window_effects` 状态。背景模糊与内部柔和阴影以屏幕截图为准，PrintWindow 窗口截图不含完整合成效果。
+- `tests\gui_resize_smoke.py`：三档 DPI 下的最小尺寸、边缘缩放、刷新与主题切换保留尺寸、重启恢复；280/320/520 三档宽度下刷新按钮 bbox 始终在卡内、monthly 进度条右界不超过 `refresh_progress_limit`，按钮中心点击只触发 `on_refresh`。
+- `tests\gui_chrome_smoke.py`：完整原生窗口边界、八方向缩放命中、最大化工作区、最小化恢复、关闭回滚与正常尺寸保留；Windows 11 下额外断言窗口没有 GDI region（圆角完全交给 DWM）。完整窗口截图在 `artifacts\chrome-*-full.png`。
+- `tests\gui_dpi_smoke.py`：用 `SendMessage` 向弹窗与桌面卡片投递 `WM_DPICHANGED`（96 → 144 → 96 DPI），验证建议矩形落位、全局 `tk scaling` 与各控件 scale/圆角/按钮尺寸重排、材质保持 solid；弹窗与卡片 HWND 在 Map 后包装句柄变化时子类仍生效。另断言滚动条物理宽度（10/15px）、详情 9pt 点字号与刷新按钮命中框（20/30px）随 scale 重算。
+- `tests\gui_shell_smoke.py`：完整的托盘与桌面卡片原生交互检查，使用独立假数据外壳，先关闭其他监控实例再运行。它会实际操作托盘悬停/右键、卡片悬停/空白单击（断言不开窗）/右键菜单「打开详细用量」开窗/右下角刷新按钮原生点击（按显示器 DPI 换算命中框，假外壳写 `refresh-count.txt` 佐证）/拖动/置顶/隐藏与恢复，并通过托盘退出和重启验证偏好持久化及屏外位置校正。所有数据在临时目录，凭据后端禁用，不访问云端；截图在 `artifacts\native-*.png`。**运行期间不要移动鼠标或操作键盘。**
 - `tests\gui_smoke.py`：兼容入口，同样运行隔离交互检查，不需要预先启动应用。
 - `tests\gui_settings_provider_smoke.py`：设置窗服务商切换全链路——双 provider 的 keyring 预置、切换后 region 回退与告警值保留、AK/SK 按 provider 隔离不串号、保存后监控收到正确 provider、旧 provider 凭据不变；不访问云端、不起托盘。
-- `tests\gui_history_smoke.py`：用量历史窗口与 macOS 同源规则——每个存在的窗口一张图、重置断点不连线、24 小时/7/30/90 天范围切换、悬停提示走共享纯函数、「数据列表」披露表（无绝对值时隐藏该列）、空/薄数据文案、主题重绘与窗口生命周期；全部使用临时目录假数据。
+- `tests\gui_history_smoke.py`：用量历史窗口与 macOS 同源规则——每个存在的窗口一张图、重置断点不连线、24 小时/7/30/90 天范围切换、悬停提示走共享纯函数、「数据列表」披露表（无绝对值时隐藏该列）、空/薄数据文案、主题重绘与窗口生命周期；全部使用临时目录假数据。表格超过 12 行出现的滚动条断言为主题化的 `Vertical.TScrollbar`。
 - `tests\gui_claude_smoke.py`：Claude Code 接入——所有写入经 `claude_paths_override` 落临时目录，**绝不触碰真实 `~/.claude`**；模型清单拉取与确认框均为注入桩。覆盖带备份的校验写入与 onboarding 合并、推理 Key 不回显、取消/校验失败零写入、按 provider 的草稿记忆、后台清单更新、shutdown 清空内存 Key 草稿。
 
 GUI smoke 依赖 Tk 事件循环，曾观察到偶发的 Tk GIL 致命错误（与改动无关的环境抖动）；改动 Windows 壳后每个相关 smoke 至少连跑两遍，单跑一次通过不能作为绿灯依据。
 
 截图保存在 `artifacts\theme-*.png`，其中 `theme-light/dark-popup-collapsed/expanded.png`、`theme-light/dark-widget.png`、`theme-light/dark-settings.png` 是两套主题的代表截图。需要重新生成多尺寸应用图标 `assets\app.ico` 和 README 使用的 `assets\app.png` 时，运行 `.venv\Scripts\python.exe scripts\generate_app_icon.py`，再重新执行快捷方式脚本。
+
+## Windows：窗口材质、圆角与 DPI 架构
+
+窗口外观全部在 `ui_graphics.py` / `window_chrome.py` 通过 ctypes 直调 Win32/DWM，Tk 只负责控件绘制，四条核心约定：
+
+- **材质双路径（fail-closed）**：`AppearancePreferences.material` 取值 `solid`（默认）/ `acrylic`，持久化在 `appearance.json`，旧配置缺字段时回退 solid。亚克力只有在 `is_windows_11()`（`RtlGetVersion` build ≥ 22000，不受 manifest 兼容层影响）且系统「透明效果」开关开启时才生效；任一生机 API 失败都回滚 accent 状态并走实色，不允许留下透明洞。实色路径会显式清掉 `-transparentcolor` 色键与 `WS_EX_LAYERED`——色键分层窗口会被 Windows 强制关闭 ClearType，这是实色模式文字锐利的前提，也是亚克力模式文字稍软的根因。
+- **圆角**：Windows 11 只使用 DWM `DWMWA_WINDOW_CORNER_PREFERENCE`（attr 33，原生约 8px 抗锯齿 + 系统阴影），`set_rounded_region` 在 Win11 短路 no-op 并 `SetWindowRgn(NULL)` 清残留；Windows 10 没有 DWM 圆角，回退 `CreateRoundRectRgn`，半径统一走 `appearance.py` 的 DIP token 并在函数内乘 `dpi_scale`，最大化时移除 region。
+- **DPI 链路**：打包 exe 靠 `assets\TokenPlanMonitor.manifest` 声明 PerMonitorV2（manifest 会替换 PyInstaller 默认模板，所以 common-controls v6 等依赖也在同一文件自带，缺失 manifest 时构建直接报错）；源码运行由 `__main__.py` 的 `SetProcessDpiAwarenessContext(-4)` 兜底。运行期 `WM_DPICHANGED` 先按 lParam 建议矩形 `SetWindowPos`，再经 `after_idle` 触发 `_on_dpi_changed`：更新全局 `tk scaling` → `invalidate_scaled_caches()` → 重建 ttk 元素与各控件 `refresh_scale()`。overrideredirect 窗口（桌面卡片等）的 WNDPROC 子类在每次 `<Map>` 按当前 HWND 幂等重装——Tk 在 Map 后可能换上外层包装 HWND，构造期装的子类会失效。
+- **已知限制**：Tk 8.6.15 的 `tk scaling` 进程全局唯一，多显示器 DPI 不同时，以交互窗口所在显示器的 DPI 为准统一重排，不做 per-window 字号；tooltip 不装 DPI 子类，DPI 变化时隐藏重建。
+
+## Windows：ttk 主题化、详情排版与卡片刷新按钮
+
+- **滚动条**：clam 主题默认滚动条是暖灰浮雕配色，深色下与应用色板冲突。`ui_graphics.py` 的 `scrollbar_palette(theme)` 是纯函数（thumb/arrow 取 `mix_color(muted, trough, 0.35)`，active/pressed/disabled 走 accent token），`configure_scrollbars(style, theme)` 只做 `style.configure/style.map`，不建位图 element——thumb 长度仍由 Tk 按视图比例计算。宽 10 DIP、箭头 10 DIP，经 `dpi_scale` 换算物理像素，`gripcount=0`、`relief="flat"`、`borderwidth=0` 去掉浮雕与握把；两个构造点（`ScrollableBody` 与历史表格）显式指定 `Vertical.TScrollbar`，主题切换与 DPI 变化随 `_configure_style()` 重跑自动覆盖。
+- **套餐详情排版**：辅助信息（重置时间、已用%、绝对值、完整重置、趋势）统一 9pt 的 `DetailMuted.TLabel` / `DetailWarning.TLabel`（`DETAIL_FONT_SIZE` 常量，设置窗的 `CardMuted` 仍为 10pt 不动），与 10pt bold 周期名、18pt 数值拉开三级字阶。三个周期行仍在同一个 `RoundedPanel` 内，行间是 1px `tk.Frame` 发丝线（`bg=border`，主题 remap 自动换色）；`_set_popup_layout()` 先 forget 全部行与分隔线再按可见行重 pack，N 个窗口只出现 N−1 条线，窗口集合变化无残留。
+- **卡片刷新按钮**：几何常量对齐 macOS `CardRefreshButton`——32 DIP frame、12 DIP 右下外边距、6 DIP 内缩得到 20 DIP 命中框，全部落在 `desktop_widget.py` 的纯函数（`refresh_button_frame` / `refresh_button_hit_bounds` / `hit_refresh_button` / `refresh_progress_limit`，DIP 入参、物理像素返回，单测在 `tests\test_desktop_widget.py`，带 win32 平台守卫）。圆形底板按 normal/hover/pressed/disabled 四态换色，箭头用 Segoe UI Symbol 的 U+21BB 字形（负像素字号，跟随卡片自身 scale，不依赖进程全局 `tk scaling`）；所有 Canvas item 打 `refresh` tag，monthly 进度条截断到 `refresh_progress_limit` 防重叠。事件路由：命中判定先于边缘缩放与拖动，禁用态也消费手势；释放点重新命中判定，按下后拖出不触发；空白处单击/双击不再开窗（与 macOS 对齐，入口只剩托盘单击与右键菜单「打开详细用量」），拖动保存位置逻辑不变。
 
 ## Windows：打包便携版
 
@@ -164,9 +180,9 @@ GUI smoke 依赖 Tk 事件循环，曾观察到偶发的 Tk GIL 致命错误（�
 脚本一条龙完成，任一步失败即中止：
 
 1. 清理旧的 `build\` 与 `dist\TokenPlanMonitor`（Defender 扫描新 exe 时会短暂占用文件，删除带 6 次线性退避重试）。
-2. PyInstaller **onedir** 打包：`--windowed --name TokenPlanMonitor --icon assets/app.ico --add-data "assets;assets"`，hidden imports 显式带上 `pystray._win32` 与 `keyring.backends.Windows`。入口是包外的 `scripts/windows_launcher.py`——直接把包内 `__main__.py` 当脚本会被 PyInstaller 当成顶层脚本，相对导入失败。
+2. PyInstaller **onedir** 打包：`--windowed --name TokenPlanMonitor --icon assets/app.ico --manifest assets/TokenPlanMonitor.manifest --add-data "assets;assets"`，hidden imports 显式带上 `pystray._win32` 与 `keyring.backends.Windows`。manifest 替换 PyInstaller 默认模板，自带 PerMonitorV2 DPI 声明、common-controls v6 与 supportedOS，文件缺失时脚本在打包前直接报错。入口是包外的 `scripts/windows_launcher.py`——直接把包内 `__main__.py` 当脚本会被 PyInstaller 当成顶层脚本，相对导入失败。
 3. 校验 `TokenPlanMonitor.exe` 与 `_internal\assets\app.ico` 存在，把 `THIRD_PARTY_NOTICES.md` 与 `licenses\` 复制进产物目录。
-4. 运行 `TokenPlanMonitor.exe --self-check`：windowed bootloader 没有 stdout，自检把结果写到 exe 旁的 `self-check-result.txt`。检查项包括 frozen 平台、全部关键导入（含 pystray / keyring 的 Windows 后端）、keyring 实际后端是 `WinVaultKeyring`、便携 data/logs 路径、打包图标与 CA 证书可解析、配置与历史 JSON 往返、凭据管理器真实 set/get/delete 往返（用完即删）。
+4. 运行 `TokenPlanMonitor.exe --self-check`：windowed bootloader 没有 stdout，自检把结果写到 exe 旁的 `self-check-result.txt`。检查项包括 frozen 平台、全部关键导入（含 pystray / keyring 的 Windows 后端）、keyring 实际后端是 `WinVaultKeyring`、嵌入 manifest 的 PerMonitorV2 DPI awareness 真实生效（`GetThreadDpiAwarenessContext` 等于 PER_MONITOR_AWARE_V2，漏传 manifest 时构建失败）、便携 data/logs 路径、打包图标与 CA 证书可解析、配置与历史 JSON 往返、凭据管理器真实 set/get/delete 往返（用完即删）。
 5. 托盘存活探针：实际启动 exe，轮询 12 秒确认进程稳定、`logs\app.log` 生成且无 Traceback，然后 `taskkill /PID /T /F` 收尾。
 6. 清掉探针产生的 data/logs，暂存 `dist\TokenPlanMonitor-<版本>-win64\` 并压缩为同名 zip，生成 `.sha256`（LF 行尾、basename 文件名，保证 `sha256sum -c` 直接可用），再回读压缩包复核摘要。
 

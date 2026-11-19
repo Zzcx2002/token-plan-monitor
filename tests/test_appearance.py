@@ -11,6 +11,41 @@ def test_invalid_or_missing_appearance_uses_system(value):
     assert AppearancePreferences.from_dict(value).theme=="system"
 
 
+def test_appearance_defaults_to_solid_material():
+    prefs = AppearancePreferences()
+    assert prefs.theme == "system" and prefs.material == "solid"
+    assert prefs.to_dict() == {"theme": "system", "material": "solid"}
+
+
+@pytest.mark.parametrize("material", ["solid", "acrylic"])
+def test_appearance_material_roundtrip(material):
+    prefs = AppearancePreferences("dark", material)
+    restored = AppearancePreferences.from_dict(prefs.to_dict())
+    assert restored.theme == "dark" and restored.material == material
+
+
+def test_legacy_appearance_dict_without_material_falls_back_to_solid():
+    assert AppearancePreferences.from_dict({"theme": "dark"}).material == "solid"
+
+
+@pytest.mark.parametrize("value", [None, {}, {"material": "mica"},
+                                   {"material": False}, {"theme": "light", "material": 42}])
+def test_invalid_material_falls_back_to_solid(value):
+    assert AppearancePreferences.from_dict(value).material == "solid"
+
+
+def test_unknown_material_constructor_is_rejected():
+    with pytest.raises(ValueError):
+        AppearancePreferences("light", "mica")
+
+
+def test_material_persists_independently(tmp_path):
+    storage = Storage(tmp_path)
+    storage.save_appearance(AppearancePreferences("dark", "acrylic"))
+    loaded = storage.load_appearance()
+    assert loaded.theme == "dark" and loaded.material == "acrylic"
+
+
 @pytest.mark.parametrize("mode",["light","dark","system"])
 def test_appearance_roundtrip_is_independent_of_account_files(tmp_path,mode):
     storage=Storage(tmp_path)

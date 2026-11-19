@@ -15,14 +15,16 @@ import pystray
 
 from . import claude_code
 from .assets import make_tray_icon
-from .appearance import (AppearancePreferences, LIGHT, THEME_LABELS, resolve_theme,
-                         installed_fonts, OUTER_PADDING, SECTION_GAP, ROW_PADDING)
+from .appearance import (AppearancePreferences, LIGHT, RADIUS, THEME_LABELS,
+                         resolve_theme, installed_fonts, OUTER_PADDING, SECTION_GAP, ROW_PADDING)
 from .claude_code import ClaudeConfigError
 from .desktop_widget import DesktopWidget
 from .history_view import HistoryWindow
 from .model_catalog import fetch_model_ids, merge_model_options
 from .ui_graphics import (RoundedPanel, RoundedProgress, ScrollableBody, Tooltip, dpi_scale, window_work_area,
-                          install_window_effects, apply_window_effects, configure_rounded_buttons)
+                          install_window_effects, apply_window_effects, calibrate_tk_scaling,
+                          configure_rounded_buttons, configure_scrollbars, invalidate_scaled_caches,
+                          resolve_material, transparency_enabled)
 from .models import (
     ClaudeProviderPrefs,
     MonitorViewState,
@@ -55,6 +57,9 @@ from .window_chrome import WindowChrome
 
 APP_ICON_PATH = resource_path("assets", "app.ico")
 POPUP_WIDTH = 440
+#: Point size for quota-detail auxiliary captions; one step below the 10pt
+#: section titles so the hierarchy reads at a glance.
+DETAIL_FONT_SIZE = 9
 COLORS = LIGHT.colors
 
 logger = logging.getLogger(__name__)
@@ -75,7 +80,12 @@ class MonitorUI:
         self._layout_key: tuple[Any, ...] | None = None
         self._menu_key: tuple[Any, ...] | None = None
         self._popup_positioned = False
-        self.theme_mode = storage.load_appearance().theme
+        appearance = storage.load_appearance()
+        self.theme_mode = appearance.theme
+        # Acrylic only resolves on Win11 with the system transparency switch on.
+        self.material = resolve_material(appearance.material)
+        self._system_transparency = transparency_enabled()
+        self._dpi = 0
         self.theme = resolve_theme(self.theme_mode)
         self.colors = dict(self.theme.colors)
         self._details_expanded = False
@@ -104,6 +114,8 @@ class MonitorUI:
         self._applying_claude = False
 
         self.root = tk.Tk()
+        # Pin Tk scaling to the real monitor DPI before any font/style is built.
+        self._dpi = round(calibrate_tk_scaling(self.root) * 96)
         self.font_family, self.latin_font = installed_fonts(tkfont.families(self.root))
         self.root.option_add("*Font", (self.font_family, 10))
         self.root.withdraw()
@@ -185,6 +197,18 @@ class MonitorUI:
         style.configure(
             "CardWarning.TLabel", background=self.colors["card"], foreground=self.colors["warning"]
         )
+        # Quota-detail captions (reset time, used/absolute values, trend) are
+        # deliberately smaller than the 10pt section labels and muted.
+        style.configure(
+            "DetailMuted.TLabel",
+            font=(self.font_family, DETAIL_FONT_SIZE),
+            background=self.colors["card"], foreground=self.colors["muted"],
+        )
+        style.configure(
+            "DetailWarning.TLabel",
+            font=(self.font_family, DETAIL_FONT_SIZE),
+            background=self.colors["card"], foreground=self.colors["warning"],
+        )
         style.configure(
             "CardSuccess.TLabel", background=self.colors["card"], foreground=self.colors["success"]
         )
@@ -252,6 +276,7 @@ class MonitorUI:
             background=[("pressed", self.colors["pressed"]), ("active", self.colors["hover"])],
         )
         configure_rounded_buttons(style, self.theme)
+        configure_scrollbars(style, self.theme)
         style.configure("TEntry", fieldbackground=self.colors["card"], padding=self.px(9),
                         bordercolor=self.colors["border"], lightcolor=self.colors["border"],
                         darkcolor=self.colors["border"], foreground=self.colors["text"],
@@ -271,8 +296,25 @@ class MonitorUI:
         style.map("Card.TCheckbutton",background=[("active",self.colors["hover"])],
                   foreground=[("selected",self.colors["accent"])])
 
+    def _set_material(self, material: str, *, persist: bool = False) -> None:
+        """Switch solid/acrylic; solid restores ClearType text immediately."""
+        effective = resolve_material(material)
+        self.material = effective
+        if persist:
+            self.storage.save_appearance(AppearancePreferences(self.theme_mode, material))
+        history_window = self.history.window if self.history is not None else None
+        for window in (self.popup, self.settings_window, history_window):
+            if window is not None and window.winfo_exists():
+                window._material = effective
+                apply_window_effects(window, self.colors["surface"], material=effective)
+        if self.desktop_widget is not None:
+            self.desktop_widget.material = effective
+            self.desktop_widget.set_theme(self.colors, self.theme.shadow_opacity)
+        if self._settings_dialog is not None and self._settings_dialog.material_var is not None:
+            self._settings_dialog.material_var.set(effective)
+
     def _set_theme(self, mode: str, *, persist: bool = False) -> None:
-        preferences=AppearancePreferences(mode)
+        preferences=AppearancePreferences(mode, self.material)
         if persist:
             self.storage.save_appearance(preferences)
             if self._settings_dialog is not None:
@@ -315,7 +357,7 @@ class MonitorUI:
         for window in (self.popup,self.settings_window,history_window):
             if window is not None and window.winfo_exists():
                 window._shadow_opacity=self.theme.shadow_opacity
-                apply_window_effects(window,self.colors["surface"])
+                apply_window_effects(window,self.colors["surface"],material=self.material)
                 window._chrome.set_theme(self.colors)
         if self.desktop_widget is not None:
             self.desktop_widget.set_theme(self.colors,self.theme.shadow_opacity)
@@ -327,6 +369,12 @@ class MonitorUI:
             return
         if self.theme_mode=="system":
             self._set_theme("system")
+        # Re-resolve material when the system transparency switch flips, so an
+        # active acrylic window falls back to solid (and back) without a restart.
+        system_transparency = transparency_enabled()
+        if system_transparency != self._system_transparency:
+            self._system_transparency = system_transparency
+            self._set_material(self.material)
         if self.updated_label is not None and self._state.snapshot is not None:
             self.updated_label.configure(text=self._updated_text(self._state.snapshot.queried_at))
         self._theme_poll_after=self.root.after(2000,self._poll_theme)
@@ -389,6 +437,7 @@ class MonitorUI:
             colors=self.colors,
             font_family=self.font_family,
             shadow_opacity=self.theme.shadow_opacity,
+            material=self.material,
         )
 
     def _create_tray_menu(self) -> pystray.Menu:
@@ -515,8 +564,9 @@ class MonitorUI:
         popup.bind("<Escape>",lambda event:popup.withdraw())
         popup.bind("<F5>",lambda event:self._request_refresh())
         self._apply_icon(popup)
-        install_window_effects(popup,self.colors["surface"])
+        install_window_effects(popup,self.colors["surface"],material=self.material)
         self.popup=popup
+        popup._on_dpi_changed=self._on_dpi_changed
         self.popup_geometry=WindowGeometry(popup,self.storage,"popup",(360,220))
         popup._geometry=self.popup_geometry
         popup._chrome=WindowChrome(popup,"订阅用量",self.colors,self.font_family,popup.withdraw)
@@ -549,7 +599,7 @@ class MonitorUI:
         self.refresh_button.pack(side="right")
 
     def _create_quota_cards(self,parent:ttk.Frame) -> None:
-        self.quota_panel=RoundedPanel(parent,radius=14,fill=self.colors["card"],
+        self.quota_panel=RoundedPanel(parent,radius=RADIUS["panel"],fill=self.colors["card"],
             outline=self.colors["border"],background=self.colors["surface"],padding=(9,3))
         self.quota_panel.pack(fill="x")
         for kind in ("five_hour","weekly","monthly"):
@@ -561,21 +611,22 @@ class MonitorUI:
             progress=RoundedProgress(frame,background=self.colors["card"],trough=self.colors["trough"],
                                      height=max(4,round(5*dpi_scale(parent))))
             progress.grid(row=1,column=0,columnspan=2,sticky="ew",pady=(self.px(5),self.px(6)))
-            reset=ttk.Label(frame,text="重置时间暂无",style="CardMuted.TLabel",
+            reset=ttk.Label(frame,text="重置时间暂无",style="DetailMuted.TLabel",
                             wraplength=round(320*dpi_scale(parent)))
             reset.grid(row=2,column=0,columnspan=2,sticky="w")
             details=ttk.Frame(frame,style="Card.TFrame")
-            used=ttk.Label(details,text="",style="CardMuted.TLabel")
+            used=ttk.Label(details,text="",style="DetailMuted.TLabel")
             used.pack(anchor="w")
-            absolute=ttk.Label(details,text="",style="CardMuted.TLabel",
+            absolute=ttk.Label(details,text="",style="DetailMuted.TLabel",
                                wraplength=round(320*dpi_scale(parent)),justify="left")
             absolute.pack(anchor="w",pady=(4,0))
-            full_reset=ttk.Label(details,text="",style="CardMuted.TLabel")
+            full_reset=ttk.Label(details,text="",style="DetailMuted.TLabel")
             full_reset.pack(anchor="w",pady=(4,0))
-            trend=ttk.Label(details,text="",style="CardMuted.TLabel",
+            trend=ttk.Label(details,text="",style="DetailMuted.TLabel",
                             wraplength=round(320*dpi_scale(parent)),justify="left")
             trend.pack(anchor="w",pady=(4,0))
-            separator=tk.Frame(self.quota_panel.content,bg=self.colors["border"],height=1)
+            separator=tk.Frame(self.quota_panel.content,bg=self.colors["border"],height=1,
+                               borderwidth=0,highlightthickness=0)
             self.rows[kind]={"frame":frame,"remaining":remaining,"used":used,"progress":progress,
                               "absolute":absolute,"reset":reset,"full_reset":full_reset,
                               "trend":trend,"details":details,"separator":separator}
@@ -585,7 +636,7 @@ class MonitorUI:
     def _create_empty_panel(self, parent: ttk.Frame) -> None:
         panel = RoundedPanel(
             parent,
-            radius=14,
+            radius=RADIUS["panel"],
             fill=self.colors["card"],
             outline=self.colors["border"],
             background=self.colors["surface"],
@@ -619,9 +670,46 @@ class MonitorUI:
         if self._state.status != "unconfigured" and not self._state.is_refreshing:
             self.monitor.request_refresh()
 
+    def _on_dpi_changed(self, dpi: int) -> None:
+        """Rebuild scaled assets after moving across monitors.
+
+        Tk 8.6 keeps one process-global scaling factor, so every open window
+        re-lays-out together with the window that received WM_DPICHANGED.
+        """
+        if dpi == self._dpi:
+            return
+        self._dpi = dpi
+        self.root.tk.call("tk", "scaling", dpi / 72.0)
+        invalidate_scaled_caches()
+        self._configure_style()
+
+        def visit(widget: tk.Misc) -> None:
+            for child in widget.winfo_children():
+                visit(child)
+            if isinstance(widget, RoundedPanel):
+                widget.refresh_scale()
+            elif isinstance(widget, RoundedProgress):
+                widget._key = None
+                widget._redraw()
+            elif isinstance(widget, ScrollableBody):
+                widget.refresh_scale()
+
+        visit(self.root)
+        history_window = self.history.window if self.history is not None else None
+        for window in (self.popup, self.settings_window, history_window):
+            if window is not None and window.winfo_exists():
+                chrome = getattr(window, "_chrome", None)
+                if chrome is not None:
+                    chrome.refresh_scale()
+                apply_window_effects(window, self.colors["surface"], material=self.material)
+        if self.desktop_widget is not None:
+            self.desktop_widget.on_scale_changed(dpi)
+        self._render_state(self._state)
+
     def show_popup(self) -> None:
         if self.popup is None:
             return
+        calibrate_tk_scaling(self.popup)
         self._fit_popup()
         self.popup.deiconify()
         if not self._popup_positioned:
@@ -742,12 +830,18 @@ class MonitorUI:
         if has_quota:
             self.empty_frame.pack_forget()
             self.quota_frame.pack(fill="x")
+            # Forget first so a changed window set leaves no stale separators,
+            # then repack in canonical order with a hairline between rows.
             for kind in WINDOW_LABELS:
                 row=self.rows[kind]
                 row["frame"].pack_forget()
                 row["separator"].pack_forget()
-                if kind in visible_kinds:
-                    row["frame"].pack(fill="x")
+            visible=[kind for kind in WINDOW_LABELS if kind in visible_kinds]
+            for index,kind in enumerate(visible):
+                row=self.rows[kind]
+                row["frame"].pack(fill="x")
+                if index < len(visible)-1:
+                    row["separator"].pack(fill="x",padx=self.px(8))
         else:
             self.quota_frame.pack_forget()
             self.empty_frame.pack(fill="x")
@@ -843,7 +937,7 @@ class MonitorUI:
             )
             row["trend"].configure(
                 text=caption,
-                style="CardWarning.TLabel" if exhausting else "CardMuted.TLabel",
+                style="DetailWarning.TLabel" if exhausting else "DetailMuted.TLabel",
             )
             row["trend"].pack(anchor="w",pady=(4,0))
         else:

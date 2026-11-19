@@ -81,6 +81,18 @@ gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
 gdi32.DeleteDC.argtypes = [ctypes.c_void_p]
 
 
+def simulate_monitor_dpi(dpi):
+    """Pin the native DPI probe so simulated monitor DPI survives calibration.
+
+    Harnesses force ``tk scaling`` to emulate 150%/200% monitors. The runtime
+    calibrates scaling from the physical monitor DPI when a popup opens, which
+    would overwrite the simulation and mix fonts built at one scale with
+    geometry at another; patching the probe keeps the whole run consistent.
+    """
+    from token_plan_monitor import ui_graphics
+    ui_graphics.native_dpi = lambda window: dpi
+
+
 def find_window(title, timeout=5):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:

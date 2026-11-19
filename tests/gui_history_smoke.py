@@ -232,6 +232,9 @@ def main():
             assert "/" in str(first_values[2])
             # The table keeps the same newest-first order as the geometry.
             assert first_values[1] == f"{five_geo.rows[0].used_percent:.1f}%"
+            # More than 12 rows packs the themed vertical scrollbar.
+            bars = [w for w in descendants(window) if isinstance(w, ttk.Scrollbar)]
+            assert bars and bars[0].cget("style") == "Vertical.TScrollbar"
             button(window, HISTORY_TABLE_COLLAPSE).invoke()
             pump(app)
             assert treeviews(window) == []

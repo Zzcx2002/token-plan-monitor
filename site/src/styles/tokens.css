@@ -1,5 +1,5 @@
 :root {
-  color-scheme: light;
+  color-scheme: light dark;
   --page: #f5f6f7;
   --surface: #ffffff;
   --surface-subtle: #eef0f3;
@@ -19,13 +19,18 @@
   --privacy: #eaf2fb;
   --shadow: 0 24px 70px rgba(30, 48, 75, 0.1), 0 2px 8px rgba(30, 48, 75, 0.04);
   --shadow-soft: 0 12px 36px rgba(30, 48, 75, 0.06);
+  --radius-lg: 24px;
   --radius: 20px;
+  --radius-md: 12px;
+  --radius-sm: 8px;
+  --image-frame: #e9ebee;
+  --image-bg: #f2f2f2;
+  --image-border: #e1e3e7;
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI Variable Display", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    color-scheme: dark;
     --page: #18191d;
     --surface: #24262b;
     --surface-subtle: #1e2025;
@@ -45,5 +50,8 @@
     --privacy: #1d2835;
     --shadow: 0 24px 70px rgba(0, 0, 0, 0.26), 0 2px 8px rgba(0, 0, 0, 0.18);
     --shadow-soft: 0 12px 36px rgba(0, 0, 0, 0.18);
+    --image-frame: #30343b;
+    --image-bg: #26282e;
+    --image-border: #3d424b;
   }
 }

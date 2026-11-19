@@ -13,22 +13,51 @@ from typing import Any, Mapping
 THEME_MODES = ("light", "dark", "system")
 THEME_LABELS = {"light": "浅色", "dark": "深色", "system": "跟随系统"}
 
+#: Solid keeps an opaque window so GDI renders ClearType text; acrylic needs a
+#: colour-keyed layered window, on which Windows forces grayscale antialiasing.
+MATERIAL_MODES = ("solid", "acrylic")
+MATERIAL_LABELS = {"solid": "实色（文字最清晰）", "acrylic": "亚克力（磨砂透明）"}
+
+#: Acrylic tint opacity; 0xC8 let too much wallpaper bleed through and shift
+#: the surface colour, so the default sits closer to the theme surface.
+ACRYLIC_TINT_ALPHA = 0xD9
+
+#: Corner radii in DIPs (96-DPI logical pixels); widget code multiplies by the
+#: current ``dpi_scale``. ``window``/``widget_card`` match the fixed ~8px
+#: Windows 11 DWM corner so the GDI fallback on Windows 10 looks the same.
+RADIUS = MappingProxyType({
+    "window": 8,
+    "widget_card": 8,
+    "panel": 12,
+    "button": 8,
+    "input": 7,
+    "tooltip": 8,
+    "hover": 12,
+})
+
 
 @dataclass(frozen=True)
 class AppearancePreferences:
     theme: str = "system"
+    material: str = "solid"
 
     def __post_init__(self) -> None:
         if self.theme not in THEME_MODES:
             raise ValueError("Unknown appearance theme")
+        if self.material not in MATERIAL_MODES:
+            raise ValueError("Unknown window material")
 
     def to_dict(self) -> dict[str, str]:
-        return {"theme": self.theme}
+        return {"theme": self.theme, "material": self.material}
 
     @classmethod
     def from_dict(cls, value: Any) -> AppearancePreferences:
         mode = value.get("theme") if isinstance(value, dict) else None
-        return cls(mode if isinstance(mode, str) and mode in THEME_MODES else "system")
+        material = value.get("material") if isinstance(value, dict) else None
+        return cls(
+            mode if isinstance(mode, str) and mode in THEME_MODES else "system",
+            material if isinstance(material, str) and material in MATERIAL_MODES else "solid",
+        )
 
 
 @dataclass(frozen=True)

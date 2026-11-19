@@ -22,6 +22,9 @@ APP_NAME = "TokenPlanMonitor"
 # A package-external launcher: PyInstaller otherwise runs __main__.py as a
 # top-level script and its relative imports fail with no known parent package.
 ENTRY = ROOT / "scripts" / "windows_launcher.py"
+# Replaces PyInstaller's default manifest, so it must carry the common-controls
+# dependency and the PerMonitorV2 DPI declaration itself.
+MANIFEST = ROOT / "assets" / "TokenPlanMonitor.manifest"
 # Backends imported through backend-selection indirection: PyInstaller's static
 # analysis cannot see them, so name them explicitly.
 HIDDEN_IMPORTS = (
@@ -60,12 +63,15 @@ def build_application() -> Path:
     for path in (ROOT / "build", work_app):
         if path.exists():
             remove_tree(path)
+    if not MANIFEST.is_file():
+        raise RuntimeError(f"Missing Windows manifest: {MANIFEST}")
     command = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm", "--clean",
         "--windowed",
         "--name", APP_NAME,
         "--icon", str(ROOT / "assets" / "app.ico"),
+        "--manifest", str(MANIFEST),
         "--add-data", f"{ROOT / 'assets'}{os.pathsep}assets",
         # Keep the generated spec inside the gitignored build directory.
         "--specpath", str(ROOT / "build"),

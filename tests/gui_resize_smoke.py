@@ -9,6 +9,10 @@ import gui_smoke
 from gui_preview import ARTIFACTS, EmptyKeyring, FakeMonitor, scenarios
 from gui_theme_preview import assert_layout, capture_screen, pump
 from token_plan_monitor.appearance import AppearancePreferences
+from token_plan_monitor.desktop_widget import (
+    refresh_button_hit_bounds,
+    refresh_progress_limit,
+)
 from token_plan_monitor.storage import Storage
 from token_plan_monitor.ui import MonitorUI
 from token_plan_monitor.ui_graphics import dpi_scale
@@ -18,6 +22,7 @@ def run(mode, scale):
     with tempfile.TemporaryDirectory(dir=ARTIFACTS) as temporary:
         storage = Storage(Path(temporary), EmptyKeyring())
         storage.save_appearance(AppearancePreferences(mode))
+        gui_smoke.simulate_monitor_dpi(round(96 * scale))
         app = MonitorUI(FakeMonitor(), storage)
         app.root.tk.call("tk", "scaling", (96/72)*scale)
         app._configure_style()
@@ -49,6 +54,7 @@ def run(mode, scale):
             app._close_settings(app.settings_window)
             card = app.desktop_widget
             card.on_open = Mock()
+            card.on_refresh = Mock()
             x, y = card.window.winfo_rootx(), card.window.winfo_rooty()
             w, h = card._size
             press = SimpleNamespace(x_root=x+w-2, y_root=y+h-2, widget=card.card)
@@ -62,7 +68,8 @@ def run(mode, scale):
             card.render(app._state)
             pump(app)
             assert card._size == enlarged
-            assert not hasattr(card.window, "_material_shadow")
+            assert card.window._window_effects.material == "solid"
+            assert not card.window._window_effects.layered
             # 280 is a legacy v0.2.0 geometry forced below the new 320 minimum:
             # the three columns must still stay inside the card. 320 is the real
             # minimum the drag floor and WindowGeometry now enforce.
@@ -74,6 +81,21 @@ def run(mode, scale):
                         x1, y1, x2, y2 = card.card.bbox(item)
                         assert min(x1, y1) >= 0
                         assert x2 <= card.card.winfo_width() and y2 <= card.card.winfo_height()
+                # Refresh button stays inside the card; monthly bar is clipped
+                # short of its hit zone at every width, including the legacy 280.
+                refresh_box = card.card.bbox("refresh")
+                assert refresh_box and refresh_box[2] <= card.card.winfo_width()
+                limit = refresh_progress_limit(card.card.winfo_width(), card.card.scale)
+                monthly_box = card.card.bbox("progress:monthly")
+                assert monthly_box and monthly_box[2] <= limit + 1
+            # A click on the button fires refresh, never the popup entry.
+            hl, ht, hr, hb = refresh_button_hit_bounds(
+                card.card.winfo_width(), card.card.winfo_height(), card.card.scale)
+            cx = card.window.winfo_rootx() + (hl + hr) // 2
+            cy = card.window.winfo_rooty() + (ht + hb) // 2
+            card._on_press(SimpleNamespace(x_root=cx, y_root=cy))
+            card._on_release(SimpleNamespace(x_root=cx, y_root=cy))
+            assert card.on_refresh.called and not card.on_open.called
             card.geometry.flush()
             app.popup_geometry.flush()
             expected = storage.load_window_size("widget")

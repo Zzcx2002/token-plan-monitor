@@ -19,10 +19,48 @@ from .presentation import (
 )
 from .storage import Storage
 from .window_geometry import WindowGeometry
-from .appearance import installed_fonts
-from .ui_graphics import RoundedPanel, set_rounded_region, apply_window_effects, install_window_effects, rounded_photo, dpi_scale, gradient_image
+from .appearance import RADIUS, installed_fonts
+from .ui_graphics import (RoundedPanel, set_rounded_region, apply_window_effects,
+                          install_dpi_handler, install_window_effects, rounded_photo,
+                          dpi_scale, gradient_image)
 
 logger = logging.getLogger(__name__)
+
+# Refresh button geometry in DIPs, mirroring the macOS CardRefreshButton: a
+# 32pt frame, 12pt bottom-right margin, 6pt hit inset (20pt hit box).
+REFRESH_BUTTON_FRAME = 32
+REFRESH_BUTTON_MARGIN = 12
+REFRESH_BUTTON_INSET = 6
+REFRESH_BUTTON_GAP = 6
+REFRESH_TAG = "refresh"
+
+
+def refresh_button_frame(width: int, height: int, scale: float) -> tuple[int, int, int, int]:
+    """Card-local bounding box (physical px) of the 32 DIP button frame."""
+    frame = round(REFRESH_BUTTON_FRAME * scale)
+    margin = round(REFRESH_BUTTON_MARGIN * scale)
+    right = width - margin
+    bottom = height - margin
+    return right - frame, bottom - frame, right, bottom
+
+
+def refresh_button_hit_bounds(width: int, height: int, scale: float) -> tuple[int, int, int, int]:
+    """Card-local clickable box (physical px); the visible 20 DIP circle."""
+    left, top, right, bottom = refresh_button_frame(width, height, scale)
+    inset = round(REFRESH_BUTTON_INSET * scale)
+    return left + inset, top + inset, right - inset, bottom - inset
+
+
+def hit_refresh_button(x: float, y: float, width: int, height: int, scale: float) -> bool:
+    """Whether a card-local point lands inside the refresh hit box."""
+    left, top, right, bottom = refresh_button_hit_bounds(width, height, scale)
+    return left <= x <= right and top <= y <= bottom
+
+
+def refresh_progress_limit(width: int, scale: float) -> int:
+    """Right edge (card-local px) the monthly progress bar may not cross."""
+    left, _, _, _ = refresh_button_hit_bounds(width, round(124 * scale), scale)
+    return left - round(REFRESH_BUTTON_GAP * scale)
 
 
 class RECT(ctypes.Structure):
@@ -73,10 +111,36 @@ class QuotaCard(tk.Canvas):
         self._surface_key=None
         self._surface=None
         self._progress_images=[]
+        # Refresh button interaction state; enabled only with a configured
+        # provider and while no refresh is in flight.
+        self.refresh_enabled=False
+        self.refresh_hover=False
+        self.refresh_pressed=False
         self.bind("<Configure>",lambda event:self.draw())
 
     def render(self,state:MonitorViewState) -> None:
         self.state=state
+        self.refresh_enabled=state.status!="unconfigured" and not state.is_refreshing
+        if not self.refresh_enabled:
+            self.refresh_hover=False
+            self.refresh_pressed=False
+        self.draw()
+
+    def set_refresh_hover(self, hovering: bool) -> None:
+        if self.refresh_enabled and self.refresh_hover!=hovering:
+            self.refresh_hover=hovering
+            self.draw()
+
+    def set_refresh_pressed(self, pressed: bool) -> None:
+        if self.refresh_enabled and self.refresh_pressed!=pressed:
+            self.refresh_pressed=pressed
+            self.draw()
+
+    def set_scale(self, scale: float) -> None:
+        """Rebuild at a new DPI; point-size fonts update themselves."""
+        self.scale=scale
+        self._surface_key=None
+        self.configure(height=round(124*scale))
         self.draw()
 
     def draw(self) -> None:
@@ -88,8 +152,8 @@ class QuotaCard(tk.Canvas):
         self.configure(background=c["surface"])
         key=width,height,c["card_top"],c["card_bottom"]
         if key!=self._surface_key:
-            self._surface=rounded_photo(width,height,radius=round(20*s),fill=c["card_top"],
-                                        end_fill=c["card_bottom"])
+            self._surface=rounded_photo(width,height,radius=round(RADIUS["widget_card"]*s),
+                                        fill=c["card_top"],end_fill=c["card_bottom"])
             self._surface_key=key
         self.delete("all")
         self.create_image(0,0,image=self._surface,anchor="nw")
@@ -125,6 +189,10 @@ class QuotaCard(tk.Canvas):
             self.create_text(x,76*s+extra*.65,text=compact_remaining(state,kind),font=self.value_font,
                              fill=c["warning"] if warning else c["text"],anchor="w")
             bar_width,bar_height=max(1,round(column_width)),max(3,round(4*s))
+            if kind=="monthly":
+                # The refresh button overlaps this column's lower-right zone;
+                # shorten only this bar so the two never collide.
+                bar_width=max(1,min(bar_width,refresh_progress_limit(width,s)-round(x)))
             bar=Image.new("RGBA",(bar_width*3,bar_height*3))
             mask=Image.new("L",bar.size)
             ImageDraw.Draw(mask).rounded_rectangle((0,0,bar.width-1,bar.height-1),radius=bar.height//2,fill=255)
@@ -138,7 +206,32 @@ class QuotaCard(tk.Canvas):
             bar.putalpha(mask)
             image=ImageTk.PhotoImage(bar.resize((bar_width,bar_height),Image.Resampling.LANCZOS))
             self._progress_images.append(image)
-            self.create_image(x,101*s+extra,image=image,anchor="nw")
+            self.create_image(x,101*s+extra,image=image,anchor="nw",
+                              tags=("progress",f"progress:{kind}"))
+        self._draw_refresh_button(width,height)
+
+    def _draw_refresh_button(self,width:int,height:int) -> None:
+        """Bottom-right circular refresh button matching the macOS card."""
+        c,s=self.colors,self.scale
+        left,top,right,bottom=refresh_button_hit_bounds(width,height,s)
+        if not self.refresh_enabled:
+            fill,outline,arrow=c["card_bottom"],c["border"],c["muted"]
+        elif self.refresh_pressed:
+            fill,outline,arrow=c["pressed"],c["accent_active"],c["accent_active"]
+        elif self.refresh_hover:
+            fill,outline,arrow=c["info_surface"],c["accent"],c["accent"]
+        else:
+            fill,outline,arrow=c["card_top"],c["border"],c["accent"]
+        self.create_oval(left,top,right,bottom,fill=fill,outline=outline,
+                         width=max(1,round(s)),tags=REFRESH_TAG)
+        # Segoe UI Symbol (shipped on every Win10/11) draws U+21BB as a proper
+        # clockwise refresh arrow, crisper at 20 DIP than any hand-built arc.
+        # A negative font size is pixels, so the glyph follows this card's own
+        # scale even when its DPI differs from process-global tk scaling.
+        glyph_size=-max(1,round(14*s))
+        self.create_text((left+right)//2,(top+bottom)//2,text="↻",
+                         font=("Segoe UI Symbol",glyph_size),fill=arrow,
+                         tags=REFRESH_TAG)
 
 
 class DesktopWidget:
@@ -158,6 +251,7 @@ class DesktopWidget:
         colors: Mapping[str, str],
         font_family: str,
         shadow_opacity: float = 0.14,
+        material: str = "solid",
     ):
         self.root = root
         self.storage = storage
@@ -168,6 +262,7 @@ class DesktopWidget:
         self.on_preferences_changed = on_preferences_changed
         self.colors = colors
         self.font_family = font_family
+        self.material = material
         self._padding = 0
         self.MIN_WIDTH = round(320*dpi_scale(root))
         self._spinner_after = None
@@ -178,6 +273,8 @@ class DesktopWidget:
         self._hover_after: str | None = None
         self._press: tuple[int, int, int, int] | None = None
         self._dragged = False
+        self._refresh_press = False
+        self._refresh_press_point: tuple[float, float] | None = None
         self._closed = False
         self._menu_topmost: tk.BooleanVar | None = None
         self._size = (self.MIN_WIDTH, 1)
@@ -190,7 +287,9 @@ class DesktopWidget:
         self.window.resizable(False, False)
         self.window.configure(background=colors["surface"])
         self.window.attributes("-topmost", self._preferences.topmost)
-        install_window_effects(self.window, self.colors["surface"], round(20*dpi_scale(self.window)))
+        install_window_effects(self.window, self.colors["surface"],
+                               RADIUS["widget_card"], material=self.material)
+        install_dpi_handler(self.window, self.on_scale_changed)
         self.geometry=WindowGeometry(self.window,storage,"widget",(320,124))
         self._resize_press=None
         self._create_card()
@@ -221,7 +320,7 @@ class DesktopWidget:
         self.card.colors=colors
         self.card._surface_key=None
         self.card.draw()
-        apply_window_effects(self.window,colors["surface"])
+        apply_window_effects(self.window,colors["surface"],material=self.material)
         if self._hover is not None:
             self._hover.destroy()
             self._hover=None
@@ -279,8 +378,8 @@ class DesktopWidget:
         self.window.geometry(f"{width}x{height}+{x}+{y}")
         self.window.deiconify()
         self.window.attributes("-topmost", self._preferences.topmost)
-        apply_window_effects(self.window, self.colors["surface"])
-        set_rounded_region(self.window, round(20*dpi_scale(self.window)))
+        apply_window_effects(self.window, self.colors["surface"], material=self.material)
+        set_rounded_region(self.window, RADIUS["widget_card"])
 
     def set_visible(self, visible: bool) -> None:
         self._save_preferences(replace(self._preferences, visible=visible))
@@ -309,6 +408,7 @@ class DesktopWidget:
             self._hover_after = self.root.after(350, self._show_hover)
 
     def _on_leave(self, event: tk.Event) -> None:
+        self.card.set_refresh_hover(False)
         self.root.after(60, self._hide_hover_if_outside)
 
     def _hide_hover_if_outside(self) -> None:
@@ -343,10 +443,11 @@ class DesktopWidget:
             hover.overrideredirect(True)
             hover.attributes("-topmost", True)
             hover.configure(background=self.colors["surface"])
-            install_window_effects(hover, self.colors["surface"], round(16*dpi_scale(hover)))
+            install_window_effects(hover, self.colors["surface"],
+                                   RADIUS["hover"], material=self.material)
             panel = RoundedPanel(
                 hover,
-                radius=13,
+                radius=RADIUS["hover"],
                 fill=self.colors["card"],
                 outline=self.colors["border"],
                 background=self.colors["card"],
@@ -377,13 +478,37 @@ class DesktopWidget:
         x, y = self._clamp_position(x, y, width, height)
         self._hover.geometry(f"{width}x{height}+{x}+{y}")
         self._hover.deiconify()
-        apply_window_effects(self._hover, self.colors["surface"])
-        set_rounded_region(self._hover, round(16*dpi_scale(self._hover)))
+        apply_window_effects(self._hover, self.colors["surface"], material=self.material)
+        set_rounded_region(self._hover, RADIUS["hover"])
 
     def _on_size(self,event:tk.Event) -> None:
         if event.widget==self.window and self._size!=(event.width,event.height):
             self._size=(event.width,event.height)
-            set_rounded_region(self.window,round(20*dpi_scale(self.window)))
+            set_rounded_region(self.window,RADIUS["widget_card"])
+
+    def on_scale_changed(self, dpi: int) -> None:
+        """WM_DPICHANGED callback from install_dpi_handler."""
+        scale = dpi/96.0
+        self.MIN_WIDTH = round(320*scale)
+        self.card.set_scale(scale)
+        self._size = (self.window.winfo_width(), self.window.winfo_height())
+        apply_window_effects(self.window, self.colors["surface"], material=self.material)
+        set_rounded_region(self.window, RADIUS["widget_card"])
+        if self._hover is not None and self._hover.winfo_exists():
+            apply_window_effects(self._hover, self.colors["surface"], material=self.material)
+            set_rounded_region(self._hover, RADIUS["hover"])
+
+    def _local_point(self,event:tk.Event) -> tuple[float,float]:
+        """Card-local coordinates; tolerates synthetic events lacking roots."""
+        x_root=getattr(event,"x_root",None)
+        y_root=getattr(event,"y_root",None)
+        if x_root is None or y_root is None:
+            return getattr(event,"x",0),getattr(event,"y",0)
+        return x_root-self.window.winfo_rootx(),y_root-self.window.winfo_rooty()
+
+    def _hits_refresh(self,x:float,y:float) -> bool:
+        return hit_refresh_button(x,y,self.card.winfo_width(),
+                                  self.card.winfo_height(),self.card.scale)
 
     def _edge(self,event:tk.Event) -> str:
         x,y=event.x_root-self.window.winfo_rootx(),event.y_root-self.window.winfo_rooty()
@@ -392,6 +517,14 @@ class DesktopWidget:
             "w" if x<edge else "e" if x>=self.window.winfo_width()-edge else "")
 
     def _resize_cursor(self,event:tk.Event) -> None:
+        x,y=self._local_point(event)
+        over_button=self._hits_refresh(x,y)
+        self.card.set_refresh_hover(over_button)
+        if over_button and self.card.refresh_enabled:
+            # The summary hover would cover the button; suppress it here.
+            event.widget.configure(cursor="hand2")
+            self._cancel_hover()
+            return
         edge=self._edge(event)
         cursors={"n":"size_ns","s":"size_ns","e":"size_we","w":"size_we",
                  "ne":"size_ne_sw","sw":"size_ne_sw","nw":"size_nw_se","se":"size_nw_se"}
@@ -399,6 +532,18 @@ class DesktopWidget:
 
     def _on_press(self, event: tk.Event) -> None:
         self._cancel_hover()
+        x,y=self._local_point(event)
+        if self._hits_refresh(x,y):
+            # The button owns the whole gesture (even while disabled) so a
+            # press on it can never start a card drag or edge resize.
+            self._press=None
+            self._resize_press=None
+            self._dragged=False
+            self._refresh_press=True
+            self._refresh_press_point=(x,y)
+            self.card.set_refresh_pressed(True)
+            return
+        self._refresh_press=False
         edge=self._edge(event)
         if edge:
             self._resize_press=(edge,event.x_root,event.y_root,self.window.winfo_x(),
@@ -413,6 +558,8 @@ class DesktopWidget:
         self._dragged = False
 
     def _on_drag(self, event: tk.Event) -> None:
+        if self._refresh_press:
+            return
         if self._resize_press is not None:
             edge,sx,sy,x,y,w,h=self._resize_press
             dx,dy=event.x_root-sx,event.y_root-sy
@@ -436,6 +583,18 @@ class DesktopWidget:
         self.window.geometry(f"+{window_x + dx}+{window_y + dy}")
 
     def _on_release(self, event: tk.Event) -> None:
+        if self._refresh_press:
+            self._refresh_press=False
+            self.card.set_refresh_pressed(False)
+            x,y=self._local_point(event)
+            if getattr(event,"x_root",None) is None and self._refresh_press_point:
+                # Synthetic releases carry no coordinates; reuse the press point.
+                x,y=self._refresh_press_point
+            self._refresh_press_point=None
+            # A press dragged off the button cancels, matching macOS.
+            if self.card.refresh_enabled and self._hits_refresh(x,y):
+                self.on_refresh()
+            return
         if self._resize_press is not None:
             self._resize_press=None
             self.geometry.flush()
@@ -455,8 +614,8 @@ class DesktopWidget:
             )
             self.window.geometry(f"+{x}+{y}")
             self._save_preferences(replace(self._preferences, x=x, y=y))
-        else:
-            self.on_open()
+        # An empty click intentionally does nothing: popup entry points are the
+        # tray icon and the card's right-click menu, parity with the macOS card.
 
     def _show_menu(self, event: tk.Event) -> None:
         self._cancel_hover()

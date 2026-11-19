@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import tkinter as tk
+from ctypes import wintypes as wt
 try:
     import winreg
 except ModuleNotFoundError:
@@ -11,12 +12,82 @@ from functools import lru_cache
 from tkinter import ttk
 from typing import Any, Callable, Mapping
 
+# Keep the native callback type in this low-level module so window_chrome and
+# the override-redirect DPI watcher can share it without circular imports.
+LRESULT = ctypes.c_ssize_t
+WNDPROC = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)(
+    LRESULT, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM
+)
+
 from PIL import Image, ImageDraw, ImageFilter, ImageTk
-from .appearance import LIGHT, Theme
+from .appearance import ACRYLIC_TINT_ALPHA, LIGHT, RADIUS, Theme
 
 
 def dpi_scale(widget: tk.Misc) -> float:
     return max(0.75, float(widget.tk.call("tk", "scaling")) / (96 / 72))
+
+
+class _OSVERSIONINFOEXW(ctypes.Structure):
+    _fields_ = [
+        ("dwOSVersionInfoSize", ctypes.c_ulong),
+        ("dwMajorVersion", ctypes.c_ulong),
+        ("dwMinorVersion", ctypes.c_ulong),
+        ("dwBuildNumber", ctypes.c_ulong),
+        ("dwPlatformId", ctypes.c_ulong),
+        ("szCSDVersion", ctypes.c_wchar * 128),
+        ("wServicePackMajor", ctypes.c_ushort),
+        ("wServicePackMinor", ctypes.c_ushort),
+        ("wSuiteMask", ctypes.c_ushort),
+        ("wProductType", ctypes.c_byte),
+        ("wReserved", ctypes.c_byte),
+    ]
+
+
+@lru_cache(maxsize=1)
+def windows_build() -> int:
+    """Real OS build number. RtlGetVersion ignores the manifest compat shim."""
+    try:
+        ntdll = ctypes.windll.ntdll
+        info = _OSVERSIONINFOEXW()
+        info.dwOSVersionInfoSize = ctypes.sizeof(info)
+        if ntdll.RtlGetVersion(ctypes.byref(info)) == 0:
+            return int(info.dwBuildNumber)
+    except (AttributeError, OSError):
+        pass
+    return 0
+
+
+def is_windows_11() -> bool:
+    return windows_build() >= 22000
+
+
+def native_dpi(window: tk.Misc) -> int:
+    try:
+        user32 = ctypes.windll.user32
+        user32.GetDpiForWindow.argtypes = [ctypes.c_void_p]
+        user32.GetDpiForWindow.restype = ctypes.c_uint
+        dpi = int(user32.GetDpiForWindow(native_handle(window)))
+        if dpi > 0:
+            return dpi
+        user32.GetDpiForSystem.restype = ctypes.c_uint
+        return int(user32.GetDpiForSystem()) or 96
+    except (AttributeError, OSError, tk.TclError):
+        return 96
+
+
+def calibrate_tk_scaling(window: tk.Misc) -> float:
+    """Pin Tk's process-global scaling to the monitor DPI before fonts are built."""
+    dpi = native_dpi(window)
+    current = float(window.tk.call("tk", "scaling")) * 72.0
+    if round(current) != round(float(dpi)):
+        window.tk.call("tk", "scaling", dpi / 72.0)
+    return dpi / 96.0
+
+
+def invalidate_scaled_caches() -> None:
+    """Drop raster caches keyed on physical pixels after a DPI change."""
+    _gradient_strip.cache_clear()
+    rounded_image.cache_clear()
 
 
 def window_work_area(window: tk.Misc) -> tuple[int,int,int,int]:
@@ -94,32 +165,47 @@ def rounded_photo(width: int, height: int, *, radius: int, fill: str,
 
 
 class RoundedPanel(tk.Frame):
-    def __init__(self, master: tk.Misc, *, radius: int = 14, fill: str,
-                 outline: str, background: str, padding: int | tuple[int,int] = (16,14)):
+    def __init__(self, master: tk.Misc, *, radius: int = RADIUS["panel"], fill: str,
+                 outline: str | None, background: str, padding: int | tuple[int,int] = (16,14)):
         super().__init__(master, background=background, borderwidth=0, highlightthickness=0)
-        self.radius, self.fill, self.outline = round(radius*dpi_scale(master)), fill, None
+        self._radius_dip, self._padding = radius, padding
+        self.radius = round(radius*dpi_scale(master))
+        self.fill, self.outline = fill, outline
         self._image = None
         self._image_size = (0,0)
         self._background = tk.Label(self, background=background, borderwidth=0, highlightthickness=0)
         self._background.place(x=0,y=0,relwidth=1,relheight=1)
         self.content = tk.Frame(self,background=fill,borderwidth=0,highlightthickness=0)
         inset = max(round(14*dpi_scale(master)),self.radius//2)
+        self._inset = inset
         self.content.pack(fill="both",expand=True,padx=inset,pady=inset,
                           ipadx=round((padding[0] if isinstance(padding,tuple) else padding)*dpi_scale(master)),
                           ipady=round((padding[1] if isinstance(padding,tuple) else padding)*dpi_scale(master)))
         self.bind("<Configure>", self._redraw)
+
+    def refresh_scale(self) -> None:
+        scale = dpi_scale(self)
+        self.radius = round(self._radius_dip*scale)
+        inset = max(round(14*scale), self.radius//2)
+        self._inset = inset
+        pad_x = self._padding[0] if isinstance(self._padding, tuple) else self._padding
+        pad_y = self._padding[1] if isinstance(self._padding, tuple) else self._padding
+        self.content.pack_configure(padx=inset, pady=inset,
+                                    ipadx=round(pad_x*scale), ipady=round(pad_y*scale))
+        self._image_size = (0,0)
+        self._redraw()
 
     def _redraw(self, event: tk.Event | None = None) -> None:
         size = self.winfo_width(), self.winfo_height()
         if size == self._image_size or min(size)<=1:
             return
         self._image_size = size
-        self._image = rounded_photo(*size,radius=self.radius,fill=self.fill,shadow=True,
-                                    background=str(self.cget("background")))
+        self._image = rounded_photo(*size,radius=self.radius,fill=self.fill,outline=self.outline,
+                                    shadow=True,background=str(self.cget("background")))
         self._background.configure(image=self._image)
 
     def set_theme(self, colors: Mapping[str,str]) -> None:
-        self.fill,self.outline = colors["card"],None
+        self.fill, self.outline = colors["card"], colors["border"]
         self.configure(background=colors["surface"])
         self._background.configure(background=colors["surface"])
         self.content.configure(background=self.fill)
@@ -182,7 +268,7 @@ def configure_rounded_buttons(style: ttk.Style, theme: Theme = LIGHT) -> None:
                 else:
                     top=bottom=colors[{"normal":"card","focus":"card","active":"hover",
                                        "pressed":"pressed","disabled":"surface"}[state]]
-                images.append(rounded_photo(px(88),px(38),radius=px(9),fill=top,end_fill=bottom,
+                images.append(rounded_photo(px(88),px(38),radius=px(RADIUS["button"]),fill=top,end_fill=bottom,
                     outline=colors["focus"] if state=="focus" else None,
                     background=colors["surface"],shadow=False))
             style.element_create(element,"image",images[0],("disabled",images[1]),
@@ -198,7 +284,7 @@ def configure_rounded_buttons(style: ttk.Style, theme: Theme = LIGHT) -> None:
               ("active",colors["hover"]), ("focus",colors["info_surface"])])
     entry=f"Mac{tag}.entry"
     if entry not in style.element_names():
-        images=[rounded_photo(px(80),px(36),radius=px(8),fill=colors["hover"],outline=None if key=="border" else colors[key],
+        images=[rounded_photo(px(80),px(36),radius=px(RADIUS["input"]),fill=colors["hover"],outline=None if key=="border" else colors[key],
                               background=colors["card"]) for key in ("border","focus","error")]
         style.element_create(entry,"image",images[0],("invalid",images[2]),("focus",images[1]),border=px(10),padding=0,sticky="nsew")
         cache[entry]=images
@@ -206,7 +292,7 @@ def configure_rounded_buttons(style: ttk.Style, theme: Theme = LIGHT) -> None:
         ("Entry.padding",{"sticky":"nsew","children":[("Entry.textarea",{"sticky":"nsew"})]})]})])
     segment=f"Mac{tag}.segment"
     if segment not in style.element_names():
-        images=[rounded_photo(px(90),px(34),radius=px(8),fill=colors[fill],outline=colors[border] if border=="focus" else None,
+        images=[rounded_photo(px(90),px(34),radius=px(RADIUS["input"]),fill=colors[fill],outline=colors[border] if border=="focus" else None,
                               background=colors["card"])
                 for fill,border in (("card","border"),("info_surface","accent"),("hover","border"),("card","focus"))]
         style.element_create(segment,"image",images[0],("focus",images[3]),
@@ -215,6 +301,66 @@ def configure_rounded_buttons(style: ttk.Style, theme: Theme = LIGHT) -> None:
     style.layout("Theme.TRadiobutton",[(segment,{"sticky":"nsew","children":[
         ("Radiobutton.padding",{"sticky":"nsew","children":[("Radiobutton.label",{"sticky":"nsew"})]})]})])
     style.master._mac_button_images=cache
+
+
+# Scrollbar geometry in DIPs; clam's built-in warm-grey trough/thumb colours
+# clash with both themes (most visibly the black-grey mix in dark mode), so the
+# whole widget is restyled from the shared appearance tokens.
+SCROLLBAR_WIDTH = 10
+SCROLLBAR_ARROW = 10
+
+
+def scrollbar_palette(theme: Theme) -> dict[str, str]:
+    """Pure colour derivation for the themed ttk scrollbars."""
+    colors = theme.colors
+    thumb = mix_color(colors["muted"], colors["trough"], 0.35)
+    return {
+        "trough": colors["trough"],
+        "thumb": thumb,
+        "arrow": thumb,
+        "active": colors["accent"],
+        "pressed": colors["accent_active"],
+        "disabled": colors["border"],
+    }
+
+
+def configure_scrollbars(style: ttk.Style, theme: Theme = LIGHT) -> None:
+    """Restyle clam's vertical/horizontal scrollbars with theme tokens.
+
+    Pure style configuration (no bitmap elements): Tk keeps sizing the thumb
+    proportionally to the visible fraction, and re-running this on theme/DPI
+    switches re-colours every existing scrollbar automatically.
+    """
+    palette = scrollbar_palette(theme)
+    px = lambda value: max(1, round(value * dpi_scale(style.master)))
+    state_colors = [
+        ("disabled", palette["disabled"]),
+        ("pressed", palette["pressed"]),
+        ("active", palette["active"]),
+    ]
+    for orientation in ("Vertical", "Horizontal"):
+        name = f"{orientation}.TScrollbar"
+        style.configure(
+            name,
+            width=px(SCROLLBAR_WIDTH),
+            arrowsize=px(SCROLLBAR_ARROW),
+            troughcolor=palette["trough"],
+            background=palette["thumb"],
+            lightcolor=palette["thumb"],
+            darkcolor=palette["thumb"],
+            bordercolor=palette["trough"],
+            arrowcolor=palette["arrow"],
+            relief="flat",
+            borderwidth=0,
+            gripcount=0,
+        )
+        style.map(
+            name,
+            background=state_colors,
+            lightcolor=state_colors,
+            darkcolor=state_colors,
+            arrowcolor=state_colors,
+        )
 
 
 class Tooltip:
@@ -239,7 +385,8 @@ class Tooltip:
         self.window.attributes("-topmost",True)
         tk.Label(self.window,text=self.text,bg=c["card"],fg=c["text"],padx=10,pady=6).pack()
         self.window.geometry(f"+{self.widget.winfo_rootx()}+{self.widget.winfo_rooty()+self.widget.winfo_height()+6}")
-        install_window_effects(self.window,c["surface"],8)
+        # Small transient surfaces stay solid: ClearType matters more than blur.
+        install_window_effects(self.window,c["surface"],RADIUS["tooltip"],material="solid")
 
     def hide(self, event: tk.Event | None = None) -> None:
         if self.pending:
@@ -255,7 +402,8 @@ class ScrollableBody(tk.Frame):
     def __init__(self,master:tk.Misc,colors:Mapping[str,str]):
         super().__init__(master,bg=colors["surface"])
         self.canvas=tk.Canvas(self,bg=colors["surface"],highlightthickness=0,height=1)
-        self.bar=ttk.Scrollbar(self,orient="vertical",command=self.canvas.yview)
+        self.bar=ttk.Scrollbar(self,orient="vertical",command=self.canvas.yview,
+                               style="Vertical.TScrollbar")
         self.canvas.pack(side="left",fill="both",expand=True)
         self.content=ttk.Frame(self.canvas,padding=round(16*dpi_scale(master)))
         self.item=self.canvas.create_window(0,0,window=self.content,anchor="nw")
@@ -333,6 +481,11 @@ class ScrollableBody(tk.Frame):
             return "break"
         return None
 
+    def refresh_scale(self) -> None:
+        self.content.configure(padding=round(16*dpi_scale(self)))
+        self._wrap_pending = None
+        self._apply_wrap()
+
     def fit(self,max_height:int) -> int:
         self.update_idletasks()
         desired=self.content.winfo_reqheight()
@@ -346,13 +499,20 @@ class ScrollableBody(tk.Frame):
         return height
 
 
-def set_rounded_region(window: tk.Toplevel, radius: int) -> None:
-    """Clip a borderless window to a native rounded region without color-key halos."""
+def set_rounded_region(window: tk.Toplevel, radius_dip: int) -> None:
+    """Windows 10 fallback clip. ``radius_dip`` is logical pixels.
+
+    On Windows 11 the DWM owns anti-aliased corners (attr 33), so a GDI region
+    -- which is a 1-bit mask with no antialiasing -- must never override them.
+    """
+    if is_windows_11():
+        return
     try:
         width = window.winfo_width()
         height = window.winfo_height()
         if width <= 1 or height <= 1:
             return
+        radius = max(1, round(radius_dip * dpi_scale(window)))
         gdi32 = ctypes.windll.gdi32
         user32 = ctypes.windll.user32
         gdi32.CreateRoundRectRgn.argtypes = [ctypes.c_int] * 6
@@ -393,11 +553,25 @@ def enable_rounded_corners(window: tk.Toplevel | tk.Tk) -> bool:
         return False
 
 
+class _Accent(ctypes.Structure):
+    _fields_ = [(name, ctypes.c_uint32) for name in ("state", "flags", "colour", "animation")]
+
+
+class _CompositionData(ctypes.Structure):
+    _fields_ = [("attribute", ctypes.c_int), ("data", ctypes.c_void_p), ("size", ctypes.c_size_t)]
+
+
+class _Margins(ctypes.Structure):
+    _fields_ = [(name, ctypes.c_int) for name in ("left", "right", "top", "bottom")]
+
+
 @dataclass(frozen=True)
 class WindowEffects:
     rounded: bool = False
     glass: bool = False
     shadow: bool = False
+    material: str = "solid"
+    layered: bool = False
 
 
 def native_handle(window: tk.Misc) -> int:
@@ -419,82 +593,185 @@ def transparency_enabled() -> bool:
         return False
 
 
-def apply_window_effects(window: tk.Toplevel, surface: str) -> WindowEffects:
-    """Keep foreground opaque, exposing acrylic only through the surface colour.
+def resolve_material(requested: str) -> str:
+    """Acrylic needs Windows 11 plus the system transparency switch; else solid."""
+    if requested == "acrylic" and is_windows_11() and transparency_enabled():
+        return "acrylic"
+    return "solid"
 
-    Failed/disabled composition leaves the ordinary solid Tk background intact.
-    No global alpha or extra shadow window is used.
-    """
-    window._material_surface = surface
-    rounded = enable_rounded_corners(window)
-    glass = shadow = False
+
+def _dwm_attribute(dwm: Any, hwnd: ctypes.c_void_p, attribute: int, value: Any) -> None:
+    try:
+        dwm.DwmSetWindowAttribute(hwnd, attribute, ctypes.byref(value), ctypes.sizeof(value))
+    except (AttributeError, OSError):
+        pass
+
+
+def _extend_frame(dwm: Any, hwnd: ctypes.c_void_p) -> None:
+    try:
+        dwm.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(_Margins(0, 0, 0, 0)))
+    except (AttributeError, OSError):
+        pass
+
+
+def _reset_composition(user32: Any, hwnd: ctypes.c_void_p) -> None:
+    """Remove any leftover acrylic accent when switching back to solid."""
+    try:
+        compose = user32.SetWindowCompositionAttribute
+        compose.argtypes = [ctypes.c_void_p, ctypes.POINTER(_CompositionData)]
+        compose.restype = ctypes.c_int
+        accent = _Accent(0, 0, 0, 0)
+        data = _CompositionData(19, ctypes.cast(ctypes.pointer(accent), ctypes.c_void_p),
+                                 ctypes.sizeof(accent))
+        compose(hwnd, ctypes.byref(data))
+    except (AttributeError, OSError):
+        pass
+
+
+def _clear_layered(user32: Any, hwnd: ctypes.c_void_p) -> None:
+    """Drop WS_EX_LAYERED so GDI restores ClearType text rendering."""
+    try:
+        user32.GetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+        user32.SetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_ssize_t]
+        user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
+        style = user32.GetWindowLongPtrW(hwnd, -20)  # GWL_EXSTYLE
+        if style & 0x00080000:  # WS_EX_LAYERED
+            user32.SetWindowLongPtrW(hwnd, -20, style & ~0x00080000)
+            # SWP_NOMOVE|NOSIZE|NOZORDER|NOACTIVATE|FRAMECHANGED
+            user32.SetWindowPos(hwnd, None, 0, 0, 0, 0, 0x27)
+    except (AttributeError, OSError):
+        pass
+
+
+def _redraw_frame(user32: Any, hwnd: ctypes.c_void_p) -> None:
+    try:
+        user32.RedrawWindow.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                                        ctypes.c_uint, ctypes.c_void_p]
+        # RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN
+        user32.RedrawWindow(hwnd, None, None, 0x485, None)
+    except (AttributeError, OSError):
+        pass
+
+
+def _clear_window_region(user32: Any, hwnd: ctypes.c_void_p) -> None:
+    """Remove stale GDI regions so the DWM corner preference is authoritative."""
+    try:
+        user32.SetWindowRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+        user32.SetWindowRgn.restype = ctypes.c_int
+        user32.SetWindowRgn(hwnd, None, True)
+    except (AttributeError, OSError):
+        pass
+
+
+def _make_solid(window: tk.Toplevel, hwnd: ctypes.c_void_p,
+                user32: Any, dwm: Any) -> None:
     try:
         window.attributes("-transparentcolor", "")
     except tk.TclError:
-        return WindowEffects(rounded)
+        pass
+    _clear_layered(user32, hwnd)
+    _reset_composition(user32, hwnd)
+    _extend_frame(dwm, hwnd)
+    _redraw_frame(user32, hwnd)
+
+
+def _apply_acrylic(window: tk.Toplevel, hwnd: ctypes.c_void_p,
+                   user32: Any, dwm: Any, surface: str) -> bool:
+    try:
+        # Probe colour-key support before touching composition.
+        window.attributes("-transparentcolor", "")
+    except tk.TclError:
+        return False
+    try:
+        red, green, blue = bytes.fromhex(surface[1:])
+        # Tint in AABBGGRR; the high alpha keeps it close to the theme surface.
+        tint = (ACRYLIC_TINT_ALPHA << 24) | (blue << 16) | (green << 8) | red
+        accent = _Accent(4, 0, tint, 0)  # ACCENT_ENABLE_ACRYLICBLURBEHIND
+        data = _CompositionData(19, ctypes.cast(ctypes.pointer(accent), ctypes.c_void_p),
+                                ctypes.sizeof(accent))
+        compose = user32.SetWindowCompositionAttribute
+        compose.argtypes = [ctypes.c_void_p, ctypes.POINTER(_CompositionData)]
+        compose.restype = ctypes.c_int
+        if not compose(hwnd, ctypes.byref(data)):
+            return False
+        try:
+            window.attributes("-transparentcolor", surface)
+        except tk.TclError:
+            accent.state = 0
+            compose(hwnd, ctypes.byref(data))
+            return False
+        _extend_frame(dwm, hwnd)
+        return True
+    except (AttributeError, OSError, tk.TclError):
+        return False
+
+
+def apply_window_effects(window: tk.Toplevel, surface: str,
+                         *, material: str | None = None) -> WindowEffects:
+    """Apply the window material.
+
+    Solid windows stay opaque so GDI keeps ClearType text; acrylic is an opt-in
+    colour-keyed layered window on which Windows forces grayscale text. Every
+    native failure fails closed to the ordinary solid Tk background.
+    """
+    window._material_surface = surface
+    requested = material if material is not None else getattr(window, "_material", "solid")
     try:
         hwnd = ctypes.c_void_p(native_handle(window))
-        dwm = ctypes.windll.dwmapi
-        dark = ctypes.c_uint32(int(sum(bytes.fromhex(surface[1:])) < 384))
-        dwm.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(dark), ctypes.sizeof(dark))
-        border = ctypes.c_uint32(0xFFFFFFFE)  # DWMWA_COLOR_NONE (Windows 11)
-        dwm.DwmSetWindowAttribute(hwnd, 34, ctypes.byref(border), ctypes.sizeof(border))
-        # Suppress compositor and class drop shadows; never create a shadow HWND.
-        policy = ctypes.c_int(1)  # DWMNCRP_DISABLED
-        dwm.DwmSetWindowAttribute(hwnd, 2, ctypes.byref(policy), ctypes.sizeof(policy))
-        class Margins(ctypes.Structure):
-            _fields_ = [(name, ctypes.c_int) for name in ("left", "right", "top", "bottom")]
-        dwm.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(Margins(0, 0, 0, 0)))
         user32 = ctypes.windll.user32
-        get_style, set_style = user32.GetClassLongPtrW, user32.SetClassLongPtrW
-        get_style.argtypes = [ctypes.c_void_p, ctypes.c_int]
-        get_style.restype = ctypes.c_size_t
-        set_style.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_size_t]
-        set_style.restype = ctypes.c_size_t
-        set_style(hwnd, -26, get_style(hwnd, -26) & ~0x00020000)
-        if not transparency_enabled():
-            return WindowEffects(rounded, False, shadow)
-
-        class Accent(ctypes.Structure):
-            _fields_ = [(name, ctypes.c_uint32) for name in ("state", "flags", "colour", "animation")]
-        class CompositionData(ctypes.Structure):
-            _fields_ = [("attribute", ctypes.c_int), ("data", ctypes.c_void_p), ("size", ctypes.c_size_t)]
-        # Acrylic tint in AABBGGRR; keep enough translucency to reveal the desktop.
-        red, green, blue = bytes.fromhex(surface[1:])
-        tint = (0xC8 << 24) | (blue << 16) | (green << 8) | red
-        accent = Accent(4, 0, tint, 0)
-        data = CompositionData(19, ctypes.cast(ctypes.pointer(accent), ctypes.c_void_p), ctypes.sizeof(accent))
-        compose = ctypes.windll.user32.SetWindowCompositionAttribute
-        compose.argtypes = [ctypes.c_void_p, ctypes.POINTER(CompositionData)]
-        compose.restype = ctypes.c_int
-        if compose(hwnd, ctypes.byref(data)):
-            try:
-                window.attributes("-transparentcolor", surface)
-                glass = True
-            except tk.TclError:
-                accent.state = 0
-                compose(hwnd, ctypes.byref(data))
+        dwm = ctypes.windll.dwmapi
     except (AttributeError, OSError, tk.TclError):
-        pass
-    return WindowEffects(rounded, glass, shadow)
+        window._window_effects = WindowEffects()
+        return window._window_effects
+    dark = ctypes.c_uint32(int(sum(bytes.fromhex(surface[1:])) < 384))
+    _dwm_attribute(dwm, hwnd, 20, dark)  # DWMWA_USE_IMMERSIVE_DARK_MODE
+    rounded = False
+    if is_windows_11():
+        rounded = enable_rounded_corners(window)
+        _clear_window_region(user32, hwnd)
+    if resolve_material(requested) == "acrylic" and _apply_acrylic(window, hwnd, user32, dwm, surface):
+        window._material = "acrylic"
+        effects = WindowEffects(rounded, glass=True, shadow=False,
+                                material="acrylic", layered=True)
+    else:
+        _make_solid(window, hwnd, user32, dwm)
+        window._material = "solid"
+        effects = WindowEffects(rounded, glass=False, shadow=True,
+                                material="solid", layered=False)
+    # Record on every call (not just install time) so material/theme/DPI
+    # switches leave an authoritative state on the window.
+    window._window_effects = effects
+    return effects
 
 
-def install_window_effects(window: tk.Toplevel, surface: str, radius: int | None = None) -> None:
-    """Reapply after Tk has finished mapping/rebuilding the outer HWND."""
+def install_window_effects(window: tk.Toplevel, surface: str,
+                           radius: int | None = None, *, material: str = "solid") -> None:
+    """Apply material while the window is still hidden, then re-check on Map.
+
+    Applying immediately (the HWND exists after Toplevel construction) avoids
+    the first-frame solid flash that a deferred timer produced.
+    """
+    window._material = material
     pending: str | None = None
 
     def apply() -> None:
         nonlocal pending
         pending = None
-        if window.winfo_viewable():
-            window._window_effects = apply_window_effects(window, getattr(window,"_material_surface",surface))
-            if radius is not None:
-                set_rounded_region(window, radius)
+        if not window.winfo_exists():
+            return
+        effects = apply_window_effects(
+            window, getattr(window, "_material_surface", surface),
+            material=getattr(window, "_material", material),
+        )
+        # Win10 GDI fallback only; on Win11 the DWM owns corners.
+        if radius is not None and not effects.rounded:
+            set_rounded_region(window, radius)
 
     def mapped(event: tk.Event) -> None:
         nonlocal pending
         if event.widget == window and pending is None:
-            pending = window.after(30, apply)
+            pending = window.after_idle(apply)
 
     def destroyed(event: tk.Event) -> None:
         nonlocal pending
@@ -502,5 +779,77 @@ def install_window_effects(window: tk.Toplevel, surface: str, radius: int | None
             window.after_cancel(pending)
             pending = None
 
+    try:
+        window.update_idletasks()
+        apply()
+    except tk.TclError:
+        pass
     window.bind("<Map>", mapped, add=True)
     window.bind("<Destroy>", destroyed, add=True)
+
+
+class _SuggestedRect(ctypes.Structure):
+    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+
+def install_dpi_handler(window: tk.Toplevel, callback: Callable[[int], None]) -> None:
+    """Give an override-redirect window its own WM_DPICHANGED WNDPROC.
+
+    WindowChrome covers the framed Toplevels; desktop cards and hover popups
+    have no chrome and need this lightweight subclass instead. Tk re-entry is
+    deferred with ``after_idle`` and the previous proc is restored on destroy.
+
+    The outer wrapper HWND can differ between the withdrawn construction and
+    the first Map (Tk reparents into a new top-level wrapper), so the subclass
+    is re-applied from ``<Map>`` whenever the live HWND is not ours yet.
+    """
+    if getattr(window, "_dpi_handler", None) is not None:
+        return
+    try:
+        user32 = ctypes.windll.user32
+        user32.SetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_ssize_t]
+        user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
+        user32.GetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+        user32.CallWindowProcW.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint,
+                                           ctypes.c_void_p, ctypes.c_void_p]
+        user32.CallWindowProcW.restype = LRESULT
+        user32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int,
+                                        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+        # One previous proc per subclassed HWND; the construction HWND may be
+        # abandoned when Tk wraps the mapped toplevel.
+        old_procs: dict[int, int] = {}
+
+        def proc(hwnd: int, message: int, wparam: int, lparam: int) -> int:
+            previous = old_procs.get(hwnd, 0)
+            if message == 0x02E0:  # WM_DPICHANGED
+                suggested = ctypes.cast(lparam, ctypes.POINTER(_SuggestedRect)).contents
+                user32.SetWindowPos(
+                    hwnd, None, suggested.left, suggested.top,
+                    suggested.right-suggested.left, suggested.bottom-suggested.top,
+                    0x0014,  # SWP_NOZORDER | SWP_NOACTIVATE
+                )
+                window.after_idle(lambda: callback(int(wparam) & 0xffff))
+                return 0
+            if message == 0x82:  # WM_NCDESTROY
+                old_procs.pop(hwnd, None)
+                if previous:
+                    user32.SetWindowLongPtrW(hwnd, -4, previous)
+            return int(user32.CallWindowProcW(previous, hwnd, message, wparam, lparam))
+
+        reference = WNDPROC(proc)
+        proc_address = ctypes.cast(reference, ctypes.c_void_p).value
+
+        def install(event: tk.Event | None = None) -> None:
+            hwnd = native_handle(window)
+            if user32.GetWindowLongPtrW(hwnd, -4) == proc_address:
+                return
+            old_procs[hwnd] = user32.SetWindowLongPtrW(hwnd, -4, proc_address)
+
+        install()
+        window.bind("<Map>", install, add=True)
+        # Retain the callback for the HWND lifetime.
+        window._dpi_handler = {"proc": reference, "old_procs": old_procs}
+    except (AttributeError, OSError, tk.TclError):
+        pass
