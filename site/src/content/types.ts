@@ -50,7 +50,15 @@ export interface LandingContent {
     eyebrow: string;
     title: string;
     description: string;
-    items: Array<{ mark: string; name: string; plans: string; detail: string }>;
+    items: Array<{
+      mark: string;
+      name: string;
+      plans: string;
+      detail: string;
+      tiers: Array<{ plan: string; entries: Array<{ name: string; price: string; quota: string }> }>;
+    }>;
+    tierTable: { caption: string; tier: string; price: string; quota: string };
+    pricingNote: string;
   };
   features: {
     eyebrow: string;

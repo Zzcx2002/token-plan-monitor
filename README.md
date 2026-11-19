@@ -87,6 +87,34 @@
 
 百炼 Token Plan 个人版按订阅月计量，接口只返回各窗口的使用比例与重置时间，没有绝对额度；百炼新人免费额度（按模型的免费 token）和 Token Plan 团队版暂不支持。
 
+### 套餐档位与价格
+
+以下为各套餐的目录价（原价）与月额度，2026-11-19 核实自官方文档；限时优惠（方舟 2.5 折普惠活动、百炼新用户限时价等）以官方活动页为准。
+
+**火山方舟**（[Agent Plan 套餐概览](https://docs.volcengine.com/docs/ark/agent-plan-personal-plan-overview?lang=zh) · [Coding Plan 套餐概览](https://docs.volcengine.com/docs/ark/coding-plan-personal-plan-overview?lang=zh)）
+
+| 套餐 | 档位 | 目录价 | 月额度 |
+| --- | --- | --- | --- |
+| Agent Plan 个人版 | Small | ¥40/月 | 20,000 AFP |
+| Agent Plan 个人版 | Medium | ¥200/月 | 100,000 AFP |
+| Agent Plan 个人版 | Large | ¥500/月 | 250,000 AFP |
+| Agent Plan 个人版 | Max | ¥1000/月 | 500,000 AFP |
+| Coding Plan 个人版 | Lite | ¥40/月 | 按请求次数计量 |
+| Coding Plan 个人版 | Pro | ¥200/月 | 按请求次数计量 |
+
+**阿里云百炼**（[Token Plan 个人版订阅与权益](https://help.aliyun.com/zh/model-studio/token-plan-personal-overview) · [Coding Plan 概述](https://help.aliyun.com/zh/model-studio/coding-plan)）
+
+| 套餐 | 档位 | 目录价 | 月额度 |
+| --- | --- | --- | --- |
+| Token Plan 个人版 | Lite | ¥39/月 | 20,000 Credits |
+| Token Plan 个人版 | Essential | ¥79/月 | 45,000 Credits |
+| Token Plan 个人版 | Standard | ¥139/月 | 80,000 Credits |
+| Token Plan 个人版 | Pro | ¥312/月 | 200,000 Credits |
+| Coding Plan（旧版） | Pro | ¥200/月 | 90,000 次请求 |
+| Coding Plan（旧版） | Lite（已停售） | ¥40/月 | 18,000 次请求（历史口径） |
+
+说明：方舟 Coding Plan 官方概览页已不再公布具体请求次数，实际额度以控制台开通管理页为准；百炼 Coding Plan Lite 自 2026-03-20 停止新购、2026-04-13 停止续费与升级，存量订阅仍可被本工具监控。
+
 ## 安装
 
 ### macOS

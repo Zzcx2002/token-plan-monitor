@@ -38,9 +38,24 @@ const claudeLink = content.locale === 'zh-CN' ? links.claudeZh : links.claudeEn;
             <article class="provider-card">
               <div class="provider-heading"><span class="provider-mark" aria-hidden="true">{provider.mark}</span><div><h3>{provider.name}</h3><p>{provider.plans}</p></div></div>
               <p class="provider-detail">{provider.detail}</p>
+              <table class="provider-tiers">
+                <caption class="visually-hidden">{provider.name} {content.providers.tierTable.caption}</caption>
+                <thead>
+                  <tr><th scope="col">{content.providers.tierTable.tier}</th><th scope="col">{content.providers.tierTable.price}</th><th scope="col">{content.providers.tierTable.quota}</th></tr>
+                </thead>
+                {provider.tiers.map((group) => (
+                  <tbody>
+                    <tr class="tier-plan"><th colspan="3" scope="colgroup">{group.plan}</th></tr>
+                    {group.entries.map((tier) => (
+                      <tr><th scope="row">{tier.name}</th><td class="tier-price">{tier.price}</td><td>{tier.quota}</td></tr>
+                    ))}
+                  </tbody>
+                ))}
+              </table>
             </article>
           ))}
         </div>
+        <p class="pricing-note">{content.providers.pricingNote}</p>
       </div>
     </section>
 

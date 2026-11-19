@@ -97,6 +97,16 @@ html[lang="zh-CN"] .hero-description { max-width: 490px; line-height: 1.85; }
 .provider-heading h3 { font-size: 19px; font-weight: 650; letter-spacing: -.02em; }
 .provider-heading p { margin-top: 3px; color: var(--faint); font-size: 12px; line-height: 1.5; }
 .provider-detail { margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--border); font-size: 14px; line-height: 1.8; }
+.provider-tiers { width: 100%; margin-top: 18px; border-collapse: collapse; font-size: 13px; }
+.provider-tiers th, .provider-tiers td { padding: 7px 10px 7px 0; text-align: left; vertical-align: top; border-bottom: 1px solid var(--border); }
+.provider-tiers tr:last-child th, .provider-tiers tr:last-child td { border-bottom: none; }
+.provider-tiers thead th { color: var(--faint); font-size: 11px; font-weight: 500; }
+.provider-tiers .tier-plan th { padding-top: 14px; color: var(--muted); font-size: 12px; font-weight: 650; }
+.provider-tiers tbody th[scope='row'] { font-weight: 500; }
+.provider-tiers td { color: var(--muted); }
+.provider-tiers .tier-price { white-space: nowrap; }
+.pricing-note { margin-top: 18px; color: var(--faint); font-size: 12px; line-height: 1.7; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
 /* Features */
 .features-section { border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: var(--surface); }
