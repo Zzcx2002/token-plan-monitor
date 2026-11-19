@@ -84,7 +84,7 @@ dist/TokenPlanMonitor.app/Contents/MacOS/python scripts/verify_macos_notificatio
 
 `PYTHONPATH` 必须带 `lib/python313.zip`：bundle 内 pyobjc 的 Python 半部分在 zip 里，只有 py2app bootstrap 会把它加进 sys.path。首跑按提示点「允许」再点通知横幅（exit 0 = 点击回环成立）；到系统设置→通知里拒绝后重跑，验证 legacy 降级横幅与点击（同样 exit 0）。exit 2 = 没收到点击，exit 1 = 环境不是 bundle。
 
-呈现层三个已取证的坑（详见验收记录 v0.2.0 节）：同 identifier 重投被 UNC 当静默更新（故每次投递唯一标识）；专注/勿扰吞默认级通知（故 low_quota 设 timeSensitive）；覆盖安装版后授权身份漂移需 `lsregister -f` + 重拨开关。探针本身必须 `open -W` 启动并 `finishLaunching()`；PyObjC block 不接受 builtin method（如 `list.append`），bound method 可以。
+呈现层三个已取证的坑：同 identifier 重投被 UNC 当静默更新（故每次投递唯一标识）；专注/勿扰吞默认级通知（故 low_quota 设 timeSensitive）；覆盖安装版后授权身份漂移需 `lsregister -f` + 重拨开关。探针本身必须 `open -W` 启动并 `finishLaunching()`；PyObjC block 不接受 builtin method（如 `list.append`），bound method 可以。
 
 ## README 截图的再生成
 
@@ -203,7 +203,7 @@ set TOKEN_PLAN_MONITOR_LIVE=
 
 ## 验收记录
 
-[docs/macos-validation.md](macos-validation.md) 记录每轮改动的验证结果与尚需实机复核的场景。macOS 14 最低版本声明和二进制检查不能替代 macOS 14 实机运行测试。
+每轮改动的验证结果与尚需实机复核的场景应在内部验收记录中留痕，该记录不随公开仓库分发。macOS 14 最低版本声明和二进制检查不能替代 macOS 14 实机运行测试。
 
 发布前请确认 Release 资产自洽：GitHub 上当前 `TokenPlanMonitor-<版本>-arm64.dmg` 与 `TokenPlanMonitor-<版本>-win64.zip` 的实际摘要，分别与同目录 `.sha256` 文件内容一致，否则使用者按 README 校验必然失败。本地 `dist/` 在重新构建后与 `.sha256` 不一致是正常现象，以 Release 为准。Windows 资产发布后应重新下载 zip 与 `.sha256` 到空目录跑一次 `sha256sum -c`，走一遍使用者的真实路径。
 

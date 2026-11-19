@@ -333,7 +333,7 @@ MIT 许可，见 [LICENSE](LICENSE)。签名与响应解析参考 [CC Switch](ht
 
 ## 开发者
 
-源码运行、打包 macOS DMG 与 Windows 便携包、离线界面预览与验收、测试与实时验证：[docs/development.md](docs/development.md)。macOS 实机验收记录：[docs/macos-validation.md](docs/macos-validation.md)。
+源码运行、打包 macOS DMG 与 Windows 便携包、离线界面预览与验收、测试与实时验证：[docs/development.md](docs/development.md)。
 
 ### 产品网站
 

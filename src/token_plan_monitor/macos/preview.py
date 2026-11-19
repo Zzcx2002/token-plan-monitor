@@ -769,7 +769,7 @@ def main(argv=None):
                 # --- History window: charts built by the real pure rules ---
                 # Layers are asserted by NAME and count, never by reading a
                 # backing layer's color (NSViewBackingLayer colors cannot be
-                # read back -- see docs/macos-validation.md).
+                # read back, so color claims are covered indirectly).
                 ui.render(states()["history_agent"])
                 ui.command("history")
                 assert ui.history is not None and ui.history.isVisible()
