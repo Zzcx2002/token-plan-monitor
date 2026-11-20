@@ -18,8 +18,11 @@ from PyObjCTools import AppHelper
 from ..history import HistoryEntry, account_fingerprint
 from ..history_chart import Y_AXIS_WIDTH, build_chart, x_scale
 from ..model_catalog import ModelCatalogError
-from ..models import AlertSettings, Credentials, MonitorViewState, QuotaWindow, UsageSnapshot
-from ..presentation import history_table_time
+from ..models import (
+    AlertSettings, CARD_MIN_HEIGHT, Credentials, MonitorViewState, QuotaWindow,
+    UsageSnapshot,
+)
+from ..presentation import card_title, history_table_time
 from ..providers import get_provider
 from ..storage import Storage
 from ..trends import trends_for_snapshot
@@ -52,7 +55,7 @@ def states():
     bailian_token = MonitorViewState(status="ok", provider="bailian", snapshot=UsageSnapshot(
         "token_plan", now,
         (QuotaWindow("monthly", 37.5, now + timedelta(days=12)),),
-        "Token Plan 个人版"))
+        "Token Plan 个人版 Standard"))
     # Bailian Coding Plan reports absolute Credits per window.
     bailian_coding = MonitorViewState(status="ok", provider="bailian", snapshot=UsageSnapshot(
         "coding_plan", now, tuple(
@@ -456,7 +459,7 @@ def card_refresh_probe_points(ui):
         F.NSMakePoint(fx - 0.5, fcy), F.NSMakePoint(fx + fw + 0.5, fcy),
         F.NSMakePoint(fcx, fy - 0.5), F.NSMakePoint(fcx, fy + fh + 0.5),
     ))
-    for label in (ui.card_updated, ui.card_hint):
+    for label in (ui.card_updated,):
         bounds = label.frame()
         outside.append(F.NSMakePoint(
             bounds.origin.x + bounds.size.width / 2,
@@ -492,7 +495,7 @@ def assert_card_refresh_layout(ui):
     corner = F.NSMakePoint(size.width - 2, size.height - 2)
     assert card_hit_test(ui, corner) == ui.card_view
     assert ui.card_view._edges_at(corner) == frozenset({"right", "bottom"})
-    for label in (ui.card_updated, ui.card_hint):
+    for label in (ui.card_updated,):
         assert label.frame().origin.x + label.frame().size.width <= frame.origin.x
     expected_tip = "正在刷新…" if not button.isEnabled() else "立即刷新"
     assert button.toolTip() == expected_tip
@@ -595,13 +598,13 @@ def check_card_interactions_and_resize(ui, storage):
     ui.card_view.mouseDown_(event)
     ui.card_view.mouseUp_(event)
     assert not ui.details.isVisible()
-    for point in (F.NSMakePoint(350, 20), F.NSMakePoint(300, 140), F.NSMakePoint(30, 130)):
+    for point in (F.NSMakePoint(350, 20), F.NSMakePoint(300, 100), F.NSMakePoint(30, 120)):
         assert card_hit_test(ui, point) == ui.card_view
     assert ui.card_view._edges_at(F.NSMakePoint(0, 0)) == frozenset({"left", "top"})
-    assert ui.card_view._edges_at(F.NSMakePoint(383, 159)) == frozenset({"right", "bottom"})
+    assert ui.card_view._edges_at(F.NSMakePoint(383, 132)) == frozenset({"right", "bottom"})
     assert ui.card_view._edges_at(F.NSMakePoint(180, 80)) == frozenset()
     assert ui.card.contentMinSize().width == 320
-    assert ui.card.contentMinSize().height == 160
+    assert ui.card.contentMinSize().height == CARD_MIN_HEIGHT
 
     # Drive the production press/drag/release path from the bottom-right corner.
     visible = ui.card.screen().visibleFrame()
@@ -639,7 +642,7 @@ def check_card_interactions_and_resize(ui, storage):
     assert (ui.preferences.width, ui.preferences.height) == (round(expected.size.width), round(expected.size.height))
     column_widths = {round(view.frame().size.width, 2) for view in ui.card_values.values()}
     assert len(column_widths) == 1
-    for view in list(ui.card_values.values()) + [ui.card_status, ui.card_updated, ui.card_hint]:
+    for view in list(ui.card_values.values()) + [ui.card_title, ui.card_status, ui.card_updated]:
         assert view.frame().origin.x + view.frame().size.width <= ui.card_view.bounds().size.width + 0.01
     assert_card_refresh_layout(ui)
     restored = MonitorUI(FakeMonitor(ui.state), Storage(storage.data_dir, MemoryKeyring()))
@@ -727,6 +730,11 @@ def main(argv=None):
                     assert [v.doubleValue() for v in progress] == [max(0, min(100, expected[k].remaining_percent)) for k in ("five_hour", "weekly", "monthly") if k in expected]
                     assert all(v.accessibilityLabel().endswith("剩余容量") for v in progress)
                     assert all(ui.card_values[k].stringValue() == (f"{expected[k].remaining_percent:.1f}%" if k in expected else "—") for k in ("five_hour", "weekly", "monthly"))
+                    assert ui.card_title.stringValue() == card_title(state)
+                    # The status must fit on one line: a frame narrower than the
+                    # cell needs wraps it onto a second, clipped line.
+                    assert ui.card_status.frame().size.width >= ui.card_status.cell().cellSizeForBounds_(
+                        F.NSMakeRect(0, 0, 10000, 10000)).width
                     assert_details_width(ui)
                     assert_card_refresh_layout(ui)
                     assert ui.card_refresh_button.isEnabled() == (name != "refreshing")
@@ -946,7 +954,7 @@ def main(argv=None):
                 capture(ui.card, args.artifacts / "card-resized.png")
                 resized_frame = ui.card.frame()
                 ui.card.setFrame_display_(F.NSMakeRect(
-                    resized_frame.origin.x, resized_frame.origin.y, 320, 160,
+                    resized_frame.origin.x, resized_frame.origin.y, 320, CARD_MIN_HEIGHT,
                 ), True)
                 assert_card_refresh_layout(ui)
                 ui.card.displayIfNeeded()

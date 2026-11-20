@@ -42,9 +42,39 @@ export const en = {
     eyebrow: 'Supported plans', title: 'The plans you use, together.',
     description: 'A deliberately focused set of providers and plans. Accuracy matters more than a long compatibility list.',
     items: [
-      { mark: '火', name: 'Volcengine Ark', plans: 'Agent Plan · Coding Plan', detail: 'See 5-hour, weekly, and monthly windows, plus AFP or quota units when the API reports them.' },
-      { mark: '百', name: 'Alibaba Cloud Model Studio', plans: 'Token Plan (Individual) · Coding Plan', detail: 'See the remaining ratio and reset time supported by the API, without inventing absolute amounts.' },
+      {
+        mark: '火', name: 'Volcengine Ark', plans: 'Agent Plan · Coding Plan', detail: 'See 5-hour, weekly, and monthly windows, plus AFP or quota units when the API reports them.',
+        tiers: [
+          { plan: 'Agent Plan (Individual)', entries: [
+            { name: 'Small', price: '¥40/mo', quota: '20,000 AFP' },
+            { name: 'Medium', price: '¥200/mo', quota: '100,000 AFP' },
+            { name: 'Large', price: '¥500/mo', quota: '250,000 AFP' },
+            { name: 'Max', price: '¥1000/mo', quota: '500,000 AFP' },
+          ] },
+          { plan: 'Coding Plan (Individual)', entries: [
+            { name: 'Lite', price: '¥40/mo', quota: 'Metered by requests' },
+            { name: 'Pro', price: '¥200/mo', quota: 'Metered by requests' },
+          ] },
+        ],
+      },
+      {
+        mark: '百', name: 'Alibaba Cloud Model Studio', plans: 'Token Plan (Individual) · Coding Plan', detail: 'See the remaining ratio and reset time supported by the API, without inventing absolute amounts.',
+        tiers: [
+          { plan: 'Token Plan (Individual)', entries: [
+            { name: 'Lite', price: '¥39/mo', quota: '20,000 Credits' },
+            { name: 'Essential', price: '¥79/mo', quota: '45,000 Credits' },
+            { name: 'Standard', price: '¥139/mo', quota: '80,000 Credits' },
+            { name: 'Pro', price: '¥312/mo', quota: '200,000 Credits' },
+          ] },
+          { plan: 'Coding Plan (legacy)', entries: [
+            { name: 'Pro', price: '¥200/mo', quota: '90,000 requests' },
+            { name: 'Lite (discontinued)', price: '¥40/mo', quota: '18,000 requests' },
+          ] },
+        ],
+      },
     ],
+    tierTable: { caption: 'tiers and list prices', tier: 'Tier', price: 'List price', quota: 'Monthly allowance' },
+    pricingNote: 'List prices (CNY) verified on 2026-11-19; limited-time promotions are subject to each provider’s official campaign pages.',
   },
   features: {
     eyebrow: 'Core features', title: 'Less interruption. More certainty.',

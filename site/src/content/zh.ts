@@ -42,9 +42,39 @@ export const zh = {
     eyebrow: '支持范围', title: '常用的套餐，放在一起看。',
     description: '只接入已经支持的服务商与套餐，不追求看起来很多，只确保显示得准确。',
     items: [
-      { mark: '火', name: '火山方舟', plans: 'Agent Plan · Coding Plan', detail: '查看 5 小时、每周与每月窗口；接口提供时同时显示 AFP 或额度。' },
-      { mark: '百', name: '阿里云百炼', plans: 'Token Plan 个人版 · Coding Plan', detail: '按接口能力展示剩余比例与重置时间，不显示并不存在的绝对数字。' },
+      {
+        mark: '火', name: '火山方舟', plans: 'Agent Plan · Coding Plan', detail: '查看 5 小时、每周与每月窗口；接口提供时同时显示 AFP 或额度。',
+        tiers: [
+          { plan: 'Agent Plan 个人版', entries: [
+            { name: 'Small', price: '¥40/月', quota: '20,000 AFP' },
+            { name: 'Medium', price: '¥200/月', quota: '100,000 AFP' },
+            { name: 'Large', price: '¥500/月', quota: '250,000 AFP' },
+            { name: 'Max', price: '¥1000/月', quota: '500,000 AFP' },
+          ] },
+          { plan: 'Coding Plan 个人版', entries: [
+            { name: 'Lite', price: '¥40/月', quota: '按请求次数计量' },
+            { name: 'Pro', price: '¥200/月', quota: '按请求次数计量' },
+          ] },
+        ],
+      },
+      {
+        mark: '百', name: '阿里云百炼', plans: 'Token Plan 个人版 · Coding Plan', detail: '按接口能力展示剩余比例与重置时间，不显示并不存在的绝对数字。',
+        tiers: [
+          { plan: 'Token Plan 个人版', entries: [
+            { name: 'Lite', price: '¥39/月', quota: '20,000 Credits' },
+            { name: 'Essential', price: '¥79/月', quota: '45,000 Credits' },
+            { name: 'Standard', price: '¥139/月', quota: '80,000 Credits' },
+            { name: 'Pro', price: '¥312/月', quota: '200,000 Credits' },
+          ] },
+          { plan: 'Coding Plan（旧版）', entries: [
+            { name: 'Pro', price: '¥200/月', quota: '90,000 次请求' },
+            { name: 'Lite（已停售）', price: '¥40/月', quota: '18,000 次请求' },
+          ] },
+        ],
+      },
     ],
+    tierTable: { caption: '档位与价格', tier: '档位', price: '目录价', quota: '月额度' },
+    pricingNote: '以上为 2026-11-19 核实的目录价（原价），限时优惠以各服务商官方活动页为准。',
   },
   features: {
     eyebrow: '核心能力', title: '少一点打扰，多一点确定。',

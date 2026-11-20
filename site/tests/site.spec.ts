@@ -23,6 +23,8 @@ for (const item of pages) {
   });
 
   test(`${item.name}: no serious accessibility violations`, async ({ page }) => {
+    // Disable the hero reveal animation so axe never samples mid-fade contrast.
+    await page.emulateMedia({ reducedMotion: 'reduce' });
     await page.goto(item.path);
     const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze();
     expect(results.violations.filter((issue) => ['serious', 'critical'].includes(issue.impact ?? ''))).toEqual([]);

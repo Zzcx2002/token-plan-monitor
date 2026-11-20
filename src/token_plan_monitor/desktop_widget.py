@@ -11,6 +11,7 @@ from typing import Any, Callable, Mapping
 from .models import CacheError, MonitorViewState, WINDOW_ORDER, WidgetPreferences
 from .presentation import (
     WINDOW_LABELS,
+    card_title,
     compact_remaining,
     hover_summary,
     lowest_windows,
@@ -79,6 +80,18 @@ class QuotaCard(tk.Canvas):
         self.state=state
         self.draw()
 
+    def _fit_title(self,text:str,max_width:float) -> str:
+        """Ellipsize the card title so it never reaches the status dot/message."""
+        if max_width<=0:
+            return ""
+        if self.title_font.measure(text)<=max_width:
+            return text
+        if self.title_font.measure("…")>max_width:
+            return ""
+        while text and self.title_font.measure(text+"…")>max_width:
+            text=text[:-1]
+        return text+"…"
+
     def draw(self) -> None:
         from PIL import Image, ImageDraw, ImageTk
         c,s=self.colors,self.scale
@@ -95,21 +108,25 @@ class QuotaCard(tk.Canvas):
         self.create_image(0,0,image=self._surface,anchor="nw")
         extra=max(0,height-124*s)
         state=self.state
-        # The card names the active provider, matching the macOS desktop card;
-        # plan details live in the popup and the usage-history window.
-        title=state.provider_label
-        self.create_text(18*s,20*s,text=title,font=self.title_font,fill=c["text"],anchor="w")
         tone=state_tone(state)
         colour=c[{"ok":"success","warning":"warning","error":"error","unconfigured":"muted"}[tone]]
         dot_x=width-21*s
+        message=None
+        if not state.is_refreshing and tone!="ok":
+            message={"warning":"数据过期" if state.status=="stale" else "剩余偏低",
+                     "error":"连接异常","unconfigured":"待配置"}[tone]
+        # The title names the provider plus the active plan/tier, matching the
+        # macOS desktop card. It shares the top row with the status dot and any
+        # status message on the right, so ellipsize to the space left of them.
+        right_edge=dot_x-10*s-self.label_font.measure(message) if message else dot_x-4*s
+        title=self._fit_title(card_title(state),right_edge-10*s-18*s)
+        self.create_text(18*s,20*s,text=title,font=self.title_font,fill=c["text"],anchor="w")
         if state.is_refreshing:
             self.create_arc(dot_x-4*s,16*s,dot_x+4*s,24*s,start=self.phase,extent=270,
                             style="arc",outline=c["accent"],width=max(1,round(2*s)))
         else:
             self.create_oval(dot_x-3*s,17*s,dot_x+3*s,23*s,fill=colour,outline="")
-            if tone!="ok":
-                message={"warning":"数据过期" if state.status=="stale" else "剩余偏低",
-                         "error":"连接异常","unconfigured":"待配置"}[tone]
+            if message:
                 self.create_text(dot_x-10*s,20*s,text=message,font=self.label_font,fill=colour,anchor="e")
         windows={w.kind:w for w in state.snapshot.windows} if state.snapshot else {}
         lowest=lowest_windows(state)

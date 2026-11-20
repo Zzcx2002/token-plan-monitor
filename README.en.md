@@ -90,6 +90,34 @@ Full install steps, SHA-256 checksums and Gatekeeper / SmartScreen first-launch 
 
 Model Studio Token Plan (Individual) is metered per subscription month: the API returns only usage ratios and reset times, with no absolute amounts. Model Studio free per-model token allowances and the Token Plan team edition are not supported.
 
+### Plan tiers and pricing
+
+List prices (CNY) and monthly allowances below, verified against the official docs on 2026-11-19. Limited-time promotions (Ark's 75%-off campaign, Model Studio new-user prices, etc.) are subject to the providers' official campaign pages.
+
+**Volcengine Ark** ([Agent Plan overview](https://docs.volcengine.com/docs/ark/agent-plan-personal-plan-overview?lang=zh) · [Coding Plan overview](https://docs.volcengine.com/docs/ark/coding-plan-personal-plan-overview?lang=zh))
+
+| Plan | Tier | List price | Monthly allowance |
+| --- | --- | --- | --- |
+| Agent Plan (Individual) | Small | ¥40/mo | 20,000 AFP |
+| Agent Plan (Individual) | Medium | ¥200/mo | 100,000 AFP |
+| Agent Plan (Individual) | Large | ¥500/mo | 250,000 AFP |
+| Agent Plan (Individual) | Max | ¥1000/mo | 500,000 AFP |
+| Coding Plan (Individual) | Lite | ¥40/mo | metered by requests |
+| Coding Plan (Individual) | Pro | ¥200/mo | metered by requests |
+
+**Alibaba Cloud Model Studio** ([Token Plan (Individual) overview](https://help.aliyun.com/zh/model-studio/token-plan-personal-overview) · [Coding Plan overview](https://help.aliyun.com/zh/model-studio/coding-plan))
+
+| Plan | Tier | List price | Monthly allowance |
+| --- | --- | --- | --- |
+| Token Plan (Individual) | Lite | ¥39/mo | 20,000 Credits |
+| Token Plan (Individual) | Essential | ¥79/mo | 45,000 Credits |
+| Token Plan (Individual) | Standard | ¥139/mo | 80,000 Credits |
+| Token Plan (Individual) | Pro | ¥312/mo | 200,000 Credits |
+| Coding Plan (legacy) | Pro | ¥200/mo | 90,000 requests |
+| Coding Plan (legacy) | Lite (discontinued) | ¥40/mo | 18,000 requests (historical) |
+
+Notes: Ark's Coding Plan overview page no longer publishes exact request counts — see the console's subscription page for actual quotas. Model Studio Coding Plan Lite stopped new purchases on 2026-03-20 and renewals/upgrades on 2026-04-13; existing subscriptions can still be monitored by this tool.
+
 ## Install
 
 ### macOS

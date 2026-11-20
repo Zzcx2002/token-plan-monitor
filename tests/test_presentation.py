@@ -10,6 +10,7 @@ from token_plan_monitor.models import (
 )
 from token_plan_monitor.presentation import (
     PLAN_LABELS,
+    card_title,
     compact_remaining,
     format_datetime,
     history_context_line,
@@ -273,3 +274,13 @@ def test_history_context_line_names_provider_plan_account_and_update():
     assert line.startswith("火山方舟 · Agent Plan Large · 当前账号 · 更新于 ")
     bare = MonitorViewState(status="empty", provider="bailian")
     assert history_context_line(bare) == "阿里云百炼 · 当前账号 · 暂无数据"
+
+
+def test_card_title_names_provider_and_plan_with_fallbacks():
+    assert card_title(sample_state()) == "火山方舟 · Agent Plan Large"
+    # Legacy cached snapshots may lack plan_name: fall back to PLAN_LABELS.
+    unnamed = replace(sample_state(), snapshot=replace(sample_state().snapshot, plan_name=None))
+    assert card_title(unnamed) == "火山方舟 · Agent Plan"
+    # No snapshot yet (unconfigured/empty/error): provider alone.
+    bare = MonitorViewState(status="unconfigured", provider="bailian")
+    assert card_title(bare) == "阿里云百炼"

@@ -33,6 +33,7 @@ from .models import (
     NoActivePlanError,
     ParseError,
     ProviderError,
+    QueryError,
     QuotaWindow,
     Settings,
     TransientProviderError,
@@ -44,6 +45,9 @@ from .models import (
 )
 
 TOKEN_PLAN_USAGE_API = "zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage"
+# The usage endpoint only reports ratios; the subscribed tier (specCode, e.g.
+# "standard") lives on this sibling subscription endpoint.
+TOKEN_PLAN_SUBSCRIPTION_API = "zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/subscription"
 CODING_PLAN_USAGE_API = "zeldaEasy.broadscope-bailian.codingPlan.queryCodingPlanInstanceInfoV2"
 # Only the domestic (aliyun.com) console site is supported, so the commodity
 # code is fixed; the international site would use sfm_codingplan_public_intl.
@@ -125,9 +129,17 @@ class BailianClient:
             self._console_call(TOKEN_PLAN_USAGE_API, {})
         )
         if token_plan:
+            # The tier is decoration: a failing subscription endpoint must not
+            # fail the quota query, so degrade to the family name alone.
+            try:
+                suffix = token_plan_spec_suffix(
+                    self._console_call(TOKEN_PLAN_SUBSCRIPTION_API, {})
+                )
+            except QueryError:
+                suffix = ""
             return UsageSnapshot(
                 plan_type="token_plan",
-                plan_name="Token Plan 个人版",
+                plan_name=f"Token Plan 个人版{suffix}",
                 queried_at=self.clock(),
                 windows=token_plan,
             )
@@ -286,6 +298,19 @@ def unwrap_console_payload(result: Any) -> dict[str, Any]:
         return {}
     direct = data.get("data")
     return direct if isinstance(direct, dict) else data
+
+
+def token_plan_spec_suffix(payload: Any) -> str:
+    """Tier suffix like " Standard" from the subscription endpoint, "" if absent.
+
+    specCode arrives lowercase ("lite"/"essential"/"standard"/"pro"); the
+    console shows the same names capitalised. Unknown or missing shapes (a 404
+    body wrapped in a success envelope, for instance) yield no suffix.
+    """
+    spec = payload.get("specCode") if isinstance(payload, dict) else None
+    if isinstance(spec, str) and spec.strip():
+        return " " + spec.strip().capitalize()
+    return ""
 
 
 def parse_token_plan_windows(payload: Any) -> tuple[QuotaWindow, ...]:
