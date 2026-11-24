@@ -1058,7 +1058,7 @@ def main(argv=None):
                 written = json.loads(settings_target.read_text(encoding="utf-8"))
                 assert written["env"]["ANTHROPIC_MODEL"] == "qwen3.8-max"
                 assert written["env"]["ANTHROPIC_BASE_URL"] == (
-                    "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic")
+                    "https://token-plan.maas.qianwenaiapi.com/apps/anthropic")
                 assert written["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-sp-preview"
                 assert written["model"] == "qwen3.8-max"
                 # No alias existed on a fresh file, so every tier got filled.

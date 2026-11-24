@@ -5,7 +5,10 @@ import requests
 
 from token_plan_monitor.macos.layout import resolve_claude_seed
 from token_plan_monitor.model_catalog import (
+    CATALOG_NEEDS_KEY,
+    CATALOG_UNSUPPORTED_URL,
     ModelCatalogError,
+    catalog_block_reason,
     fetch_model_ids,
     is_chat_model,
     merge_model_options,
@@ -67,6 +70,40 @@ def test_models_url_strips_trailing_slash_and_anything_after_anthropic_path():
         "https://token-plan.maas.aliyuncs.com/compatible-mode/v1/models")
     assert models_url_for("https://proxy.example.com/apps/anthropic/v1") == (
         "https://proxy.example.com/compatible-mode/v1/models")
+
+
+def test_models_url_truncates_compatible_mode_without_doubling_the_path():
+    # Direct callers feeding an OpenAI-compatible URL must not get a doubled
+    # /compatible-mode/v1/compatible-mode/v1/models path.
+    assert models_url_for("https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1") == (
+        "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1/models")
+    assert models_url_for(
+        "https://proxy.example.com/compatible-mode/v3") == (
+        "https://proxy.example.com/compatible-mode/v1/models")
+
+
+# --- Automatic-fetch block reasons ------------------------------------------
+
+def test_catalog_block_reason_requires_a_key():
+    reason = catalog_block_reason(
+        "https://token-plan.maas.qianwenaiapi.com/apps/anthropic", "")
+    assert reason == CATALOG_NEEDS_KEY
+    assert catalog_block_reason(
+        "https://token-plan.maas.qianwenaiapi.com/apps/anthropic", "   ") == (
+        CATALOG_NEEDS_KEY)
+
+
+def test_catalog_block_reason_requires_anthropic_path():
+    reason = catalog_block_reason(
+        "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1", "sk-sp-x")
+    assert reason == CATALOG_UNSUPPORTED_URL
+    assert catalog_block_reason("", "sk-sp-x") == CATALOG_UNSUPPORTED_URL
+
+
+def test_catalog_block_reason_allows_ready_state():
+    assert catalog_block_reason(
+        "https://token-plan.maas.qianwenaiapi.com/apps/anthropic",
+        "sk-sp-x") is None
 
 
 def test_models_url_rejects_empty_or_hostless():

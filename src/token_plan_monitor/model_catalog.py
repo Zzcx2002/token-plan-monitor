@@ -28,8 +28,23 @@ from .models import HEAVY_ID_MARKS, MODEL_ID_PATTERN, QueryError
 from .providers import ClaudeModelOption
 
 #: OpenAI-compatible path that lists the models a plan's inference key can call.
-#: Verified live against both official Token Plan hosts (aliyuncs / qianwenaiapi).
+#: Verified live against both official Token Plan hosts (the legacy regional
+#: maas.aliyuncs.com host and the fixed token-plan.maas.qianwenaiapi.com host).
 MODELS_PATH = "/compatible-mode/v1/models"
+
+#: Shared blocked-state copy for both desktop shells so the status labels can
+#: never drift apart. Kept here next to the fetch logic that produces them.
+CATALOG_NEEDS_KEY = "填写推理 API Key 后将自动获取模型列表"
+CATALOG_UNSUPPORTED_URL = "该 Base URL 不支持在线获取模型"
+
+
+def catalog_block_reason(base_url: str, api_key: str) -> str | None:
+    """Why an automatic catalogue fetch cannot start, or None when it can."""
+    if not (api_key or "").strip():
+        return CATALOG_NEEDS_KEY
+    if ANTHROPIC_PATH not in (base_url or ""):
+        return CATALOG_UNSUPPORTED_URL
+    return None
 
 #: Substrings marking a model Claude Code cannot chat with: image, video, speech
 #: and decision-only models. Mirrors the exclusion documented on
@@ -67,7 +82,15 @@ def models_url_for(base_url: str) -> str:
     if transport_error is not None:
         raise ModelCatalogError(transport_error)
     index = parsed.path.find(ANTHROPIC_PATH)
-    root_path = parsed.path[:index] if index >= 0 else parsed.path
+    if index >= 0:
+        root_path = parsed.path[:index]
+    else:
+        # Defensive: an OpenAI-compatible URL (.../compatible-mode/v1) must be
+        # truncated at that prefix, otherwise the models path is hung twice.
+        # The UI fetch gate only admits Anthropic paths today, so this only
+        # protects direct callers of this helper.
+        compatible_index = parsed.path.find("/compatible-mode")
+        root_path = parsed.path[:compatible_index] if compatible_index >= 0 else parsed.path
     root = f"{parsed.scheme}://{parsed.netloc}{root_path}".rstrip("/")
     return root + MODELS_PATH
 

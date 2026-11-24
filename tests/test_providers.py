@@ -49,31 +49,50 @@ def test_settings_enforce_each_provider_region_policy():
         Settings(provider="nope")
 
 
+FIXED_BAILIAN_URL = (
+    "https://token-plan.maas.qianwenaiapi.com/apps/anthropic"
+)
+
+
 def test_bailian_default_base_url_is_a_valid_anthropic_endpoint():
     spec = get_provider("bailian")
     assert spec.claude_base_url_verified is True
-    assert spec.default_claude_base_url("cn-beijing") == (
-        "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic")
-    assert spec.default_claude_base_url("ap-southeast-1").startswith(
-        "https://token-plan.ap-southeast-1.")
-    # An empty region must still resolve to the provider default region.
-    assert normalize_base_url(spec.default_claude_base_url(""))[0] == (
-        spec.default_claude_base_url("cn-beijing"))
+    # The endpoint is a fixed host: region (still used by the quota control
+    # plane) must never change the inference URL.
+    for region in ("cn-beijing", "ap-southeast-1", ""):
+        assert spec.default_claude_base_url(region) == FIXED_BAILIAN_URL
+    assert normalize_base_url(FIXED_BAILIAN_URL)[0] == FIXED_BAILIAN_URL
 
 
 @pytest.mark.parametrize("hostile_region", [
-    # Each of these used to land inside the hostname unchecked, moving the
-    # inference key to an attacker host (review P0-1, reproduced live).
+    # A region must never be able to move the inference key to another host.
     "evil.example.com/",
     "cn-beijing@evil.example.com/",
     "cn-beijing.evil.example.com",
     "http://evil.example.com",
     "cn-shanghai",  # well-formed but outside bailian's region allowlist
 ])
-def test_bailian_default_base_url_falls_back_for_hostile_regions(hostile_region):
+def test_bailian_default_base_url_ignores_hostile_regions(hostile_region):
     spec = get_provider("bailian")
-    assert spec.default_claude_base_url(hostile_region) == (
-        spec.default_claude_base_url("cn-beijing"))
+    assert spec.default_claude_base_url(hostile_region) == FIXED_BAILIAN_URL
+
+
+def test_regional_templates_still_interpolate_and_validate_region():
+    # The generic {region} template path must keep its validation/fallback
+    # behavior now that bailian itself uses a fixed-host template.
+    import dataclasses
+
+    spec = dataclasses.replace(
+        get_provider("bailian"),
+        claude_base_url_template=(
+            "https://token-plan.{region}.example.com/apps/anthropic"),
+    )
+    assert spec.default_claude_base_url("cn-beijing") == (
+        "https://token-plan.cn-beijing.example.com/apps/anthropic")
+    assert spec.default_claude_base_url("") == (
+        "https://token-plan.cn-beijing.example.com/apps/anthropic")
+    assert spec.default_claude_base_url("evil.example.com/") == (
+        "https://token-plan.cn-beijing.example.com/apps/anthropic")
 
 
 def test_ark_never_prefills_an_unverified_endpoint_or_invented_models():

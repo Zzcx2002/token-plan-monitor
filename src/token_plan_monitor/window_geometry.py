@@ -13,9 +13,12 @@ logger = logging.getLogger(__name__)
 
 class WindowGeometry:
     def __init__(self, window: tk.Toplevel, storage: Storage, name: str,
-                 minimum: tuple[int, int]):
+                 minimum: tuple[int, int], cap_height: bool = False):
         self.window, self.storage, self.name = window, storage, name
         self.minimum = minimum
+        # When True, a stored height taller than the freshly fitted content
+        # cannot reopen a mostly empty dialog (a value saved mid layout storm).
+        self.cap_height = cap_height
         self.initialized = False
         self.pending: str | None = None
         self.size = storage.load_window_size(name)
@@ -32,8 +35,13 @@ class WindowGeometry:
         left, top, right, bottom = window_work_area(self.window)
         # Clamp before multiplying: a finite JSON number may overflow at high DPI.
         limits = (right-left-20, bottom-top-60)
-        requested = tuple(round(min(n, limit/scale)*scale)
-                          for n, limit in zip(self.size, limits)) if self.size else default
+        if self.size:
+            requested = tuple(round(min(n, limit/scale)*scale)
+                              for n, limit in zip(self.size, limits))
+            if self.cap_height:
+                requested = (requested[0], min(requested[1], default[1]))
+        else:
+            requested = default
         width = min(max(round(self.minimum[0]*scale), requested[0]), right-left-20)
         height = min(max(round(self.minimum[1]*scale), requested[1]), bottom-top-60)
         self.pixel_size=(width,height)

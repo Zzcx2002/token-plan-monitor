@@ -62,6 +62,14 @@ def is_packed(label):
         return False
 
 
+def ex_style(window):
+    """GWL_EXSTYLE of a window's outer native wrapper."""
+    user32 = ctypes.windll.user32
+    user32.GetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+    return user32.GetWindowLongPtrW(native_handle(window), -20)
+
+
 def main():
     with tempfile.TemporaryDirectory(dir=ARTIFACTS) as temporary:
         monitor = Monitor()
@@ -189,6 +197,9 @@ def main():
                 assert app.material == "acrylic"
                 card_effects = app.desktop_widget.window._window_effects
                 assert card_effects.material == "acrylic" and card_effects.layered
+                # The layered colour key must not cost the card its tool-window
+                # exclusion from the taskbar.
+                assert ex_style(app.desktop_widget.window) & 0x80
                 assert app.storage.load_appearance().material == "solid"
                 material_buttons["solid"].invoke()
                 app.root.after(80, app.root.quit)
@@ -278,13 +289,16 @@ def main():
             app.root.after(80, app.root.quit)
             app.root.mainloop()
             assert not card.topmost
-            get_style = ctypes.windll.user32.GetWindowLongW
-            get_style.argtypes = [ctypes.c_void_p, ctypes.c_int]
-            assert not get_style(native_handle(card.window), -20) & 8
+            assert not ex_style(card.window) & 8
             card._show_hover()
             app.root.after(80, app.root.quit)
             app.root.mainloop()
             assert card._hover.winfo_viewable()
+            # Frameless override-redirect surfaces carry WS_EX_TOOLWINDOW so
+            # neither the card nor its summary hover gets a taskbar button,
+            # even after the colour-key material path rewrites GWL_EXSTYLE.
+            assert ex_style(card.window) & 0x80
+            assert ex_style(card._hover) & 0x80
             card.set_visible(False)
             app.root.after(80, app.root.quit)
             app.root.mainloop()
@@ -304,6 +318,9 @@ def main():
             app.show_popup()
             app.root.after(80, app.root.quit)
             app.root.mainloop()
+            # The framed popup stays a normal taskbar window; only frameless
+            # override-redirect surfaces are excluded.
+            assert not (ex_style(app.popup) & 0x80)
             app.popup.event_generate('<Escape>')
             app.root.after(80, app.root.quit)
             app.root.mainloop()
@@ -413,7 +430,7 @@ def main():
             card.close()
             app.root.after(80, app.root.quit)
             app.root.mainloop()
-            print('PASS: theme switching, material preview/rollback, system changes, persistence, no quota/keyring writes, details retention, trend captions, detail styles, separators, refresh button gestures, empty-click, drag, topmost, hover, solid ClearType surface, Escape, validation, save, cancel, alert panel, tray toast')
+            print('PASS: theme switching, material preview/rollback, system changes, persistence, no quota/keyring writes, details retention, trend captions, detail styles, separators, refresh button gestures, empty-click, drag, topmost, hover, taskbar exclusion, solid ClearType surface, Escape, validation, save, cancel, alert panel, tray toast')
         finally:
             app.shutdown()
         restarted=MonitorUI(Monitor(),Storage(Path(temporary),MemoryKeyring()))

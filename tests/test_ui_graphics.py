@@ -44,6 +44,10 @@ class FakeTk:
             return None
         raise AssertionError(f"unexpected tk call: {args}")
 
+    def getboolean(self, value):
+        # Mirrors Tcl's boolean coercion for the bool/"1" forms Tk may return.
+        return str(value) in ("1", "true", "yes", "on", "True")
+
 
 class Window:
     def __init__(self, *, reject_colour=False, width=400, height=300,
@@ -55,6 +59,7 @@ class Window:
         self.binds = []
         self.idle = []
         self.cancelled = []
+        self.viewable = False
 
     def update_idletasks(self):
         pass
@@ -64,6 +69,9 @@ class Window:
 
     def winfo_exists(self):
         return True
+
+    def winfo_viewable(self):
+        return int(self.viewable)
 
     def winfo_width(self):
         return self._width
@@ -75,6 +83,9 @@ class Window:
         if self.reject_colour and value:
             raise tk.TclError("colour key unavailable")
         self.options[key] = value
+
+    def overrideredirect(self):
+        return "0"
 
     def bind(self, event, callback, add=False):
         self.binds.append((event, callback))
@@ -94,6 +105,13 @@ class StrictWindow(Window):
         if key == "-transparentcolor":
             raise tk.TclError("colour key unavailable")
         super().attributes(key, value)
+
+
+class OverrideRedirectWindow(Window):
+    """Stands in for the frameless card/hover surfaces (wm overrideredirect 1)."""
+
+    def overrideredirect(self):
+        return "1"
 
 
 class RtlGetVersion:
@@ -200,6 +218,40 @@ def test_solid_path_without_layered_bit_skips_style_write(monkeypatch):
     user, _, _ = native(monkeypatch, ex_style=0x100)
     graphics.apply_window_effects(Window(), "#F2F3F6")
     assert not [call for call in user.SetWindowLongPtrW.calls if call[1] == -20]
+
+
+# --------------------------------------- taskbar exclusion for frameless surfaces
+
+def test_override_redirect_solid_reasserts_toolwindow_bit(monkeypatch):
+    # Tk's colour-key handler drops the Map-time WS_EX_TOOLWINDOW; the card
+    # would otherwise surface as a taskbar button whose close kills the card.
+    user, _, _ = native(monkeypatch, ex_style=0x00000008)
+    graphics.apply_window_effects(OverrideRedirectWindow(), "#F2F3F6", material="solid")
+    style_writes = [call[2] for call in user.SetWindowLongPtrW.calls if call[1] == -20]
+    assert style_writes and style_writes[-1] & graphics.WS_EX_TOOLWINDOW
+    assert any(call[6] == 0x37 for call in user.SetWindowPos.calls)
+
+
+def test_framed_window_never_gets_toolwindow_bit(monkeypatch):
+    # Popup/settings/history windows keep their ordinary taskbar button.
+    user, _, _ = native(monkeypatch, ex_style=0x100)
+    graphics.apply_window_effects(Window(), "#F2F3F6")
+    style_writes = [call[2] for call in user.SetWindowLongPtrW.calls if call[1] == -20]
+    assert not any(value & graphics.WS_EX_TOOLWINDOW for value in style_writes)
+
+
+def test_toolwindow_bit_already_present_skips_exstyle_rewrite(monkeypatch):
+    user, _, _ = native(monkeypatch, ex_style=graphics.WS_EX_TOOLWINDOW)
+    graphics.apply_window_effects(OverrideRedirectWindow(), "#F2F3F6")
+    assert not [call for call in user.SetWindowLongPtrW.calls if call[1] == -20]
+
+
+def test_override_redirect_acrylic_keeps_layered_and_adds_toolwindow(monkeypatch):
+    user, _, _ = native(monkeypatch, composition=1, ex_style=0x00080000)
+    monkeypatch.setattr(graphics, "transparency_enabled", lambda: True)
+    graphics.apply_window_effects(OverrideRedirectWindow(), "#F2F3F6", material="acrylic")
+    style_writes = [call[2] for call in user.SetWindowLongPtrW.calls if call[1] == -20]
+    assert style_writes[-1] == 0x00080000 | graphics.WS_EX_TOOLWINDOW
 
 
 @pytest.mark.parametrize("surface,expected", [("#18191D", 1), ("#F2F3F6", 0)])
@@ -368,6 +420,9 @@ def test_install_applies_immediately_and_rechecks_on_map(monkeypatch):
         applied.append((surface, material))
         window._window_effects = graphics.WindowEffects(
             rounded=True, material=material or "solid")
+        window._window_effects_key = (
+            graphics.native_handle(window), surface, window._window_effects.material,
+        )
         return window._window_effects
 
     monkeypatch.setattr(graphics, "apply_window_effects", fake_apply)
@@ -379,10 +434,21 @@ def test_install_applies_immediately_and_rechecks_on_map(monkeypatch):
     assert window._window_effects.rounded
     assert region_calls == []  # Win11: DWM owns corners, no GDI fallback
     map_handler = next(callback for event, callback in window.binds if event == "<Map>")
+    window.viewable = True
     map_handler(SimpleNamespace(widget=window))
     assert window.idle
     window.idle[0]()
-    assert len(applied) == 2
+    assert len(applied) == 2  # first Map always stabilizes native frame state
+
+    map_handler(SimpleNamespace(widget=window))
+    window.idle[1]()
+    assert len(applied) == 2  # unchanged retained re-show is deduplicated
+
+    window._material_surface = "#101218"
+    map_handler(SimpleNamespace(widget=window))
+    window.idle[2]()
+    assert applied[-1] == ("#101218", "solid")
+    assert len(applied) == 3
 
 
 def test_install_falls_back_to_gdi_region_when_unrounded(monkeypatch):
@@ -538,6 +604,94 @@ def test_dpi_handler_missing_api_is_benign(monkeypatch):
     assert getattr(window, "_dpi_handler", None) is None
 
 
+# -------------------------------------------------- Tcl service-mode guards
+
+def test_service_mode_binding_exports_on_windows():
+    setter, getter = graphics._tcl_service_mode_functions()
+    assert setter is not None and getter is not None
+    original = getter()
+    try:
+        token = graphics.defer_tcl_events()
+        assert isinstance(token, int)
+        assert getter() == graphics.TCL_SERVICE_NONE
+        graphics.restore_tcl_events(token)
+        assert getter() == original
+    finally:
+        setter(original)
+
+
+def test_defer_restore_preserves_an_ambient_all_mode():
+    # TCL_SERVICE_ALL is the Tk native size/move modal-loop state whose
+    # reentrancy aborts the interpreter; guards must restore it, not clobber.
+    setter, getter = graphics._tcl_service_mode_functions()
+    original = getter()
+    try:
+        setter(1)
+        token = graphics.defer_tcl_events()
+        try:
+            assert getter() == graphics.TCL_SERVICE_NONE
+        finally:
+            graphics.restore_tcl_events(token)
+        assert getter() == 1
+    finally:
+        setter(original)
+
+
+def test_tcl_events_deferred_restores_on_exception():
+    setter, getter = graphics._tcl_service_mode_functions()
+    original = getter()
+    try:
+        with pytest.raises(RuntimeError):
+            with graphics.tcl_events_deferred():
+                assert getter() == graphics.TCL_SERVICE_NONE
+                raise RuntimeError("boom")
+        assert getter() == original
+    finally:
+        setter(original)
+
+
+def test_service_mode_guard_fails_closed_without_binding(monkeypatch):
+    monkeypatch.setattr(graphics, "_tcl_service_mode_functions",
+                        lambda: (None, None))
+    monkeypatch.setattr(graphics.sys, "platform", "win32")
+    with pytest.raises(graphics.TclServiceGuardUnavailable):
+        graphics.defer_tcl_events()
+    graphics.restore_tcl_events(None)  # unsupported non-Windows platforms stay no-op
+
+
+def test_service_mode_binding_uses_the_loaded_tcl_module(monkeypatch, tmp_path):
+    """Do not let a same-named PATH DLL replace the Tcl already used by Tk."""
+    loaded_path = tmp_path / "tcl86t.dll"
+    loaded_path.write_bytes(b"")
+    calls = []
+    setter = SimpleNamespace(argtypes=None, restype=None)
+    getter = SimpleNamespace(argtypes=None, restype=None)
+
+    class Kernel32:
+        @staticmethod
+        def GetModuleHandleW(name):
+            return 0x1234 if name == "tcl86t.dll" else 0
+
+        @staticmethod
+        def GetModuleFileNameW(handle, buffer, length):
+            if handle != 0x1234:
+                return 0
+            buffer.value = str(loaded_path)
+            return len(str(loaded_path))
+
+    def load(path):
+        calls.append(path)
+        return SimpleNamespace(Tcl_SetServiceMode=setter, Tcl_GetServiceMode=getter)
+
+    monkeypatch.setattr(graphics, "_TCL_SERVICE_FUNCTIONS", None)
+    monkeypatch.setattr(graphics.sys, "platform", "win32")
+    monkeypatch.setattr(graphics.ctypes, "WinDLL", load)
+    monkeypatch.setattr(graphics.ctypes, "windll", SimpleNamespace(kernel32=Kernel32()))
+    assert graphics._tcl_service_mode_functions() == (setter, getter)
+    assert calls == [str(loaded_path)]
+    assert graphics.tcl_service_guard_status() == (True, str(loaded_path))
+
+
 # ------------------------------------------------------------- registry gate
 
 class _FakeKey:
@@ -628,3 +782,38 @@ def test_scrollbar_palette_dark_derives_from_theme_tokens():
     assert palette["active"] == DARK.colors["accent"]
     assert palette["pressed"] == DARK.colors["accent_active"]
     assert palette["disabled"] == DARK.colors["border"]
+
+
+# -------------------------------------------------------------- comboboxes
+
+# clam's readonly combobox map leaks these light/system colors; the dark-mode
+# white/gray dropdown came from exactly these lookups.
+CLAM_COMBOBOX_LEAKS = {"#dcdad5", "#4a6984", "#999999", "#eeebe7", "#cfcdc8"}
+
+
+def test_combobox_palette_light_derives_from_theme_tokens():
+    palette = graphics.combobox_palette(LIGHT)
+    assert set(palette.values()).isdisjoint(CLAM_COMBOBOX_LEAKS)
+    assert palette["field"] == LIGHT.colors["card"]
+    assert palette["foreground"] == LIGHT.colors["text"]
+    assert palette["border"] == LIGHT.colors["border"]
+    assert palette["arrow"] == LIGHT.colors["text"]
+    assert palette["muted"] == LIGHT.colors["muted"]
+    assert palette["hover"] == LIGHT.colors["hover"]
+    assert palette["pressed"] == LIGHT.colors["pressed"]
+    assert palette["disabled_field"] == LIGHT.colors["trough"]
+    assert palette["select_background"] == LIGHT.colors["accent"]
+    assert palette["select_foreground"] == LIGHT.colors["button_text"]
+
+
+def test_combobox_palette_dark_derives_from_theme_tokens():
+    palette = graphics.combobox_palette(DARK)
+    # In dark mode even white/black system defaults must never come back.
+    assert set(palette.values()).isdisjoint(CLAM_COMBOBOX_LEAKS | {"#ffffff", "#000000"})
+    assert palette["field"] == DARK.colors["card"] == "#24262B"
+    assert palette["foreground"] == DARK.colors["text"]
+    assert palette["border"] == DARK.colors["border"]
+    assert palette["arrow"] == DARK.colors["text"]
+    assert palette["select_background"] == DARK.colors["accent"]
+    assert palette["select_foreground"] == DARK.colors["button_text"]
+    assert palette["disabled_field"] == DARK.colors["trough"]

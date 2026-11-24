@@ -88,9 +88,16 @@ def main():
 
         app._fetch_model_ids = fake_fetch
         confirm_state = {"allow": True, "calls": []}
+        busy_seen = []
 
         def confirm(lines):
             confirm_state["calls"].append(lines)
+            # The button must already show its busy state while the modal
+            # confirmation runs on the nested event loop.
+            active_panel = dialog.claude_panel
+            busy_seen.append((
+                active_panel.apply_button.cget("text"),
+                tuple(active_panel.apply_button.state())))
             return confirm_state["allow"]
 
         app._confirm_override = confirm
@@ -125,6 +132,9 @@ def main():
             pump(app)
             assert "invalid" in panel.entries["api_key"].state()
             assert bool(dialog.errors["api_key"].grid_info())
+            # Field-tagged validation errors stay inline; the card write
+            # status must not claim a write happened.
+            assert panel.write_status_label.cget("text") == ""
             assert not cancel_settings.exists() and not cancel_onboarding.exists()
 
             # Confirmation declined: still zero writes.
@@ -136,7 +146,13 @@ def main():
             assert len(confirm_state["calls"]) == 1
             assert "写入目标" in confirm_state["calls"][0][0]
             assert not cancel_settings.exists() and not cancel_onboarding.exists()
-            assert "已取消" in dialog._general_error.cget("text")
+            assert busy_seen[0] == ("写入中…", ("disabled",))
+            assert "已取消" in panel.write_status_label.cget("text")
+            assert panel.write_status_label.cget("style") == "CardMuted.TLabel"
+            # The button is restored once the handler returns.
+            assert panel.apply_button.cget("text") == "写入 Claude 配置"
+            assert "disabled" not in panel.apply_button.state()
+            assert dialog._general_error.cget("text") == ""
             confirm_state["allow"] = True
 
             # --- Switch to bailian for the full write flow ------------------
@@ -179,6 +195,41 @@ def main():
             # The selection survived the in-place combobox rebuild.
             assert panel.model_combo.current() == known.index("auto")
 
+            # Both trigger events are bound on both editable endpoint fields.
+            # (Synthetic key events need OS focus on Windows, so the debounce
+            # machinery itself is driven deterministically below.)
+            for field_key in ("base_url", "api_key"):
+                sequences = panel.entries[field_key].bind()
+                assert "<KeyRelease>" in sequences and "<FocusOut>" in sequences
+            # Typing into the key field auto-fetches once after the 400ms
+            # debounce; nothing starts inside the debounce window.
+            panel.entries["api_key"].delete(0, "end")
+            panel.entries["api_key"].insert(0, "sk-sp-typed")
+            calls_before = len(fetch_calls)
+            panel._schedule_fetch_check()
+            assert panel._fetch_after is not None
+            pump(app, 250)
+            assert len(fetch_calls) == calls_before
+            for _ in range(20):
+                pump(app, 50)
+                if len(fetch_calls) == calls_before + 1:
+                    break
+            assert len(fetch_calls) == calls_before + 1
+            # A repeated schedule with the same signature is de-duped.
+            panel._schedule_fetch_check()
+            pump(app, 500)
+            assert len(fetch_calls) == calls_before + 1
+            # The applying guard blocks debounced fetches mid-write.
+            app._applying_claude = True
+            panel._schedule_fetch_check()
+            pump(app, 500)
+            assert len(fetch_calls) == calls_before + 1
+            app._applying_claude = False
+            # Restore the field value the write-flow assertions expect;
+            # programmatic edits fire no KeyRelease, so no fetch follows.
+            panel.entries["api_key"].delete(0, "end")
+            panel.entries["api_key"].insert(0, "sk-sp-test-key")
+
             # --- Confirmed write: JSON, backup, onboarding, key hygiene -----
             app.claude_paths_override = (settings_path, onboarding_path)
             # Exercise the optional pairs too: auto picks a curated light
@@ -203,7 +254,15 @@ def main():
             assert panel.entries["api_key"].get() == ""
             assert storage.load_inference_key("bailian") == "sk-sp-test-key"
             assert app.inference_key == "sk-sp-test-key"
-            assert "已新建配置" in dialog._general_error.cget("text")
+            assert "已新建配置" in panel.write_status_label.cget("text")
+            assert panel.write_status_label.cget("style") == "CardSuccess.TLabel"
+            assert dialog._general_error.cget("text") == ""
+            assert busy_seen[1] == ("写入中…", ("disabled",))
+            assert "disabled" not in panel.apply_button.state()
+            # The programmatic key clear starts no fetch by itself; the
+            # post-write fetch re-pulls because the debounce test had replaced
+            # the signature with another key (dedup keeps only the latest).
+            assert len(fetch_calls) == calls_before + 2
 
             # A second apply backs up the first file and removes a shadowing
             # ANTHROPIC_API_KEY instead of carrying it forward.
@@ -217,11 +276,34 @@ def main():
             rewritten = json.loads(settings_path.read_text(encoding="utf-8"))
             assert claude_code.ENV_SHADOWING_KEY not in rewritten["env"]
             assert rewritten["env"][claude_code.ENV_AUTH_TOKEN] == "sk-sp-test-key"
-            assert "已更新配置" in dialog._general_error.cget("text")
+            assert "已更新配置" in panel.write_status_label.cget("text")
+            # Identical signature to the previous write: de-duped, no new fetch.
+            assert len(fetch_calls) == calls_before + 2
+
+            # An unexpected error (here: the confirmation hook raising) must
+            # never reach Tk's callback reporter or leave the button stuck.
+            panel.entries["api_key"].insert(0, "sk-sp-test-key")
+            def boom(lines):
+                raise RuntimeError("simulated confirmation failure")
+            app._confirm_override = boom
+            dialog.apply_claude()
+            pump(app)
+            assert not callback_errors, callback_errors
+            assert "意外错误" in panel.write_status_label.cget("text")
+            assert panel.write_status_label.cget("style") == "CardError.TLabel"
+            assert panel.apply_button.cget("text") == "写入 Claude 配置"
+            assert "disabled" not in panel.apply_button.state()
+            assert app._applying_claude is False
+            app._confirm_override = confirm
+            # The failed write leaves the field untouched; clear it so the
+            # draft section below starts from an empty key field as before.
+            panel.entries["api_key"].delete(0, "end")
 
             # --- Draft memory across a provider switch ----------------------
             panel.entries["claude_model"].insert(0, "my.custom-model")
             panel.entries["base_url"].delete(0, "end")
+            # Legacy regional aliyuncs URL kept deliberately: it must keep
+            # normalizing and driving the fetch gating after the host change.
             panel.entries["base_url"].insert(
                 0, "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic")
             panel.entries["api_key"].insert(0, "sk-sp-draft")
@@ -271,7 +353,9 @@ def main():
             assert not callback_errors, callback_errors
             print("PASS: claude write/backup/onboarding, key not echoed, "
                   "cancel and validation zero writes, provider drafts, "
-                  "catalogue refresh, theme restyle, shutdown key cleanup")
+                  "catalogue refresh, debounced auto-fetch and blocked "
+                  "status, card write feedback and busy state, unexpected "
+                  "exception containment, theme restyle, shutdown key cleanup")
         finally:
             app.shutdown()
 

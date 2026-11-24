@@ -196,7 +196,7 @@ def menu_item_rect(name: str) -> dict:
     raise AssertionError(f"Native menu item not found: {name}")
 
 
-def wait_for(predicate, message: str, timeout: float = 8.0):
+def wait_for(predicate, message: str, timeout: float = 8.0, poll: float = 0.15):
     deadline = time.monotonic() + timeout
     last_error = None
     while time.monotonic() < deadline:
@@ -206,7 +206,7 @@ def wait_for(predicate, message: str, timeout: float = 8.0):
                 return value
         except (RuntimeError, AssertionError, json.JSONDecodeError) as exc:
             last_error = exc
-        time.sleep(0.15)
+        time.sleep(poll)
     raise AssertionError(f"{message}; last error: {last_error}")
 
 
@@ -323,7 +323,7 @@ def fallback_menu_point(hwnd: int, name: str, layout: tuple) -> tuple[int, int]:
     )
 
 
-def click_menu(name: str, *, menu: str = "tray") -> None:
+def click_menu(name: str, *, menu: str = "tray", settle: float = 0.4) -> float:
     try:
         rect = menu_item_rect(name)
     except AssertionError:
@@ -338,7 +338,10 @@ def click_menu(name: str, *, menu: str = "tray") -> None:
         click(*fallback_menu_point(hwnd, name, layout))
     else:
         click_rect(rect)
-    time.sleep(0.4)
+    clicked_at = time.perf_counter()
+    if settle:
+        time.sleep(settle)
+    return clicked_at
 
 
 def capture_rect(rect: tuple[int, int, int, int], filename: str, padding: int = 0) -> None:

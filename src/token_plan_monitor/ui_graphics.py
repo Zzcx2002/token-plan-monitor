@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import contextlib
 import ctypes
+import sys
 import tkinter as tk
+from collections import OrderedDict
+from pathlib import Path
 from ctypes import wintypes as wt
 try:
     import winreg
@@ -10,7 +14,7 @@ except ModuleNotFoundError:
 from dataclasses import dataclass
 from functools import lru_cache
 from tkinter import ttk
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 # Keep the native callback type in this low-level module so window_chrome and
 # the override-redirect DPI watcher can share it without circular imports.
@@ -18,6 +22,156 @@ LRESULT = ctypes.c_ssize_t
 WNDPROC = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)(
     LRESULT, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM
 )
+
+#: Tcl notifier service modes (generic/tclNotify.c). NONE makes
+#: Tcl_ServiceAll() a no-op; Tk modal loops (including native size/move)
+#: temporarily use ALL while nested dispatch is expected.
+TCL_SERVICE_NONE = 0
+
+
+class TclServiceGuardUnavailable(RuntimeError):
+    """The native reentrancy guard could not be bound on Windows."""
+
+
+# Cache successful bindings only. An early lookup before Tk has loaded Tcl must
+# not permanently disable every later guard. The source records the actual DLL
+# used so the frozen self-check can prove this is not a silent no-op.
+_TCL_SERVICE_FUNCTIONS: tuple[Any, Any] | None = None
+_TCL_SERVICE_SOURCE = "not resolved"
+
+
+def _loaded_tcl_path(kernel32: Any, dll_name: str) -> Path | None:
+    """Return the full path of Tcl already loaded by _tkinter, if available."""
+    try:
+        kernel32.GetModuleHandleW.argtypes = [wt.LPCWSTR]
+        kernel32.GetModuleHandleW.restype = wt.HMODULE
+        kernel32.GetModuleFileNameW.argtypes = [
+            wt.HMODULE, wt.LPWSTR, wt.DWORD,
+        ]
+        kernel32.GetModuleFileNameW.restype = wt.DWORD
+        handle = kernel32.GetModuleHandleW(dll_name)
+        if not handle:
+            return None
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = kernel32.GetModuleFileNameW(handle, buffer, len(buffer))
+        return Path(buffer.value).resolve() if length else None
+    except (AttributeError, OSError):
+        return None
+
+
+def _tcl_dll_candidates() -> list[str]:
+    """Prefer Tk's loaded Tcl, then package-relative copies, never PATH first."""
+    candidates: list[str] = []
+    kernel32 = getattr(getattr(ctypes, "windll", None), "kernel32", None)
+    for name in ("tcl86t.dll", "tcl86.dll"):
+        if kernel32 is not None:
+            loaded = _loaded_tcl_path(kernel32, name)
+            if loaded is not None:
+                candidates.append(str(loaded))
+        try:
+            import _tkinter
+            candidates.append(str(Path(_tkinter.__file__).resolve().parent / name))
+        except (ImportError, AttributeError):
+            pass
+        bundle = getattr(sys, "_MEIPASS", None)
+        if bundle:
+            candidates.append(str(Path(bundle) / name))
+        if getattr(sys, "frozen", False):
+            candidates.append(str(Path(sys.executable).resolve().parent / "_internal" / name))
+        # Last-resort compatibility for alternative Python distributions. All
+        # explicit package paths above take precedence over DLL search order.
+        candidates.append(name)
+    return list(dict.fromkeys(candidates))
+
+
+def _tcl_service_mode_functions() -> tuple[Any, Any] | tuple[None, None]:
+    """Bind Tcl service-mode exports from the same Tcl used by Tk."""
+    global _TCL_SERVICE_FUNCTIONS, _TCL_SERVICE_SOURCE
+    if _TCL_SERVICE_FUNCTIONS is not None:
+        return _TCL_SERVICE_FUNCTIONS
+    if sys.platform != "win32":
+        _TCL_SERVICE_SOURCE = "unsupported platform"
+        return None, None
+    windll_factory = getattr(ctypes, "WinDLL", None)
+    if windll_factory is None:
+        _TCL_SERVICE_SOURCE = "ctypes.WinDLL unavailable"
+        return None, None
+    errors: list[str] = []
+    for candidate in _tcl_dll_candidates():
+        # Do not skip a loaded path merely because a mock/special filesystem
+        # does not expose it; ctypes is the authority on whether it can load.
+        try:
+            tcl = windll_factory(candidate)
+            setter = tcl.Tcl_SetServiceMode
+            getter = tcl.Tcl_GetServiceMode
+        except (OSError, AttributeError) as exc:
+            errors.append(f"{candidate}: {exc}")
+            continue
+        setter.argtypes = [ctypes.c_int]
+        setter.restype = ctypes.c_int
+        getter.argtypes = []
+        getter.restype = ctypes.c_int
+        _TCL_SERVICE_FUNCTIONS = (setter, getter)
+        _TCL_SERVICE_SOURCE = candidate
+        return setter, getter
+    _TCL_SERVICE_SOURCE = "; ".join(errors) or "no Tcl DLL candidates"
+    return None, None
+
+
+def tcl_service_guard_status() -> tuple[bool, str]:
+    """Return availability and the resolved DLL path or diagnostic reason."""
+    setter, getter = _tcl_service_mode_functions()
+    return setter is not None and getter is not None, _TCL_SERVICE_SOURCE
+
+
+def require_tcl_service_guard() -> tuple[Any, Any] | tuple[None, None]:
+    """Fail closed on Windows instead of running native calls unprotected."""
+    functions = _tcl_service_mode_functions()
+    if sys.platform == "win32" and functions[0] is None:
+        raise TclServiceGuardUnavailable(
+            f"Tcl service-mode exports unavailable: {_TCL_SERVICE_SOURCE}"
+        )
+    return functions
+
+
+def defer_tcl_events() -> int | None:
+    """Force TCL_SERVICE_NONE around a message-pumping native call.
+
+    Returns the previous mode for :func:`restore_tcl_events`; ``None`` is only
+    used off Windows. Missing Windows exports raise instead of silently turning
+    every native-boundary guard into a no-op.
+
+    While a Python command runs, Tcl's per-thread ``tcl_tstate`` is NULL. If a
+    ctypes call into user32 synchronously dispatches window messages while the
+    notifier is in TCL_SERVICE_ALL (used by Tk's native modal loops),
+    Tk's WndProc pumps a queued after-idle Python
+    command whose ENTER_PYTHON then calls ``PyEval_RestoreThread(NULL)`` -- a
+    Py_FatalError that aborts the process (0xc0000409) with no Python
+    traceback. NONE turns the nested Tcl_ServiceAll() into a no-op; queued
+    events run later in the normal event loop, where tcl_tstate is valid.
+    """
+    setter, _ = require_tcl_service_guard()
+    if setter is None:
+        return None
+    return setter(TCL_SERVICE_NONE)
+
+
+def restore_tcl_events(previous: int | None) -> None:
+    """Restore the mode saved by :func:`defer_tcl_events`."""
+    if previous is None:
+        return
+    setter, _ = _tcl_service_mode_functions()
+    setter(previous)
+
+
+@contextlib.contextmanager
+def tcl_events_deferred() -> Iterator[None]:
+    """Context-manager form of the defer/restore guard for ordinary call sites."""
+    previous = defer_tcl_events()
+    try:
+        yield
+    finally:
+        restore_tcl_events(previous)
 
 from PIL import Image, ImageDraw, ImageFilter, ImageTk
 from .appearance import ACRYLIC_TINT_ALPHA, LIGHT, RADIUS, Theme
@@ -164,6 +318,29 @@ def rounded_photo(width: int, height: int, *, radius: int, fill: str,
     return ImageTk.PhotoImage(image)
 
 
+def _rounded_panel_photo(panel: tk.Misc, width: int, height: int, *, radius: int,
+                         fill: str, outline: str, background: str) -> ImageTk.PhotoImage:
+    """Reuse Tk images when a provider/theme rebuild lands on the same geometry."""
+    key = (width, height, radius, fill, outline, background, True)
+    top = panel.winfo_toplevel()
+    cache = getattr(top, "_rounded_panel_photos", None)
+    if cache is None:
+        cache = OrderedDict()
+        top._rounded_panel_photos = cache
+    photo = cache.get(key)
+    if photo is None:
+        photo = rounded_photo(
+            width, height, radius=radius, fill=fill, outline=outline,
+            shadow=True, background=background,
+        )
+        cache[key] = photo
+        if len(cache) > 48:
+            cache.popitem(last=False)
+    else:
+        cache.move_to_end(key)
+    return photo
+
+
 class RoundedPanel(tk.Frame):
     def __init__(self, master: tk.Misc, *, radius: int = RADIUS["panel"], fill: str,
                  outline: str | None, background: str, padding: int | tuple[int,int] = (16,14)):
@@ -200,8 +377,10 @@ class RoundedPanel(tk.Frame):
         if size == self._image_size or min(size)<=1:
             return
         self._image_size = size
-        self._image = rounded_photo(*size,radius=self.radius,fill=self.fill,outline=self.outline,
-                                    shadow=True,background=str(self.cget("background")))
+        self._image = _rounded_panel_photo(
+            self, *size, radius=self.radius, fill=self.fill, outline=self.outline,
+            background=str(self.cget("background")),
+        )
         self._background.configure(image=self._image)
 
     def set_theme(self, colors: Mapping[str,str]) -> None:
@@ -363,6 +542,112 @@ def configure_scrollbars(style: ttk.Style, theme: Theme = LIGHT) -> None:
         )
 
 
+# clam's readonly combobox map hard-codes light warm-greys (#dcdad5 field,
+# #4a6984 focused field) and its popdown is a classic Listbox that resolves
+# Windows system colors (white background), so dark mode needs an explicit
+# token-driven restyle of both the ttk widget and the option database.
+def combobox_palette(theme: Theme) -> dict[str, str]:
+    """Pure colour derivation for themed ttk comboboxes and their popdown."""
+    colors = theme.colors
+    return {
+        "field": colors["card"],
+        "background": colors["card"],
+        "foreground": colors["text"],
+        "border": colors["border"],
+        "arrow": colors["text"],
+        "muted": colors["muted"],
+        "hover": colors["hover"],
+        "pressed": colors["pressed"],
+        "disabled_field": colors["trough"],
+        "select_background": colors["accent"],
+        "select_foreground": colors["button_text"],
+    }
+
+
+def configure_combobox(style: ttk.Style, theme: Theme = LIGHT) -> None:
+    """Restyle clam's TCombobox and its classic popdown Listbox per theme."""
+    palette = combobox_palette(theme)
+    style.configure(
+        "TCombobox",
+        fieldbackground=palette["field"],
+        background=palette["background"],
+        foreground=palette["foreground"],
+        bordercolor=palette["border"],
+        lightcolor=palette["border"],
+        darkcolor=palette["border"],
+        arrowcolor=palette["arrow"],
+        insertcolor=palette["foreground"],
+        selectbackground=palette["select_background"],
+        selectforeground=palette["select_foreground"],
+        relief="flat",
+    )
+    style.map(
+        "TCombobox",
+        fieldbackground=[
+            ("disabled", palette["disabled_field"]),
+            # The explicit readonly+focus pair must outrank plain readonly:
+            # clam otherwise forces its steel-blue #4a6984 focus field.
+            (("readonly", "focus"), palette["field"]),
+            ("readonly", palette["field"]),
+        ],
+        foreground=[
+            ("disabled", palette["muted"]),
+            (("readonly", "focus"), palette["foreground"]),
+            ("readonly", palette["foreground"]),
+        ],
+        background=[
+            ("disabled", palette["field"]),
+            ("pressed", palette["pressed"]),
+            ("active", palette["hover"]),
+        ],
+        bordercolor=[("focus", palette["select_background"])],
+        lightcolor=[("focus", palette["select_background"])],
+        darkcolor=[("focus", palette["select_background"])],
+        arrowcolor=[("disabled", palette["muted"])],
+    )
+    style.configure(
+        "ComboboxPopdownFrame",
+        background=palette["field"],
+        bordercolor=palette["border"],
+        lightcolor=palette["border"],
+        darkcolor=palette["border"],
+        relief="solid",
+        borderwidth=1,
+    )
+    # The popdown holds a classic Listbox, not a ttk widget; the option
+    # database is the only seam that themes a popdown created after this call.
+    master = style.master
+    for option, value in (
+        ("*TCombobox*Listbox.background", palette["field"]),
+        ("*TCombobox*Listbox.foreground", palette["foreground"]),
+        ("*TCombobox*Listbox.selectBackground", palette["select_background"]),
+        ("*TCombobox*Listbox.selectForeground", palette["select_foreground"]),
+    ):
+        master.option_add(option, value)
+
+
+def recolor_combobox_popdown(combo: ttk.Combobox, palette: Mapping[str, str]) -> None:
+    """Re-theme a popdown Listbox that already exists.
+
+    Option-database entries only affect popdowns created later, and the
+    popdown Toplevel is not reachable through ``winfo_children``; address its
+    classic Listbox by the fixed Tk path ttk::combobox assigns it.
+    """
+    listbox_path = f"{combo}.popdown.f.l"
+    try:
+        if not combo.tk.call("winfo", "exists", listbox_path):
+            return
+        combo.tk.call(
+            listbox_path, "configure",
+            "-background", palette["field"],
+            "-foreground", palette["foreground"],
+            "-selectbackground", palette["select_background"],
+            "-selectforeground", palette["select_foreground"],
+        )
+    except tk.TclError:
+        pass
+
+
 class Tooltip:
     def __init__(self, widget: tk.Misc, text: str, colors: Callable[[],Mapping[str,str]]):
         self.widget,self.text,self.colors=widget,text,colors
@@ -398,19 +683,35 @@ class Tooltip:
 
 
 class ScrollableBody(tk.Frame):
-    """Only the body scrolls; window actions are packed separately."""
+    """Only the body scrolls; window actions are packed separately.
+
+    The scrollbar always occupies a fixed grid column. Toggling it with
+    pack/pack_forget used to change the canvas width, which re-wrapped every
+    wraplength label and fed the new request height back into the show/hide
+    decision -- a geometry loop that could compress the content to nothing.
+    A disabled ttk state keeps the trough on screen without moving geometry.
+    """
     def __init__(self,master:tk.Misc,colors:Mapping[str,str]):
         super().__init__(master,bg=colors["surface"])
         self.canvas=tk.Canvas(self,bg=colors["surface"],highlightthickness=0,height=1)
         self.bar=ttk.Scrollbar(self,orient="vertical",command=self.canvas.yview,
                                style="Vertical.TScrollbar")
-        self.canvas.pack(side="left",fill="both",expand=True)
+        self.grid_columnconfigure(0,weight=1)
+        self.grid_rowconfigure(0,weight=1)
+        self.canvas.grid(row=0,column=0,sticky="nsew")
+        self.bar.grid(row=0,column=1,sticky="ns")
+        self.bar.state(["disabled"])
         self.content=ttk.Frame(self.canvas,padding=round(16*dpi_scale(master)))
         self.item=self.canvas.create_window(0,0,window=self.content,anchor="nw")
         self.canvas.configure(yscrollcommand=self.bar.set)
         self.canvas.bind("<Configure>",self._resize)
         self.content.bind("<Configure>",self._content_changed)
         self._wrap_pending=None
+        # Focus reveal is for later keyboard navigation; the initial focus
+        # must not scroll a half-laid-out canvas to its bottom.
+        self._ready=False
+        self._armed=False
+        self._fitted_height=0
         self._bound=set()
         self.content.bind("<Configure>",self._wrap_labels,add=True)
         self.bind("<Destroy>",self._cancel_wrap,add=True)
@@ -426,6 +727,10 @@ class ScrollableBody(tk.Frame):
 
     def _apply_wrap(self) -> None:
         self._wrap_pending=None
+        # _wrap_labels already coalesces Configure bursts to one idle walk.
+        # Do not dedup solely on canvas width: a panel master can be <100px on
+        # the first walk and grow later while the canvas width stays fixed, and
+        # provider rebuilds introduce new labels at that same canvas width.
         def visit(parent:tk.Misc) -> None:
             for child in parent.winfo_children():
                 if isinstance(child,(tk.Label,ttk.Label)) and float(child.cget("wraplength") or 0)>0:
@@ -433,6 +738,17 @@ class ScrollableBody(tk.Frame):
                         continue
                     inset=64 if child.master==self.content else 24
                     available=max(40,child.master.winfo_width()-round(inset*dpi_scale(self)))
+                    # Only "ew" labels track their grid cell; cap their wrap to
+                    # the real allocation so a label sharing a row with another
+                    # column (the catalogue status beside the refresh button)
+                    # cannot wrap wider than its cell. A sticky="w" label is
+                    # only as wide as its own reqwidth, so capping it would lock
+                    # the wrap at its shrunken transient width and never recover.
+                    grid_info=child.grid_info()
+                    allocated=child.winfo_width()
+                    sticky=str(grid_info.get("sticky",""))
+                    if allocated>1 and "e" in sticky and "w" in sticky:
+                        available=min(available,allocated)
                     if int(float(child.cget("wraplength")))!=available:
                         child.configure(wraplength=available)
                 visit(child)
@@ -442,12 +758,13 @@ class ScrollableBody(tk.Frame):
         self.canvas.itemconfigure(self.item,width=event.width)
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
         self._update_scrollbar()
+        if self._ready and event.height>=self._fitted_height:
+            self._armed=True
 
     def _update_scrollbar(self) -> None:
-        if self.content.winfo_reqheight()>self.canvas.winfo_height():
-            self.bar.pack(side="right",fill="y")
-        else:
-            self.bar.pack_forget()
+        overflow=self.content.winfo_reqheight()>self.canvas.winfo_height()
+        self.bar.state(["!disabled"] if overflow else ["disabled"])
+        if not overflow:
             self.canvas.yview_moveto(0)
 
     def _content_changed(self,event:tk.Event) -> None:
@@ -464,16 +781,34 @@ class ScrollableBody(tk.Frame):
         visit(self)
 
     def _reveal_focus(self,event:tk.Event) -> None:
+        if not self._armed:
+            return
+        # Tk also sends FocusIn to ancestors when a descendant gains focus.
+        # Revealing one of those tall containers can jump to the content bottom
+        # after the actual entry was already visible (notably at high DPI).
+        if event.widget != self.focus_get():
+            return
         if self.content.winfo_height()<=self.canvas.winfo_height():
+            return
+        # Stale geometry mid-layout can yield negative or >1 fractions, which
+        # Tk would clamp to the very bottom of the content; only scroll for
+        # genuinely mapped, measured widgets.
+        if not event.widget.winfo_ismapped() or min(
+                event.widget.winfo_width(),event.widget.winfo_height())<=1:
             return
         y=event.widget.winfo_rooty()-self.canvas.winfo_rooty()
         bottom=y+event.widget.winfo_height()
         visible=self.canvas.winfo_height()
         start=self.canvas.canvasy(0)
+        content_height=self.content.winfo_height()
         if y<0:
-            self.canvas.yview_moveto(max(0,(start+y-12)/self.content.winfo_height()))
+            fraction=max(0,(start+y-12)/content_height)
         elif bottom>visible:
-            self.canvas.yview_moveto((start+bottom-visible+12)/self.content.winfo_height())
+            fraction=(start+bottom-visible+12)/content_height
+        else:
+            return
+        if 0<=fraction<=1:
+            self.canvas.yview_moveto(fraction)
 
     def _wheel(self,event:tk.Event) -> str | None:
         if self.content.winfo_reqheight()>self.canvas.winfo_height():
@@ -490,12 +825,16 @@ class ScrollableBody(tk.Frame):
         self.update_idletasks()
         desired=self.content.winfo_reqheight()
         height=min(desired,max_height)
-        if desired>height:
-            self.bar.pack(side="right",fill="y")
-        else:
-            self.bar.pack_forget()
-            self.canvas.yview_moveto(0)
+        self._update_scrollbar()
         self.canvas.configure(height=max(1,height))
+        self._fitted_height=max(1,height)
+        # Initial layout must start at the top; focus-reveal scrolling measured
+        # against the pre-layout canvas otherwise leaves the dialog opened
+        # halfway down its own content.
+        self.canvas.yview_moveto(0)
+        self._ready=True
+        if self.canvas.winfo_height()>=self._fitted_height:
+            self._armed=True
         return height
 
 
@@ -523,9 +862,13 @@ def set_rounded_region(window: tk.Toplevel, radius_dip: int) -> None:
             0, 0, width + 1, height + 1, radius * 2, radius * 2
         )
         if region:
-            result = user32.SetWindowRgn(
-                ctypes.c_void_p(native_handle(window)), region, True
-            )
+            token = defer_tcl_events()
+            try:
+                result = user32.SetWindowRgn(
+                    ctypes.c_void_p(native_handle(window)), region, True
+                )
+            finally:
+                restore_tcl_events(token)
             if not result:
                 gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
                 gdi32.DeleteObject(region)
@@ -551,6 +894,14 @@ def enable_rounded_corners(window: tk.Toplevel | tk.Tk) -> bool:
         return function(hwnd, 33, ctypes.byref(preference), ctypes.sizeof(preference)) == 0
     except (AttributeError, OSError, tk.TclError):
         return False
+
+
+#: Tk marks override-redirect surfaces with this bit so the shell keeps them
+#: out of the taskbar; see ensure_tool_window_style for why it must be re-asserted.
+WS_EX_TOOLWINDOW = 0x00000080
+#: SWP_NOMOVE|NOSIZE|NOZORDER|NOACTIVATE|FRAMECHANGED: re-evaluate ex styles
+#: without moving, resizing, reordering, or stealing activation.
+_TOOLWINDOW_SWP_FLAGS = 0x0037
 
 
 class _Accent(ctypes.Structure):
@@ -644,6 +995,42 @@ def _clear_layered(user32: Any, hwnd: ctypes.c_void_p) -> None:
         pass
 
 
+def ensure_tool_window_style(window: tk.Toplevel) -> None:
+    """Keep an override-redirect surface off the Windows taskbar.
+
+    Tk adds WS_EX_TOOLWINDOW when it maps an ``overrideredirect`` window, but
+    its ``wm attributes -transparentcolor`` handler (exercised by every
+    solid/acrylic material apply below) rewrites GWL_EXSTYLE from a cached
+    value that predates that Map-time bit, silently dropping it. The card and
+    hover popups then become ordinary unowned top-level windows: they show a
+    taskbar button whose close command destroys the card out from under the
+    app. Re-assert the bit after each material apply; the Map-bound re-apply
+    also covers Tk swapping the wrapper HWND on first map.
+    """
+    try:
+        user32 = ctypes.windll.user32
+        user32.GetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+        user32.SetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_ssize_t]
+        user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
+        user32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int,
+                                        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+        hwnd = ctypes.c_void_p(native_handle(window))
+        # SetWindowLongPtrW/SetWindowPos can synchronously dispatch messages
+        # (including WM_GETOBJECT into UIAutomation); never let that pump Tcl
+        # events while a Python command has tcl_tstate NULL.
+        token = defer_tcl_events()
+        try:
+            style = user32.GetWindowLongPtrW(hwnd, -20)  # GWL_EXSTYLE
+            if not style & WS_EX_TOOLWINDOW:
+                user32.SetWindowLongPtrW(hwnd, -20, style | WS_EX_TOOLWINDOW)
+                user32.SetWindowPos(hwnd, None, 0, 0, 0, 0, _TOOLWINDOW_SWP_FLAGS)
+        finally:
+            restore_tcl_events(token)
+    except (AttributeError, OSError, tk.TclError):
+        pass
+
+
 def _redraw_frame(user32: Any, hwnd: ctypes.c_void_p) -> None:
     try:
         user32.RedrawWindow.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
@@ -724,25 +1111,41 @@ def apply_window_effects(window: tk.Toplevel, surface: str,
     except (AttributeError, OSError, tk.TclError):
         window._window_effects = WindowEffects()
         return window._window_effects
-    dark = ctypes.c_uint32(int(sum(bytes.fromhex(surface[1:])) < 384))
-    _dwm_attribute(dwm, hwnd, 20, dark)  # DWMWA_USE_IMMERSIVE_DARK_MODE
-    rounded = False
-    if is_windows_11():
-        rounded = enable_rounded_corners(window)
-        _clear_window_region(user32, hwnd)
-    if resolve_material(requested) == "acrylic" and _apply_acrylic(window, hwnd, user32, dwm, surface):
-        window._material = "acrylic"
-        effects = WindowEffects(rounded, glass=True, shadow=False,
-                                material="acrylic", layered=True)
-    else:
-        _make_solid(window, hwnd, user32, dwm)
-        window._material = "solid"
-        effects = WindowEffects(rounded, glass=False, shadow=True,
-                                material="solid", layered=False)
-    # Record on every call (not just install time) so material/theme/DPI
-    # switches leave an authoritative state on the window.
-    window._window_effects = effects
-    return effects
+    # Every native call below (composition, DWM, style/FRAMECHANGED) may pump
+    # window messages synchronously; defer Tcl event servicing for the whole
+    # apply so a stuck/active TCL_SERVICE_ALL cannot re-enter a Python command.
+    token = defer_tcl_events()
+    try:
+        dark = ctypes.c_uint32(int(sum(bytes.fromhex(surface[1:])) < 384))
+        _dwm_attribute(dwm, hwnd, 20, dark)  # DWMWA_USE_IMMERSIVE_DARK_MODE
+        rounded = False
+        if is_windows_11():
+            rounded = enable_rounded_corners(window)
+            _clear_window_region(user32, hwnd)
+        if resolve_material(requested) == "acrylic" and _apply_acrylic(window, hwnd, user32, dwm, surface):
+            window._material = "acrylic"
+            effects = WindowEffects(rounded, glass=True, shadow=False,
+                                    material="acrylic", layered=True)
+        else:
+            _make_solid(window, hwnd, user32, dwm)
+            window._material = "solid"
+            effects = WindowEffects(rounded, glass=False, shadow=True,
+                                    material="solid", layered=False)
+        # The colour-key path above strips Tk's Map-time WS_EX_TOOLWINDOW, which
+        # would put the frameless card/hover surfaces on the taskbar. Framed
+        # windows keep their ordinary taskbar button on purpose. Tk hands back a
+        # real boolean here (not the "0"/"1" string older docs imply), so coerce
+        # through Tcl's own boolean rules rather than comparing string forms.
+        if window.tk.getboolean(window.overrideredirect() or 0):
+            ensure_tool_window_style(window)
+        # Record on every call (not just install time) so material/theme/DPI
+        # switches leave an authoritative state on the window. The signature
+        # lets the Map hook avoid erasing and recompositing an unchanged frame.
+        window._window_effects = effects
+        window._window_effects_key = (hwnd.value, surface, effects.material)
+        return effects
+    finally:
+        restore_tcl_events(token)
 
 
 def install_window_effects(window: tk.Toplevel, surface: str,
@@ -754,17 +1157,31 @@ def install_window_effects(window: tk.Toplevel, surface: str,
     """
     window._material = material
     pending: str | None = None
+    mapped_key: tuple[int, str, str] | None = None
 
     def apply() -> None:
-        nonlocal pending
+        nonlocal pending, mapped_key
         pending = None
         if not window.winfo_exists():
             return
-        effects = apply_window_effects(
-            window, getattr(window, "_material_surface", surface),
-            material=getattr(window, "_material", material),
-        )
-        # Win10 GDI fallback only; on Win11 the DWM owns corners.
+        current_surface = getattr(window, "_material_surface", surface)
+        requested = getattr(window, "_material", material)
+        effective = resolve_material(requested)
+        key = (native_handle(window), current_surface, effective)
+        effects = getattr(window, "_window_effects", WindowEffects())
+        is_mapped = bool(window.winfo_viewable())
+        # The first Map is a required native stabilization point (Tk may alter
+        # frame styles even when it kept the same wrapper HWND). Only retained
+        # windows that already completed a Map may skip an unchanged re-show.
+        if (not is_mapped or mapped_key != key
+                or getattr(window, "_window_effects_key", None) != key):
+            effects = apply_window_effects(
+                window, current_surface, material=requested,
+            )
+        if is_mapped:
+            mapped_key = key
+        # Win10 GDI fallback only; on Win11 the DWM owns corners. This still
+        # runs after an unchanged-material skip because the size may differ.
         if radius is not None and not effects.rounded:
             set_rounded_region(window, radius)
 
@@ -780,8 +1197,11 @@ def install_window_effects(window: tk.Toplevel, surface: str,
             pending = None
 
     try:
-        window.update_idletasks()
-        apply()
+        # Map/material setup may synchronously enter Tk's WndProc. Do not let
+        # an unrelated queued Python idle callback run on this native stack.
+        with tcl_events_deferred():
+            window.update_idletasks()
+            apply()
     except tk.TclError:
         pass
     window.bind("<Map>", mapped, add=True)
@@ -822,21 +1242,28 @@ def install_dpi_handler(window: tk.Toplevel, callback: Callable[[int], None]) ->
         old_procs: dict[int, int] = {}
 
         def proc(hwnd: int, message: int, wparam: int, lparam: int) -> int:
-            previous = old_procs.get(hwnd, 0)
-            if message == 0x02E0:  # WM_DPICHANGED
-                suggested = ctypes.cast(lparam, ctypes.POINTER(_SuggestedRect)).contents
-                user32.SetWindowPos(
-                    hwnd, None, suggested.left, suggested.top,
-                    suggested.right-suggested.left, suggested.bottom-suggested.top,
-                    0x0014,  # SWP_NOZORDER | SWP_NOACTIVATE
-                )
-                window.after_idle(lambda: callback(int(wparam) & 0xffff))
-                return 0
-            if message == 0x82:  # WM_NCDESTROY
-                old_procs.pop(hwnd, None)
-                if previous:
-                    user32.SetWindowLongPtrW(hwnd, -4, previous)
-            return int(user32.CallWindowProcW(previous, hwnd, message, wparam, lparam))
+            # A WNDPROC runs on top of whatever Tcl phase dispatched the
+            # message; CallWindowProcW reaches Tk's own WndProc, whose
+            # Tcl_ServiceAll() must stay a no-op while Python is on the stack.
+            token = defer_tcl_events()
+            try:
+                previous = old_procs.get(hwnd, 0)
+                if message == 0x02E0:  # WM_DPICHANGED
+                    suggested = ctypes.cast(lparam, ctypes.POINTER(_SuggestedRect)).contents
+                    user32.SetWindowPos(
+                        hwnd, None, suggested.left, suggested.top,
+                        suggested.right-suggested.left, suggested.bottom-suggested.top,
+                        0x0014,  # SWP_NOZORDER | SWP_NOACTIVATE
+                    )
+                    window.after_idle(lambda: callback(int(wparam) & 0xffff))
+                    return 0
+                if message == 0x82:  # WM_NCDESTROY
+                    old_procs.pop(hwnd, None)
+                    if previous:
+                        user32.SetWindowLongPtrW(hwnd, -4, previous)
+                return int(user32.CallWindowProcW(previous, hwnd, message, wparam, lparam))
+            finally:
+                restore_tcl_events(token)
 
         reference = WNDPROC(proc)
         proc_address = ctypes.cast(reference, ctypes.c_void_p).value

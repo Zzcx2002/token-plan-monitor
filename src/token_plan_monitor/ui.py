@@ -20,11 +20,17 @@ from .appearance import (AppearancePreferences, LIGHT, RADIUS, THEME_LABELS,
 from .claude_code import ClaudeConfigError
 from .desktop_widget import DesktopWidget
 from .history_view import HistoryWindow
-from .model_catalog import fetch_model_ids, merge_model_options
+from .model_catalog import (
+    CATALOG_UNSUPPORTED_URL,
+    catalog_block_reason,
+    fetch_model_ids,
+    merge_model_options,
+)
 from .ui_graphics import (RoundedPanel, RoundedProgress, ScrollableBody, Tooltip, dpi_scale, window_work_area,
                           install_window_effects, apply_window_effects, calibrate_tk_scaling,
-                          configure_rounded_buttons, configure_scrollbars, invalidate_scaled_caches,
-                          resolve_material, transparency_enabled)
+                          combobox_palette, configure_combobox, configure_rounded_buttons,
+                          configure_scrollbars, invalidate_scaled_caches, recolor_combobox_popdown,
+                          resolve_material, tcl_events_deferred, transparency_enabled)
 from .models import (
     ClaudeProviderPrefs,
     MonitorViewState,
@@ -102,6 +108,9 @@ class MonitorUI:
         # through this queue; every Tk mutation happens in the 100ms drain.
         self._catalog_events: queue.SimpleQueue = queue.SimpleQueue()
         self._catalog_inflight: set[str] = set()
+        #: (base_url, key) signatures of the last automatic fetch per provider,
+        #: so typing into the form cannot enqueue identical refetches.
+        self._catalog_auto_signatures: dict[str, tuple[str, str]] = {}
         self._catalog_status: dict[str, tuple[str, str]] = {}
         # Injectable seams so the offline smoke stubs the network call and
         # the confirmation dialog without touching a real ~/.claude.
@@ -148,10 +157,12 @@ class MonitorUI:
         if not APP_ICON_PATH.exists():
             return
         try:
-            if default:
-                window.iconbitmap(default=str(APP_ICON_PATH))
-            else:
-                window.iconbitmap(str(APP_ICON_PATH))
+            # WM_SETICON is a synchronous native window-message boundary.
+            with tcl_events_deferred():
+                if default:
+                    window.iconbitmap(default=str(APP_ICON_PATH))
+                else:
+                    window.iconbitmap(str(APP_ICON_PATH))
         except tk.TclError:
             pass
 
@@ -211,6 +222,9 @@ class MonitorUI:
         )
         style.configure(
             "CardSuccess.TLabel", background=self.colors["card"], foreground=self.colors["success"]
+        )
+        style.configure(
+            "CardError.TLabel", background=self.colors["card"], foreground=self.colors["error"]
         )
         style.configure("Success.TLabel", foreground=self.colors["success"])
         style.configure("Error.TLabel", foreground=self.colors["error"])
@@ -277,6 +291,7 @@ class MonitorUI:
         )
         configure_rounded_buttons(style, self.theme)
         configure_scrollbars(style, self.theme)
+        configure_combobox(style, self.theme)
         style.configure("TEntry", fieldbackground=self.colors["card"], padding=self.px(9),
                         bordercolor=self.colors["border"], lightcolor=self.colors["border"],
                         darkcolor=self.colors["border"], foreground=self.colors["text"],
@@ -286,15 +301,31 @@ class MonitorUI:
                   darkcolor=[("focus", self.colors["accent"])])
 
         style.configure("FieldError.TLabel",background=self.colors["card"],foreground=self.colors["error"])
+        # clam reads indicatorbackground/indicatorforeground (not indicatorcolor);
+        # the old indicatorcolor lookup missed, leaving white indicator squares
+        # in dark mode. The radio's custom layout hides the native indicator,
+        # but the correct options are set defensively for any fallback layout.
         style.configure("Theme.TRadiobutton",background=self.colors["card"],foreground=self.colors["text"],
-                        padding=(self.px(10),self.px(8)),indicatorcolor=self.colors["card"],focuscolor=self.colors["focus"])
+                        padding=(self.px(10),self.px(8)),indicatorbackground=self.colors["card"],
+                        indicatorforeground=self.colors["accent"],focuscolor=self.colors["focus"])
         style.map("Theme.TRadiobutton",background=[("selected",self.colors["info_surface"]),
                                                     ("active",self.colors["hover"])],
-                  foreground=[("selected",self.colors["accent"])])
+                  foreground=[("selected",self.colors["accent"])],
+                  indicatorbackground=[("selected",self.colors["info_surface"]),
+                                       ("active",self.colors["hover"]),
+                                       ("disabled",self.colors["trough"])],
+                  indicatorforeground=[("selected",self.colors["accent"]),
+                                       ("disabled",self.colors["muted"])])
         style.configure("Card.TCheckbutton",background=self.colors["card"],foreground=self.colors["text"],
-                        padding=(self.px(4),self.px(4)),indicatorcolor=self.colors["card"],focuscolor=self.colors["focus"])
+                        padding=(self.px(4),self.px(4)),indicatorbackground=self.colors["card"],
+                        indicatorforeground=self.colors["button_text"],focuscolor=self.colors["focus"])
         style.map("Card.TCheckbutton",background=[("active",self.colors["hover"])],
-                  foreground=[("selected",self.colors["accent"])])
+                  foreground=[("selected",self.colors["accent"])],
+                  indicatorbackground=[("selected",self.colors["accent"]),
+                                       ("active",self.colors["hover"]),
+                                       ("disabled",self.colors["trough"])],
+                  indicatorforeground=[("selected",self.colors["button_text"]),
+                                       ("disabled",self.colors["muted"])])
 
     def _set_material(self, material: str, *, persist: bool = False) -> None:
         """Switch solid/acrylic; solid restores ClearType text immediately."""
@@ -344,6 +375,10 @@ class MonitorUI:
                             widget.configure(**{option:remap[value]})
                     except tk.TclError:
                         pass
+            if isinstance(widget,ttk.Combobox):
+                # The option database only themes popdowns created afterwards;
+                # an already-built popdown Listbox must be recolored directly.
+                recolor_combobox_popdown(widget, combobox_palette(self.theme))
             if isinstance(widget,RoundedPanel):
                 widget.set_theme(self.colors)
             elif isinstance(widget,RoundedProgress):
@@ -948,13 +983,35 @@ class MonitorUI:
             row["details"].grid_remove()
 
     def open_settings(self) -> None:
-        if self._settings_dialog is not None and self._settings_dialog.window is not None:
-            self._settings_dialog.focus()
+        dialog = self._settings_dialog
+        if dialog is not None and dialog._opening:
             return
-        dialog=SettingsDialog(self)
-        self._settings_dialog=dialog
-        self.settings_window=dialog.open()
-        self.settings_body=dialog.body
+        if (dialog is not None and dialog.window is not None
+                and not dialog.window.winfo_exists()):
+            dialog.dispose()
+            dialog = None
+        if dialog is not None and dialog.window is not None:
+            if self.settings_window is dialog.window:
+                # A second request during the deferred first present must not
+                # focus half-laid-out content; a visible dialog only needs focus.
+                if dialog._presented:
+                    dialog.focus()
+                return
+            try:
+                self.settings_window = dialog.open()
+                self.settings_body = dialog.body
+            except Exception:
+                dialog.dispose()
+                raise
+            return
+        dialog = SettingsDialog(self)
+        self._settings_dialog = dialog
+        try:
+            self.settings_window = dialog.open()
+            self.settings_body = dialog.body
+        except Exception:
+            dialog.dispose()
+            raise
 
     def open_history(self) -> None:
         if self.history is not None and self.history.window is not None:
@@ -965,7 +1022,7 @@ class MonitorUI:
         window.open(self._state)
 
     # ------------------------------------------------------- Claude Code hookup
-    def claude_seed(self, provider: str) -> dict[str, str]:
+    def claude_seed(self, provider: str, *, model_options=None) -> dict[str, str]:
         """Initial Claude section values for one provider: draft → live → prefs.
 
         Mirrors the macOS shell: the layering itself is the pure
@@ -993,7 +1050,10 @@ class MonitorUI:
         return resolve_claude_seed(
             get_provider(provider), self._claude_drafts.get(provider), prefs,
             live_base_url, live_model, live_auto,
-            model_options=self.effective_claude_options(provider),
+            model_options=(
+                model_options if model_options is not None
+                else self.effective_claude_options(provider)
+            ),
             live_subagent_model=live_subagent,
         )
 
@@ -1091,12 +1151,33 @@ class MonitorUI:
         return base_url, key
 
     def maybe_auto_fetch(self, provider: str) -> None:
-        """Auto-pull on open / provider switch when a key and URL exist."""
-        if provider in self._catalog_inflight:
+        """Auto-pull on open / provider switch.
+
+        Deliberately bypasses signature de-dup: every fresh presentation of
+        the settings dialog gets a chance to refresh the catalogue, while
+        field-driven debounce calls de-dup via :meth:`try_auto_fetch_models`.
+        """
+        self.try_auto_fetch_models(provider, skip_duplicate=False)
+
+    def try_auto_fetch_models(self, provider: str, *, skip_duplicate: bool = True) -> None:
+        """Fetch when the form is ready; otherwise explain the blockage.
+
+        Used by the open/switch path, the debounced KeyRelease/FocusOut
+        bindings and the post-save/post-write paths. A blocked precondition
+        always lands on the card status label instead of silently leaving the
+        static catalogue in place.
+        """
+        if provider in self._catalog_inflight or self._applying_claude:
             return
         base_url, key = self.catalog_fetch_target(provider)
-        if not key or claude_code.ANTHROPIC_PATH not in base_url:
+        reason = catalog_block_reason(base_url, key)
+        if reason is not None:
+            self.set_catalog_status(provider, reason, "warning")
             return
+        signature = (base_url, key)
+        if skip_duplicate and self._catalog_auto_signatures.get(provider) == signature:
+            return
+        self._catalog_auto_signatures[provider] = signature
         self._start_model_fetch(provider, base_url, key)
 
     def refresh_models(self, provider: str) -> None:
@@ -1108,8 +1189,9 @@ class MonitorUI:
             self.set_catalog_status(provider, "请先填写推理 API Key", "warning")
             return
         if claude_code.ANTHROPIC_PATH not in base_url:
-            self.set_catalog_status(provider, "该 Base URL 不支持在线获取模型", "warning")
+            self.set_catalog_status(provider, CATALOG_UNSUPPORTED_URL, "warning")
             return
+        self._catalog_auto_signatures[provider] = (base_url, key)
         self._start_model_fetch(provider, base_url, key)
 
     def _start_model_fetch(self, provider: str, base_url: str, key: str) -> None:
@@ -1197,6 +1279,8 @@ class MonitorUI:
         if self._theme_poll_after is not None:
             self.root.after_cancel(self._theme_poll_after)
             self._theme_poll_after=None
+        if self._settings_dialog is not None:
+            self._settings_dialog.dispose()
         history_window = self.history.window if self.history is not None else None
         for window in (self.popup,self.settings_window,history_window):
             if window is not None and window.winfo_exists():

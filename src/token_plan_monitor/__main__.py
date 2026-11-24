@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as wintypes
+import faulthandler
 import logging
+import os
 import sys
 import traceback
 import uuid
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -17,6 +20,20 @@ from .paths import data_directory, log_directory, resource_path
 
 SELF_CHECK_REPORT = "self-check-result.txt"
 SELF_CHECK_SERVICE = "TokenPlanMonitor.SelfCheck"
+_FATAL_LOG_HANDLE = None
+
+
+def _configure_isolated_fatal_logging() -> None:
+    """Retain native-fault stacks only for the opt-in isolated GUI harness."""
+    global _FATAL_LOG_HANDLE
+    if os.environ.get("TOKEN_PLAN_MONITOR_GUI_TEST") != "1":
+        return
+    log_dir = log_directory()
+    log_dir.mkdir(parents=True, exist_ok=True)
+    _FATAL_LOG_HANDLE = (log_dir / "fatal.log").open(
+        "a", encoding="utf-8", buffering=1
+    )
+    faulthandler.enable(file=_FATAL_LOG_HANDLE, all_threads=True)
 
 
 def configure_logging() -> None:
@@ -53,6 +70,143 @@ def _enable_dpi_awareness() -> None:
     except AttributeError:
         pass
     user32.SetProcessDPIAware()
+
+
+def _assert_single_system_ucrt() -> None:
+    """Reject a second, bundled UCRT inside the frozen process.
+
+    A toolchain directory on the build machine's PATH can make PyInstaller
+    collect physical ``ucrtbase.dll`` / ``api-ms-win-crt-*`` copies. The app
+    then loads that stale CRT next to the system one, and native window
+    creation eventually calls ``abort()`` (0xc0000409) with no Python
+    traceback. Enumerate every loaded module: GetModuleHandle cannot tell two
+    same-named DLLs apart, but EnumProcessModulesEx lists both files.
+    """
+    psapi = ctypes.windll.psapi
+    kernel32 = ctypes.windll.kernel32
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    psapi.EnumProcessModulesEx.argtypes = [
+        wintypes.HANDLE, ctypes.POINTER(wintypes.HMODULE), wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD), wintypes.DWORD,
+    ]
+    psapi.EnumProcessModulesEx.restype = wintypes.BOOL
+    psapi.GetModuleFileNameExW.argtypes = [
+        wintypes.HANDLE, wintypes.HMODULE, wintypes.LPWSTR, wintypes.DWORD,
+    ]
+    psapi.GetModuleFileNameExW.restype = wintypes.DWORD
+
+    process = kernel32.GetCurrentProcess()
+    needed = wintypes.DWORD()
+    psapi.EnumProcessModulesEx(
+        process, None, 0, ctypes.byref(needed), 0x03  # LIST_MODULES_ALL
+    )
+    count = needed.value // ctypes.sizeof(wintypes.HMODULE)
+    modules = (wintypes.HMODULE * count)()
+    if not psapi.EnumProcessModulesEx(
+        process, modules, needed.value, ctypes.byref(needed), 0x03
+    ):
+        raise ctypes.WinError()
+
+    ucrt_paths: list[str] = []
+    for module in modules:
+        name_buffer = ctypes.create_unicode_buffer(32768)
+        if psapi.GetModuleFileNameExW(process, module, name_buffer, 32768):
+            if Path(name_buffer.value).name.lower() == "ucrtbase.dll":
+                ucrt_paths.append(name_buffer.value)
+
+    system_root = Path(os.environ.get("SystemRoot", r"C:\Windows")).resolve()
+    if len(ucrt_paths) != 1 or not Path(ucrt_paths[0]).resolve().is_relative_to(
+        system_root
+    ):
+        raise AssertionError(
+            f"expected a single system UCRT, got: {ucrt_paths!r}"
+        )
+
+
+def _check_tcl_service_guard(tkinter) -> list[str]:
+    """Prove the frozen process can suppress nested Tcl dispatch, not just import it."""
+    from .ui_graphics import (
+        TCL_SERVICE_NONE,
+        native_handle,
+        require_tcl_service_guard,
+        tcl_events_deferred,
+        tcl_service_guard_status,
+    )
+
+    setter, getter = require_tcl_service_guard()
+    available, source = tcl_service_guard_status()
+    if not available or setter is None or getter is None:
+        raise AssertionError(f"Tcl service guard unavailable: {source}")
+    lines = [f"TCL_SERVICE_GUARD_OK path={source}"]
+    root = tkinter.Tk()
+    root.withdraw()
+    original = getter()
+    try:
+        top = tkinter.Toplevel(root)
+        top.withdraw()
+        top.geometry("320x240+40+40")
+        top.update_idletasks()
+        hwnd = native_handle(top)
+
+        if setter(TCL_SERVICE_NONE) != original or getter() != TCL_SERVICE_NONE:
+            raise AssertionError("could not select TCL_SERVICE_NONE")
+        if setter(1) != TCL_SERVICE_NONE or getter() != 1:
+            raise AssertionError("could not select TCL_SERVICE_ALL")
+        setter(original)
+        lines.append("TCL_SERVICE_ROUNDTRIP_OK")
+
+        marker = {"idle": False}
+        root.after_idle(lambda: marker.__setitem__("idle", True))
+        setter(1)
+        try:
+            user32 = ctypes.windll.user32
+            user32.SetWindowPos.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
+                ctypes.c_int, ctypes.c_int, ctypes.c_uint,
+            ]
+            user32.SetWindowPos.restype = wintypes.BOOL
+            with tcl_events_deferred():
+                if getter() != TCL_SERVICE_NONE:
+                    raise AssertionError("native boundary was not deferred")
+                user32.SetWindowPos(hwnd, None, 0, 0, 0, 0, 0x37)
+            if getter() != 1:
+                raise AssertionError("ambient TCL_SERVICE_ALL was not restored")
+            if marker["idle"]:
+                raise AssertionError("native WndProc reentered a queued Python idle callback")
+        finally:
+            setter(original)
+        root.update_idletasks()
+        if not marker["idle"]:
+            raise AssertionError("deferred idle callback was lost")
+        lines.append("TCL_SERVICE_DEFER_OK")
+
+        # Exercise the actual Settings presentation method in the frozen
+        # process, offscreen and without storage, credentials or a model fetch.
+        from .settings_view import SettingsDialog
+        dialog = object.__new__(SettingsDialog)
+        dialog.window = top
+        dialog.body = SimpleNamespace(canvas=tkinter.Canvas(top))
+        dialog.body.canvas.pack(fill="both", expand=True)
+        dialog._closing = False
+        dialog._presented = False
+        dialog._present_after = None
+        dialog._anchor_after = None
+        top.geometry("320x240+10000+10000")
+        setter(1)
+        try:
+            dialog._present()
+            if getter() != 1 or not dialog._presented:
+                raise AssertionError("Settings presentation did not preserve ALL mode")
+        finally:
+            setter(original)
+        if dialog._anchor_after is not None:
+            top.after_cancel(dialog._anchor_after)
+        top.withdraw()
+        lines.append("TCL_SETTINGS_PRESENT_OK")
+        return lines
+    finally:
+        setter(original)
+        root.destroy()
 
 
 def _show_already_running() -> None:
@@ -109,6 +263,10 @@ def _run_windows_self_check() -> int:
         if not user32.AreDpiAwarenessContextsEqual(awareness, ctypes.c_void_p(-4)):
             raise AssertionError("PerMonitorV2 DPI awareness inactive; manifest missing?")
         check("PerMonitorV2 DPI awareness active from embedded manifest")
+        _assert_single_system_ucrt()
+        check("single system UCRT loaded (no bundled ucrtbase/api-ms)")
+        for native_check in _check_tcl_service_guard(tkinter):
+            check(native_check)
         active_backend = keyring.get_keyring()
         if not isinstance(active_backend, windows_keyring.WinVaultKeyring):
             raise AssertionError(
@@ -207,6 +365,7 @@ def main() -> None:
         return
     try:
         configure_logging()
+        _configure_isolated_fatal_logging()
         storage = Storage()
         monitor = UsageMonitor(storage)
         app = MonitorUI(monitor, storage)

@@ -49,6 +49,101 @@ def assert_layout(window:tk.Toplevel,body) -> None:
     assert body.canvas.winfo_width()>0
 
 
+# clam's readonly combobox map leaks these light/system colors; a themed
+# dropdown must never resolve back to them in either mode.
+CLAM_COMBOBOX_LEAKS = {"#dcdad5", "#4a6984", "#999999", "#eeebe7", "#cfcdc8"}
+
+
+def assert_combobox_theme(app: MonitorUI, mode: str) -> None:
+    """Style lookups, the classic popdown Listbox and live theme recolor."""
+    style = ttk.Style(app.root)
+    colors = app.colors
+    card = colors["card"].lower()
+    # The ttk style itself: base config plus the state maps that override
+    # clam's hard-coded warm-grey readonly field and steel-blue focus field.
+    assert style.lookup("TCombobox", "fieldbackground").lower() == card
+    # style.map returns flat tuples: state names followed by the value last.
+    field_map = {tuple(entry[:-1]): entry[-1].lower()
+                 for entry in style.map("TCombobox", "fieldbackground")}
+    assert field_map[("readonly",)] == card
+    assert field_map[("readonly", "focus")] == card
+    assert field_map[("disabled",)] == colors["trough"].lower()
+    border_map = {tuple(entry[:-1]): entry[-1].lower()
+                  for entry in style.map("TCombobox", "bordercolor")}
+    assert border_map[("focus",)] == colors["accent"].lower()
+    arrow_map = {tuple(entry[:-1]): entry[-1].lower()
+                 for entry in style.map("TCombobox", "arrowcolor")}
+    assert arrow_map[("disabled",)] == colors["muted"].lower()
+    assert style.lookup("ComboboxPopdownFrame", "background").lower() == card
+    themed = set(field_map.values()) | set(border_map.values()) | set(arrow_map.values())
+    themed.add(style.lookup("TCombobox", "fieldbackground").lower())
+    # Light mode's card token is legitimately white; the white ban is dark-only.
+    forbidden = set(CLAM_COMBOBOX_LEAKS)
+    if mode == "dark":
+        forbidden.add("#ffffff")
+    assert themed.isdisjoint(forbidden)
+
+    panel = app._settings_dialog.claude_panel
+    combo = panel.model_combo
+    combo_path = str(combo)
+    listbox_path = f"{combo_path}.popdown.f.l"
+    popdown_path = f"{combo_path}.popdown"
+    # The real Ark catalogue holds only the custom marker (one selected row);
+    # add throwaway rows so the screenshot shows plain card-background rows
+    # next to an accent-selected row.
+    original_values = combo.cget("values")
+    combo.configure(values=tuple(original_values) + (
+        "demo-model-alpha", "demo-model-beta"))
+    # The popdown is a lazily created classic Toplevel/Listbox outside the
+    # normal widget tree; post it for real so the option database takes effect.
+    app.root.tk.call("ttk::combobox::Post", combo_path)
+    try:
+        pump(app)
+        assert app.root.tk.call("winfo", "exists", listbox_path)
+        listbox_get = lambda option: app.root.tk.call(
+            listbox_path, "cget", option).lower()
+        assert listbox_get("-background") == card
+        assert listbox_get("-foreground") == colors["text"].lower()
+        assert listbox_get("-selectbackground") == colors["accent"].lower()
+        assert listbox_get("-selectforeground") == colors["button_text"].lower()
+        if mode == "dark":
+            # The original dark-mode bug was a system-white popdown.
+            assert listbox_get("-background") != "#ffffff"
+
+        # A theme switch while the popdown is open must recolor the existing
+        # Listbox directly; the option database only affects future popdowns.
+        other_mode = "dark" if mode == "light" else "light"
+        app._set_theme(other_mode)
+        pump(app)
+        switched_card = app.colors["card"].lower()
+        assert switched_card != card
+        assert listbox_get("-background") == switched_card
+        assert listbox_get("-selectbackground") == app.colors["accent"].lower()
+        app._set_theme(mode)
+        pump(app)
+        assert listbox_get("-background") == card
+
+        # Screenshot the closed box together with its open popdown.
+        app.root.update_idletasks()
+        pop_x = int(app.root.tk.call("winfo", "rootx", popdown_path))
+        pop_y = int(app.root.tk.call("winfo", "rooty", popdown_path))
+        pop_w = int(app.root.tk.call("winfo", "width", popdown_path))
+        pop_h = int(app.root.tk.call("winfo", "height", popdown_path))
+        x1 = min(combo.winfo_rootx(), pop_x)
+        y1 = min(combo.winfo_rooty(), pop_y)
+        x2 = max(combo.winfo_rootx() + combo.winfo_width(), pop_x + pop_w)
+        y2 = max(combo.winfo_rooty() + combo.winfo_height(), pop_y + pop_h)
+        ImageGrab.grab(
+            bbox=(x1, y1, x2, y2), all_screens=True
+        ).save(ARTIFACTS / f"theme-{mode}-settings-combobox.png")
+    finally:
+        # Unpost withdraws (but keeps for reuse) the popdown Toplevel.
+        app.root.tk.call("ttk::combobox::Unpost", combo_path)
+        combo.configure(values=original_values)
+        pump(app)
+        assert not app.root.tk.call("winfo", "viewable", popdown_path)
+
+
 def render(mode:str,scale:float) -> None:
     with tempfile.TemporaryDirectory(dir=ARTIFACTS) as temporary:
         storage=Storage(Path(temporary),EmptyKeyring())
@@ -115,6 +210,9 @@ def render(mode:str,scale:float) -> None:
                         capture_screen(card,f"theme-{mode}-widget.png")
                     app.desktop_widget.window.deiconify()
             app.open_settings()
+            # Hidden construction, presentation and late-parent wrapping are
+            # separate event turns, especially at simulated high DPI.
+            pump(app)
             pump(app)
             assert_layout(app.settings_window,app.settings_body)
             if scale==1:
@@ -123,7 +221,10 @@ def render(mode:str,scale:float) -> None:
                 app.settings_window.geometry("+40+40")
                 app.settings_window.lift()
                 pump(app)
-                capture_screen(app.settings_window,f"theme-{mode}-settings.png")
+                gui_smoke.capture(
+                    app.settings_window._chrome.hwnd, f"theme-{mode}-settings.png"
+                )
+                assert_combobox_theme(app, mode)
             if app.settings_body.content.winfo_reqheight()>app.settings_body.canvas.winfo_height():
                 assert app.settings_body.bar.winfo_ismapped()
                 app.settings_body.canvas.yview_moveto(1)
@@ -142,9 +243,28 @@ def render(mode:str,scale:float) -> None:
                 field.event_generate("<FocusIn>")
                 pump(app)
                 top=field.winfo_rooty()-app.settings_body.canvas.winfo_rooty()
-                assert top>=0 and top+field.winfo_height()<=app.settings_body.canvas.winfo_height()
+                assert top>=0 and top+field.winfo_height()<=app.settings_body.canvas.winfo_height(), (
+                    top, field.winfo_height(), app.settings_body.canvas.winfo_height(),
+                    app.settings_body.canvas.yview(), app.settings_body._ready,
+                    app.settings_body._armed,
+                )
+            retained_window = app.settings_window
+            retained_dialog = app._settings_dialog
+            retained_dialog.close()
+            pump(app)
+            assert app.settings_window is None and not retained_window.winfo_viewable()
+            app.open_settings()
+            pump(app)
+            pump(app)
+            assert app.settings_window is retained_window
+            assert app._settings_dialog is retained_dialog
+            assert app.settings_body.canvas.yview()[0] == 0.0
+            assert_layout(app.settings_window, app.settings_body)
             assert not failures,failures
-            print(f"PASS {mode} {scale:.0%}: seven scenarios, compact/expanded, card text, settings, viewport")
+            coverage = "settings, viewport"
+            if scale == 1:
+                coverage = "settings, viewport, combobox style/popdown/recolor"
+            print(f"PASS {mode} {scale:.0%}: seven scenarios, compact/expanded, card text, {coverage}")
         finally:
             app.shutdown()
 

@@ -68,10 +68,25 @@ def test_base_url_rewrites_openai_compatible_mode():
     assert rewritten_from.endswith("/compatible-mode/v1")
 
 
+FIXED_HOST_URL = (
+    "https://token-plan.maas.qianwenaiapi.com/apps/anthropic"
+)
+
+
 def test_base_url_appends_anthropic_path_to_recognized_root_hosts():
     assert cc.normalize_base_url("https://token-plan.cn-beijing.maas.aliyuncs.com") == (
         OFFICIAL, "https://token-plan.cn-beijing.maas.aliyuncs.com")
     assert cc.normalize_base_url("https://dashscope.aliyuncs.com")[0].endswith("/apps/anthropic")
+    # The fixed Token Plan host is itself a recognized root.
+    assert cc.normalize_base_url("https://token-plan.maas.qianwenaiapi.com") == (
+        FIXED_HOST_URL, "https://token-plan.maas.qianwenaiapi.com")
+
+
+def test_base_url_rewrites_compatible_mode_on_the_fixed_host():
+    url, rewritten_from = cc.normalize_base_url(
+        "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1")
+    assert url == FIXED_HOST_URL
+    assert rewritten_from.endswith("/compatible-mode/v1")
 
 
 @pytest.mark.parametrize("url", [

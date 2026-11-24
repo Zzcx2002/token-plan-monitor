@@ -230,7 +230,8 @@ def test_lock_survives_duplicate_release_and_recovers_after_crash(tmp_path):
 def test_claude_configuration_defaults_come_from_the_provider():
     request = validate_claude_configuration(
         "bailian", "cn-beijing", "qwen3.8-max", "", "", "", "sk-sp-held")
-    assert request.base_url == "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic"
+    assert request.base_url == (
+        "https://token-plan.maas.qianwenaiapi.com/apps/anthropic")
     assert request.model == "qwen3.8-max"
     assert request.api_key == "sk-sp-held"          # blank field reuses the vault
     assert request.base_url_verified is True
@@ -279,15 +280,15 @@ def test_claude_validation_falls_back_to_the_provider_default_region():
     save path has always had, and the reason the rule cannot simply require a
     non-empty value."""
     request = validate_claude_configuration("bailian", "", "auto", "", "", "", "key")
-    assert request.base_url == "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic"
+    assert request.base_url == (
+        "https://token-plan.maas.qianwenaiapi.com/apps/anthropic")
 
 
-def test_claude_validation_accepts_every_supported_bailian_region():
+def test_claude_validation_uses_the_fixed_host_for_every_supported_region():
     from urllib.parse import urlsplit
     for region in ("cn-beijing", "ap-southeast-1"):
         request = validate_claude_configuration("bailian", region, "auto", "", "", "", "key")
-        host = urlsplit(request.base_url).hostname
-        assert host == f"token-plan.{region}.maas.aliyuncs.com", host
+        assert urlsplit(request.base_url).hostname == "token-plan.maas.qianwenaiapi.com"
 
 
 def test_claude_request_repr_hides_the_inference_key():

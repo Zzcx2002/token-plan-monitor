@@ -34,8 +34,40 @@ HIDDEN_IMPORTS = (
 NOTICE_FILES = ("THIRD_PARTY_NOTICES.md", "licenses")
 
 
+def build_environment() -> dict[str, str]:
+    """Sanitized environment for the PyInstaller subprocess.
+
+    PyInstaller falls back to PATH when resolving binary dependencies, and
+    third-party toolchain directories on PATH (MiKTeX, Inkscape, ...) carry
+    physical ``ucrtbase.dll`` / ``api-ms-win-crt-*`` copies that its System32
+    exclusion rule does not catch. Bundling them makes the frozen process load
+    a second, stale CRT alongside the system one, which aborts native window
+    creation with 0xc0000409 and no Python traceback. Keep an allowlist of
+    Windows directories plus the running interpreter's directory; everything
+    else in the inherited environment is left untouched.
+    """
+    env = os.environ.copy()
+    system_root = env.get("SystemRoot", r"C:\Windows")
+    allowed = (
+        Path(system_root) / "System32",
+        Path(system_root),
+        Path(system_root) / "System32" / "Wbem",
+        Path(system_root) / "SysWOW64",
+        Path(sys.executable).resolve().parent,
+    )
+    env["PATH"] = os.pathsep.join(
+        dict.fromkeys(str(path) for path in allowed)
+    )
+    return env
+
+
 def run(*args: str) -> None:
-    subprocess.run([str(arg) for arg in args], cwd=ROOT, check=True)
+    subprocess.run(
+        [str(arg) for arg in args],
+        cwd=ROOT,
+        check=True,
+        env=build_environment(),
+    )
 
 
 def remove_tree(path: Path, attempts: int = 6) -> None:
@@ -104,15 +136,49 @@ def bundle_notices(work_app: Path) -> None:
     print("Bundled third-party notices and license texts")
 
 
+def assert_clean_crt(work_app: Path) -> None:
+    """Fail the build if OS CRT binaries were collected into the bundle.
+
+    UCRT (``ucrtbase.dll``) and the ``api-ms-win-*`` API-set forwarders are
+    Windows components on every supported target. A bundled copy means a
+    toolchain directory leaked onto PATH during dependency analysis; the
+    frozen app would then host two CRTs and abort in native code. The in-exe
+    ``--self-check`` re-verifies the same property at runtime.
+    """
+    internal = work_app / "_internal"
+    offenders = sorted(
+        path.name
+        for path in internal.rglob("*.dll")
+        if path.name.lower() == "ucrtbase.dll"
+        or path.name.lower().startswith("api-ms-win-")
+    )
+    if offenders:
+        raise RuntimeError(
+            "OS CRT binaries would ship inside the app (sanitize PATH): "
+            + ", ".join(offenders)
+        )
+    print("CRT guard: no bundled ucrtbase/api-ms-win binaries")
+
+
 def run_self_check(work_app: Path) -> None:
     """Deterministic in-exe probe: backends, resources, storage, keyring."""
     exe = work_app / f"{APP_NAME}.exe"
     result = subprocess.run([str(exe), "--self-check"], cwd=work_app, timeout=90)
     report = work_app / "self-check-result.txt"
-    if report.is_file():
-        print(report.read_text(encoding="utf-8").rstrip())
+    report_text = report.read_text(encoding="utf-8") if report.is_file() else ""
+    if report_text:
+        print(report_text.rstrip())
     if result.returncode != 0:
         raise RuntimeError(f"Frozen self-check failed (exit {result.returncode})")
+    required = (
+        "TCL_SERVICE_GUARD_OK path=",
+        "TCL_SERVICE_ROUNDTRIP_OK",
+        "TCL_SERVICE_DEFER_OK",
+        "TCL_SETTINGS_PRESENT_OK",
+    )
+    missing = [marker for marker in required if marker not in report_text]
+    if missing:
+        raise RuntimeError(f"Frozen self-check omitted native guard probes: {missing}")
     report.unlink(missing_ok=True)
 
 
@@ -181,6 +247,7 @@ def main() -> None:
     from token_plan_monitor import __version__
 
     work_app = build_application()
+    assert_clean_crt(work_app)
     bundle_notices(work_app)
     run_self_check(work_app)
     probe_tray_launch(work_app)

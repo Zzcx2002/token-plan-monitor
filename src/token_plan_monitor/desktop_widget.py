@@ -619,6 +619,11 @@ class DesktopWidget:
 
     def _show_menu(self, event: tk.Event) -> None:
         self._cancel_hover()
+        def request_settings() -> None:
+            # A timer runs after this menu command has returned; after_idle can
+            # be serviced inside the menu's nested event loop instead.
+            self.root.after(0, self.on_settings)
+
         menu = tk.Menu(self.window, tearoff=False, font=(self.font_family, 9))
         for line in menu_lines(self._state):
             menu.add_command(label=line, state="disabled")
@@ -637,7 +642,7 @@ class DesktopWidget:
             command=self.toggle_topmost,
         )
         menu.add_command(label="隐藏桌面卡片", command=lambda: self.set_visible(False))
-        menu.add_command(label="设置", command=self.on_settings)
+        menu.add_command(label="设置", command=request_settings)
         menu.add_separator()
         menu.add_command(label="退出", command=self.on_exit)
         try:

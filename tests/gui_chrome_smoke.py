@@ -3,8 +3,8 @@ import ctypes
 from ctypes import wintypes as wt
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
-from PIL import ImageGrab
 import gui_smoke
 from gui_preview import ARTIFACTS, EmptyKeyring, FakeMonitor, scenarios
 from gui_theme_preview import assert_layout, pump
@@ -95,8 +95,7 @@ def run(mode, scale):
                 check_frame(window)
                 assert_layout(window, body)
                 if scale == 1:
-                    ImageGrab.grab(bbox=outer_bounds(chrome), all_screens=True).save(
-                        ARTIFACTS/f"chrome-{mode}-{name}-full.png")
+                    gui_smoke.capture(chrome.hwnd, f"chrome-{mode}-{name}-full.png")
                 for width, height in ((360 if name == "popup" else 400, 320), (600, 680)):
                     factor = dpi_scale(window)
                     window.geometry(f"{round(width*factor)}x{round(height*factor)}")
@@ -125,6 +124,30 @@ def run(mode, scale):
                 pump(app)
                 check_frame(window)
                 assert chrome.normal
+                # Caption drag is Tk-level geometry: the native size/move
+                # modal loop (WM_ENTERSIZEMOVE -> TCL_SERVICE_ALL abort path)
+                # must no longer be reachable from the title bar.
+                before = (window.winfo_x(), window.winfo_y())
+                chrome._drag(SimpleNamespace(x_root=120, y_root=120))
+                assert chrome._drag_state is not None
+                chrome._drag_motion(SimpleNamespace(x_root=175, y_root=142))
+                pump(app)
+                assert (window.winfo_x(), window.winfo_y()) == (
+                    before[0] + 55, before[1] + 22)
+                chrome._drag_release(SimpleNamespace(x_root=175, y_root=142))
+                assert chrome._drag_state is None and chrome._drag_bindings is None
+                # Dragging out of the maximized state restores the window and
+                # keeps the caption gesture alive under the cursor.
+                chrome.toggle_maximize()
+                pump(app)
+                assert chrome.user.IsZoomed(chrome.hwnd)
+                press_x = window.winfo_x() + max(1, window.winfo_width() // 2)
+                chrome._drag(SimpleNamespace(x_root=press_x, y_root=40))
+                pump(app)
+                assert not chrome.user.IsZoomed(chrome.hwnd)
+                assert chrome._drag_state is not None
+                chrome._drag_release(SimpleNamespace(x_root=press_x, y_root=40))
+                assert chrome._drag_state is None and chrome._drag_bindings is None
             app._set_theme("light" if mode == "dark" else "dark")
             app.settings_window._chrome.close()
             assert app.settings_window is None

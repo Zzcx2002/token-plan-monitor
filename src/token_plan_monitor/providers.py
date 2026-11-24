@@ -64,6 +64,11 @@ class ProviderSpec:
     def default_claude_base_url(self, region: str) -> str:
         if not self.claude_base_url_template:
             return ""
+        # A fixed host (no {region} placeholder) is returned verbatim: region
+        # still drives the quota control plane, but must not be able to move
+        # the inference endpoint.
+        if "{region}" not in self.claude_base_url_template:
+            return self.claude_base_url_template
         # The region lands inside the URL's hostname, so it must pass the same
         # validation as the apply path. This is a default-URL generator, not an
         # input validator: an invalid region falls back to the provider default
@@ -144,10 +149,11 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
             "刷新间隔支持 5–1440 分钟。"
         ),
         inference_key_username="bailian_inference_api_key",
-        # Verified from the Token Plan quickstart: the Anthropic-compatible
-        # base URL is https://token-plan.<region>.maas.aliyuncs.com/apps/anthropic
+        # Verified Token Plan Anthropic-compatible endpoint. The host is fixed
+        # (no region segment): the regional aliyuncs host was the old format.
+        # Pasted legacy URLs still normalize via claude_code._REWRITABLE_HOSTS.
         claude_base_url_template=(
-            "https://token-plan.{region}.maas.aliyuncs.com/apps/anthropic"
+            "https://token-plan.maas.qianwenaiapi.com/apps/anthropic"
         ),
         claude_base_url_verified=True,
         claude_models=BAILIAN_CLAUDE_MODELS,

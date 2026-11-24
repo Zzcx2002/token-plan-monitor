@@ -11,6 +11,7 @@ widget is never destroyed while its own event is still being dispatched.
 """
 from __future__ import annotations
 
+import logging
 import tkinter as tk
 from tkinter import ttk
 
@@ -43,11 +44,14 @@ from .ui_graphics import (
     ScrollableBody,
     dpi_scale,
     install_window_effects,
+    tcl_events_deferred,
     is_windows_11,
     window_work_area,
 )
 from .window_chrome import WindowChrome
 from .window_geometry import WindowGeometry
+
+logger = logging.getLogger(__name__)
 
 #: Field ids raised by the shared validator map to the dialog's entry keys.
 _FIELD_TO_ENTRY = {
@@ -79,6 +83,7 @@ _STATUS_STYLE = {
     "neutral": "CardMuted.TLabel",
     "warning": "CardWarning.TLabel",
     "ok": "CardSuccess.TLabel",
+    "error": "CardError.TLabel",
 }
 
 
@@ -106,23 +111,76 @@ class SettingsDialog:
         self._footer: ttk.Frame | None = None
         self._rebuild_pending = False
         self._rebuild_after: str | None = None
+        self._presented = False
+        self._closing = False
+        self._fit_after: str | None = None
+        self._present_after: str | None = None
+        self._anchor_after: str | None = None
+        self._opening = False
+        self._shell_scale = 0.0
         self._label_to_id = {spec.label: spec.id for spec in PROVIDERS}
         self.claude_panel: ClaudePanel | None = None
 
     def open(self) -> tk.Toplevel:
+        """Create once, then reset and reveal the retained dialog on later opens."""
         app = self.app
-        self.settings = app.storage.load_settings()
-        self.original_mode = app.theme_mode
-        self.original_material = app.material
+        self._opening = True
+        try:
+            self._closing = False
+            self._presented = False
+            self.original_mode = app.theme_mode
+            self.original_material = app.material
+            stored = app.storage.load_settings()
+            self.settings = stored
+            if self.window is None or not self.window.winfo_exists():
+                self.provider = ""
+                self.entries = {}
+                self.errors = {}
+                self.claude_panel = None
+                self._create_shell()
+            else:
+                self._sync_window_to_app()
+            window = self.window
+            try:
+                existing = app.storage.load_credentials(stored.provider)
+            except ConfigurationError:
+                existing = None
+            options = app.effective_claude_options(stored.provider)
+            if self.provider != stored.provider or not self.entries:
+                self._build_form(
+                    stored.provider, stored.region, str(stored.refresh_minutes),
+                    stored.alert.enabled, str(stored.alert.threshold_percent),
+                    stored.alert.notify_on_reset, existing, focus_entry=False,
+                    model_options=options,
+                )
+            else:
+                self._reset_form(stored, existing, options)
+            self.theme_var.set(app.theme_mode)
+            self.material_var.set(app.material)
+            if window._geometry.initialized:
+                self.body.canvas.yview_moveto(0)
+                self._present_after = window.after_idle(self._present)
+            else:
+                self._fit_after = window.after_idle(self._fit)
+            return window
+        finally:
+            self._opening = False
+
+    def _create_shell(self) -> None:
+        app = self.app
         window = tk.Toplevel(app.root)
+        self.window = window
+        # Native material/chrome calls can pump Map and focus events. Keep the
+        # empty Toplevel hidden until the form and its first geometry are done.
+        window.withdraw()
         window.configure(background=app.colors["surface"])
         window.resizable(True, True)
         app._apply_icon(window)
         install_window_effects(window, app.colors["surface"], material=app.material)
-        self.window = window
         window._on_dpi_changed = app._on_dpi_changed
         window._geometry = WindowGeometry(
-            window, app.storage, "settings", SETTINGS_MINIMUM_SIZE)
+            window, app.storage, "settings", SETTINGS_MINIMUM_SIZE,
+            cap_height=True)
         window._chrome = WindowChrome(
             window, "设置", app.colors, app.font_family, lambda: self.close()
         )
@@ -130,8 +188,6 @@ class SettingsDialog:
         body = ScrollableBody(window, app.colors)
         body.pack(fill="both", expand=True)
         self.body = body
-        # All rebuildable panels live in form_frame; the error label and footer
-        # stay outside it so a provider switch never tears them down.
         self.form_frame = ttk.Frame(body.content, style="Card.TFrame")
         self.form_frame.pack(fill="x")
         general_error = ttk.Label(
@@ -152,33 +208,73 @@ class SettingsDialog:
                    command=lambda: self.close()).pack(side="right", padx=(0, 8))
         window.bind("<Return>", lambda event: self._save())
         window.bind("<Escape>", lambda event: self.close())
-
         self.theme_var = tk.StringVar(window, app.theme_mode)
         self.material_var = tk.StringVar(window, app.material)
         self.provider_var = tk.StringVar(window)
-        stored = self.settings
+        self._shell_scale = dpi_scale(window)
+
+    def _sync_window_to_app(self) -> None:
+        """Hidden windows are absent from app.settings_window theme/DPI loops."""
+        app = self.app
+        window = self.window
+        window.configure(background=app.colors["surface"])
+        window._material = app.material
+        window._material_surface = app.colors["surface"]
+        window._shadow_opacity = app.theme.shadow_opacity
+        window._chrome.set_theme(app.colors)
+        scale = dpi_scale(window)
+        if scale != self._shell_scale:
+            window._chrome.refresh_scale()
+            self._shell_scale = scale
+
+    def _reset_form(self, stored: Settings, existing: Credentials | None,
+                    options) -> None:
+        """Refresh a same-provider form without destroying its rendered panels."""
+        app = self.app
+        self.existing = existing
         try:
-            existing = app.storage.load_credentials(stored.provider)
+            app.inference_key = app.storage.load_inference_key(stored.provider)
         except ConfigurationError:
-            existing = None
-        self._build_form(
-            stored.provider, stored.region, str(stored.refresh_minutes),
-            stored.alert.enabled, str(stored.alert.threshold_percent),
-            stored.alert.notify_on_reset, existing,
+            app.inference_key = None
+        self.provider_var.set(get_provider(stored.provider).label)
+        self.window.title(f"{get_provider(stored.provider).label}用量查询设置")
+        values = {
+            "access_key": existing.access_key_id if existing else "",
+            "secret_key": "",
+            "region": stored.region,
+            "refresh": str(stored.refresh_minutes),
+            "alert_threshold": str(stored.alert.threshold_percent),
+        }
+        for key, field in self.entries.items():
+            field.state(["!invalid"])
+            error = self.errors.get(key)
+            if error is not None:
+                error.grid_remove()
+                error.configure(text="")
+        for key, value in values.items():
+            field = self.entries[key]
+            field.delete(0, "end")
+            field.insert(0, value)
+        self.alert_enabled.set(stored.alert.enabled)
+        self.alert_reset.set(stored.alert.notify_on_reset)
+        self._general_error.configure(text="", style="Error.TLabel")
+        self.claude_panel.reset(
+            app.claude_seed(stored.provider, model_options=options), options=options,
         )
-        window.after_idle(self._fit)
-        return window
 
     # ------------------------------------------------------------------ form
     def _build_form(self, provider: str, region: str, interval: str,
                     alert_enabled: bool, alert_threshold: str, alert_reset: bool,
-                    existing: Credentials | None) -> None:
+                    existing: Credentials | None, *, focus_entry: bool = True,
+                    model_options=None) -> None:
         app = self.app
         spec = get_provider(provider)
         self.provider = provider
         self.existing = existing
         self.entries = {}
         self.errors = {}
+        if self.claude_panel is not None:
+            self.claude_panel.cancel_pending_fetch()
         self.claude_panel = None
         try:
             app.inference_key = app.storage.load_inference_key(provider)
@@ -302,14 +398,14 @@ class SettingsDialog:
         ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
         claude_frame = panel("Claude Code 接入")
-        self.claude_panel = ClaudePanel(self, claude_frame, app.claude_seed(provider))
-
-        self.window.after_idle(
-            self.entries["secret_key" if existing is not None else "access_key"].focus_set
+        options = model_options or app.effective_claude_options(provider)
+        self.claude_panel = ClaudePanel(
+            self, claude_frame,
+            app.claude_seed(provider, model_options=options), options=options,
         )
-        # The catalogue auto-pulls on open and on every provider switch, but
-        # only when a key and an Anthropic endpoint are actually available.
-        self.window.after_idle(lambda: app.maybe_auto_fetch(provider))
+
+        if focus_entry:
+            self.window.after_idle(self._focus_selected_entry)
 
     # ------------------------------------------------------ provider switching
     def _schedule_rebuild(self) -> None:
@@ -362,26 +458,80 @@ class SettingsDialog:
     # ----------------------------------------------------------------- helpers
     def focus(self) -> None:
         if self.window is not None and self.window.winfo_exists():
-            self.window.deiconify()
-            self.window.lift()
-            self.window.focus_force()
+            with tcl_events_deferred():
+                self.window.deiconify()
+                self.window.lift()
+                self.window.focus_force()
+
+    def _focus_selected_entry(self) -> None:
+        if not self._presented or self.window is None:
+            return
+        key = "secret_key" if self.existing is not None else "access_key"
+        field = self.entries.get(key)
+        if field is not None and field.winfo_exists():
+            field.focus_set()
+
+    def _present(self) -> None:
+        self._present_after = None
+        window = self.window
+        if (self._closing or window is None or not window.winfo_exists()
+                or self._presented):
+            return
+        self._presented = True
+        # Defer activation to the next event turn so retained child windows can
+        # process Map/Configure first; no full update() or off-screen transition.
+        with tcl_events_deferred():
+            window.deiconify()
+            window.update_idletasks()
+            self.body.canvas.yview_moveto(0)
+        self._anchor_after = window.after(0, self._anchor_initial_view)
+
+    def _anchor_initial_view(self) -> None:
+        self._anchor_after = None
+        if (self._closing or self.body is None or self.window is None
+                or not self.window.winfo_exists()):
+            return
+        window = self.window
+        with tcl_events_deferred():
+            window.update_idletasks()
+            self.body.canvas.yview_moveto(0)
+            window.lift()
+            window.focus_force()
+        # Network work starts only after the first complete visible viewport;
+        # hidden retention/reset never triggers a catalogue request.
+        self.app.maybe_auto_fetch(self.provider)
 
     def _fit(self) -> None:
+        self._fit_after = None
         window = self.window
-        if window is None or not window.winfo_exists() or window._geometry.initialized:
+        if (self._closing or window is None or not window.winfo_exists()
+                or window._geometry.initialized):
             return
-        window.update_idletasks()
-        content = self.body.content
-        width = max(round(460 * dpi_scale(window)), content.winfo_reqwidth())
-        left, top, right, bottom = window_work_area(window)
-        width = min(width, right - left - 40)
-        fixed = (
-            self._footer.winfo_reqheight()
-            + window._chrome.header.winfo_reqheight()
-            + self.app.px(8)
-        )
-        height = self.body.fit(max(200, bottom - top - 70 - fixed))
-        window._geometry.fit((width, height + fixed))
+        # Geometry work includes several native message-pumping boundaries.
+        # Keep the existing sizing/centering order, but defer nested Tcl
+        # servicing for the whole calculation and schedule presentation after
+        # the ambient notifier mode has been restored.
+        with tcl_events_deferred():
+            window.update_idletasks()
+            content = self.body.content
+            width = max(round(460 * dpi_scale(window)), content.winfo_reqwidth())
+            left, top, right, bottom = window_work_area(window)
+            width = min(width, right - left - 40)
+            fixed = (
+                self._footer.winfo_reqheight()
+                + window._chrome.header.winfo_reqheight()
+                + self.app.px(8)
+            )
+            height = self.body.fit(max(200, bottom - top - 70 - fixed))
+            window._geometry.fit((width, height + fixed))
+            if not self._presented:
+                # Size alone does not constrain Windows' default cascade origin.
+                fitted_width, fitted_height = window._geometry.pixel_size
+                x = left + max(10, (right - left - fitted_width) // 2)
+                y = top + max(10, (bottom - top - fitted_height) // 2)
+                window.geometry(f"+{x}+{y}")
+        if not self._presented and not self._closing:
+            self._present_after = window.after(0, self._present)
 
     def _show_validation_error(self, message: str, field: str | None = None) -> None:
         if field is None:
@@ -400,11 +550,7 @@ class SettingsDialog:
             widget.selection_range(0, "end")
         self._fit()
         if field is not None:
-            self.window.update_idletasks()
-            target = self.entries[field].winfo_rooty() - self.body.content.winfo_rooty()
-            self.body.canvas.yview_moveto(
-                max(0, (target - 80) / max(1, self.body.content.winfo_height()))
-            )
+            self._scroll_widget_into_view(self.entries[field])
 
     def _save(self) -> None:
         app = self.app
@@ -447,6 +593,9 @@ class SettingsDialog:
             app.monitor.update_configuration(new_settings, new_credentials)
         # Remember whatever Claude choices are typed (the key stays in memory).
         app.stash_claude_draft(new_settings.provider)
+        # The window hides on save, but the worker/drain still persist the
+        # fetched catalogue to models.json so the next open starts fresh.
+        app.try_auto_fetch_models(new_settings.provider, skip_duplicate=True)
         self.close(commit=True)
         app.show_popup()
 
@@ -458,7 +607,17 @@ class SettingsDialog:
         return self.claude_panel.form_values()
 
     def show_form_message(self, text: str, tone: str = "error") -> None:
-        """Pinned-header feedback for Claude writes, tinted by tone."""
+        """Feedback for Claude writes, tinted by tone.
+
+        Routed to a label inside the Claude card so it cannot fall below the
+        scroll fold; the form-level label remains only as a no-panel fallback.
+        """
+        panel = self.claude_panel
+        if panel is not None:
+            panel.set_write_status(text, tone)
+            self._fit()
+            self._scroll_widget_into_view(panel.write_status_label)
+            return
         style = {
             "error": "Error.TLabel",
             "ok": "Success.TLabel",
@@ -468,15 +627,32 @@ class SettingsDialog:
         self._general_error.configure(text=text, style=style)
         self._fit()
 
+    def _scroll_widget_into_view(self, widget: tk.Misc, *, margin: int = 80) -> None:
+        """Scroll the canvas so `widget` (a card child) sits inside the viewport."""
+        if self.window is None or not self.window.winfo_exists():
+            return
+        self.window.update_idletasks()
+        target = widget.winfo_rooty() - self.body.content.winfo_rooty()
+        self.body.canvas.yview_moveto(
+            max(0, (target - margin) / max(1, self.body.content.winfo_height()))
+        )
+
     def apply_claude(self) -> None:
         """Validate, confirm, then write provider + model into Claude Code."""
         app = self.app
         panel = self.claude_panel
         if app._applying_claude or panel is None:
             return
+        provider = self.provider
         app._applying_claude = True
+        panel.cancel_pending_fetch()
+        panel.set_write_status("")
+        panel.set_write_busy(True)
+        succeeded = False
         try:
-            provider = self.provider
+            # Paint the busy state before any nested event loop (the confirm
+            # box) so the click always gives immediate visible feedback.
+            panel.frame.update_idletasks()
             popup, custom, base_url, key_text, prefs = panel.form_values()
             existing_key = app.stored_inference_key(provider)
             settings_path, onboarding_path = app.resolve_claude_paths()
@@ -507,6 +683,8 @@ class SettingsDialog:
             changes = claude_code.describe_changes(
                 request, patch, document, settings_path, had_comments
             )
+            # Refresh once more so the busy label is on screen behind the modal.
+            self.window.update_idletasks()
             if not app.confirm_claude_write(changes):
                 self.show_form_message("已取消，未改动 Claude 配置。", "neutral")
                 return
@@ -536,28 +714,73 @@ class SettingsDialog:
                 notes.append("未能合并 .claude.json 的引导标记（已跳过）")
             notes.append("请重开 Claude Code 会话以确认生效")
             self.show_form_message("；".join(notes), "ok")
+            succeeded = True
+        except Exception:
+            # A packaged build has no console for Tk's default traceback; log
+            # the detail and surface a generic red card message (no exc text,
+            # which could carry path or secret fragments).
+            logger.exception("Unexpected Claude config write failure")
+            self.show_form_message(
+                "写入 Claude 配置时发生意外错误，详情见日志。", "error")
         finally:
             app._applying_claude = False
+            panel.set_write_busy(False)
+            if succeeded:
+                # The key field was cleared programmatically (no KeyRelease),
+                # and the vault now holds the key, so this resolves to the
+                # just-written credentials; signature dedup makes it a no-op
+                # when the catalogue is already current.
+                app.try_auto_fetch_models(provider, skip_duplicate=True)
+
+    def _cancel_callbacks(self) -> None:
+        window = self.window
+        if self.claude_panel is not None:
+            self.claude_panel.cancel_pending_fetch()
+        if window is not None and window.winfo_exists():
+            for after_id in (
+                self._fit_after, self._present_after, self._anchor_after,
+                self._rebuild_after,
+            ):
+                if after_id is not None:
+                    try:
+                        window.after_cancel(after_id)
+                    except tk.TclError:
+                        pass
+        self._fit_after = None
+        self._present_after = None
+        self._anchor_after = None
+        self._rebuild_after = None
+        self._rebuild_pending = False
+
+    def _clear_secrets(self) -> None:
+        for key in ("secret_key", "api_key"):
+            field = self.entries.get(key)
+            if field is not None and field.winfo_exists():
+                field.delete(0, "end")
 
     def close(self, *, commit: bool = False) -> None:
+        """Hide for a fast later open; disposal is reserved for failure/shutdown."""
+        if self._closing:
+            return
+        self._closing = True
         original = self.original_mode
         original_material = self.original_material
         self.original_mode = None
         self.original_material = None
         app = self.app
-        app.settings_window = None
-        app.settings_body = None
-        app._settings_dialog = None
+        if app._settings_dialog is self:
+            app.settings_window = None
+            app.settings_body = None
+        self._cancel_callbacks()
+        self._clear_secrets()
         window = self.window
         if window is not None and window.winfo_exists():
-            if self._rebuild_after is not None:
-                window.after_cancel(self._rebuild_after)
-            window._geometry.flush()
-            window.destroy()
-        self.window = None
-        self.body = None
-        self._rebuild_after = None
-        self._rebuild_pending = False
+            with tcl_events_deferred():
+                geometry = getattr(window, "_geometry", None)
+                if geometry is not None:
+                    geometry.flush()
+                window.withdraw()
+        self._presented = False
         if not commit:
             if original is not None:
                 app._set_theme(original)
@@ -565,6 +788,31 @@ class SettingsDialog:
                 app._set_material(original_material)
         if app.popup is not None and app.popup.winfo_viewable():
             app.popup.focus_set()
+
+    def dispose(self) -> None:
+        """Release the retained native window and all callback references."""
+        self._closing = True
+        self._cancel_callbacks()
+        self._clear_secrets()
+        app = self.app
+        if app._settings_dialog is self:
+            app.settings_window = None
+            app.settings_body = None
+            app._settings_dialog = None
+        window = self.window
+        if window is not None and window.winfo_exists():
+            with tcl_events_deferred():
+                geometry = getattr(window, "_geometry", None)
+                if geometry is not None:
+                    geometry.flush()
+                window.destroy()
+        self.window = None
+        self.body = None
+        self.form_frame = None
+        self.claude_panel = None
+        self.entries = {}
+        self.errors = {}
+        self._presented = False
 
 
 class ClaudePanel:
@@ -577,14 +825,21 @@ class ClaudePanel:
     "unset/default" rows mean "do not touch that env key".
     """
 
-    def __init__(self, dialog: SettingsDialog, frame: ttk.Frame, seed: dict[str, str]):
+    def __init__(self, dialog: SettingsDialog, frame: ttk.Frame, seed: dict[str, str],
+                 *, options=None):
         self.dialog = dialog
         self.app = dialog.app
         self.frame = frame
         # Mirrored into dialog.entries so the shared field-tagged validation
         # can focus a Claude entry exactly like a credential entry.
         self.entries: dict[str, ttk.Entry] = {}
-        self.options = self.app.effective_claude_options(dialog.provider)
+        self.labels: dict[str, ttk.Label] = {}
+        # Debounce handle for the KeyRelease/FocusOut-driven catalogue fetch.
+        self._fetch_after: str | None = None
+        self.options = (
+            options if options is not None
+            else self.app.effective_claude_options(dialog.provider)
+        )
         spec = get_provider(dialog.provider)
         scale = dpi_scale(dialog.window)
         known = [option.id for option in self.options]
@@ -607,7 +862,10 @@ class ClaudePanel:
             frame, text=status_text, style=_STATUS_STYLE.get(status_tone, "CardMuted.TLabel"),
             wraplength=round(250 * scale),
         )
-        self.status_label.grid(row=2, column=1, sticky="w", padx=(10, 0))
+        # ew lets the label track the weighted cell; the ScrollableBody wrap
+        # walk then caps its wrap length to the real allocation (the refresh
+        # button owns column 0), so a long blocked-reason status never clips.
+        self.status_label.grid(row=2, column=1, sticky="ew", padx=(10, 0))
         frame.columnconfigure(1, weight=1)
 
         # --- Main model -----------------------------------------------------
@@ -617,11 +875,10 @@ class ClaudePanel:
         self.model_combo = ttk.Combobox(
             frame, state="readonly", values=model_values,
         )
-        model_index = (
-            known.index(seed["claude_model"])
-            if seed["claude_model"] in known else len(known)
+        self._select_combo(
+            self.model_combo, known, seed["claude_model"],
+            seed["claude_custom"], leading=0, fallback=len(known),
         )
-        self.model_combo.current(model_index)
         self.model_combo.grid(row=4, column=0, columnspan=2, sticky="ew")
         self._entry(
             5, "claude_model",
@@ -637,13 +894,10 @@ class ClaudePanel:
         self.auto_combo = ttk.Combobox(
             frame, state="readonly", values=auto_values,
         )
-        if seed["claude_auto_custom"]:
-            auto_index = len(auto_values) - 1
-        elif seed["claude_auto_model"] in known:
-            auto_index = 1 + known.index(seed["claude_auto_model"])
-        else:
-            auto_index = 0
-        self.auto_combo.current(auto_index)
+        self._select_combo(
+            self.auto_combo, known, seed["claude_auto_model"],
+            seed["claude_auto_custom"], leading=1, fallback=0,
+        )
         self.auto_combo.grid(row=9, column=0, columnspan=2, sticky="ew")
         ttk.Label(
             frame,
@@ -665,13 +919,10 @@ class ClaudePanel:
         self.subagent_combo = ttk.Combobox(
             frame, state="readonly", values=subagent_values,
         )
-        if seed["claude_subagent_custom"]:
-            subagent_index = len(subagent_values) - 1
-        elif seed["claude_subagent_model"] in known:
-            subagent_index = 1 + known.index(seed["claude_subagent_model"])
-        else:
-            subagent_index = 0
-        self.subagent_combo.current(subagent_index)
+        self._select_combo(
+            self.subagent_combo, known, seed["claude_subagent_model"],
+            seed["claude_subagent_custom"], leading=1, fallback=0,
+        )
         self.subagent_combo.grid(row=15, column=0, columnspan=2, sticky="ew")
         self._entry(
             16, "claude_subagent_model",
@@ -691,6 +942,13 @@ class ClaudePanel:
             else f"推理 API Key（必填{spec.inference_key_hint}）"
         )
         self._entry(22, "api_key", key_title, "", secret=True)
+        # The live catalogue becomes available as soon as a key and a usable
+        # URL exist; debounce both fields so ordinary typing fires one fetch.
+        for field_key in ("base_url", "api_key"):
+            self.entries[field_key].bind(
+                "<KeyRelease>", self._schedule_fetch_check, add="+")
+            self.entries[field_key].bind(
+                "<FocusOut>", self._schedule_fetch_check, add="+")
 
         if not spec.claude_base_url_verified:
             ttk.Label(
@@ -703,15 +961,80 @@ class ClaudePanel:
             apply_row = 25
         # No key equivalent: an accidental Enter must never trigger an
         # external config change, so the write button is click-only.
-        ttk.Button(
+        self.apply_button = ttk.Button(
             frame, text="写入 Claude 配置", style="Primary.TButton",
             command=dialog.apply_claude,
-        ).grid(row=apply_row, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        )
+        self.apply_button.grid(
+            row=apply_row, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        # Pinned in-card result feedback: the form-level label below the
+        # scrollable body can sit below the fold once geometry is capped.
+        self.write_status_label = ttk.Label(
+            frame, text="", style="CardMuted.TLabel",
+            wraplength=round(340 * scale), justify="left",
+        )
+        self.write_status_label.grid(
+            row=apply_row + 1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+    @staticmethod
+    def _select_combo(combo: ttk.Combobox, known: list[str], selected: str,
+                      custom: str, *, leading: int, fallback: int) -> None:
+        if custom:
+            combo.current(len(known) + leading)
+        elif selected in known:
+            combo.current(leading + known.index(selected))
+        else:
+            combo.current(fallback)
+
+    @staticmethod
+    def _set_entry(field: ttk.Entry, value: str) -> None:
+        field.delete(0, "end")
+        field.insert(0, value)
+
+    def reset(self, seed: dict[str, str], *, options) -> None:
+        """Apply authoritative values while retaining widgets and their images."""
+        self.cancel_pending_fetch()
+        self.options = options
+        known = [option.id for option in options]
+        labels = [option.label for option in options]
+        self.model_combo.configure(values=labels + [CUSTOM_MARKER])
+        self.auto_combo.configure(values=[AUTO_UNSET] + labels + [CUSTOM_MARKER])
+        self.subagent_combo.configure(
+            values=[SUBAGENT_DEFAULT] + labels + [CUSTOM_MARKER])
+        for combo, selected, custom, leading, fallback in (
+            (self.model_combo, seed["claude_model"], seed["claude_custom"], 0, len(known)),
+            (self.auto_combo, seed["claude_auto_model"], seed["claude_auto_custom"], 1, 0),
+            (self.subagent_combo, seed["claude_subagent_model"],
+             seed["claude_subagent_custom"], 1, 0),
+        ):
+            self._select_combo(
+                combo, known, selected, custom, leading=leading, fallback=fallback,
+            )
+        for key, value in (
+            ("claude_model", seed["claude_custom"]),
+            ("claude_auto_model", seed["claude_auto_custom"]),
+            ("claude_subagent_model", seed["claude_subagent_custom"]),
+            ("base_url", seed["claude_base_url"]),
+            ("api_key", ""),
+        ):
+            self._set_entry(self.entries[key], value)
+        spec = get_provider(self.dialog.provider)
+        key_title = (
+            "推理 API Key（已保存，留空保持不变）"
+            if self.app.stored_inference_key(self.dialog.provider)
+            else f"推理 API Key（必填{spec.inference_key_hint}）"
+        )
+        self.labels["api_key"].configure(text=key_title)
+        status_text, status_tone = self.app.catalog_status_for(self.dialog.provider)
+        self.set_status(status_text, status_tone)
+        self.set_write_status("")
+        self.set_write_busy(False)
 
     def _entry(self, row: int, key: str, label: str, value: str,
                *, secret: bool = False) -> ttk.Entry:
-        ttk.Label(self.frame, text=label, style="Card.TLabel").grid(
-            row=row, column=0, columnspan=2, sticky="w", pady=(6, 5))
+        label_widget = ttk.Label(self.frame, text=label, style="Card.TLabel")
+        label_widget.grid(row=row, column=0, columnspan=2, sticky="w", pady=(6, 5))
+        self.labels[key] = label_widget
         field = ttk.Entry(self.frame, width=28, show="•" if secret else "")
         field.insert(0, value)
         field.grid(row=row + 1, column=0, columnspan=2, sticky="ew")
@@ -809,3 +1132,43 @@ class ClaudePanel:
     def set_status(self, text: str, tone: str) -> None:
         self.status_label.configure(
             text=text, style=_STATUS_STYLE.get(tone, "CardMuted.TLabel"))
+
+    def set_write_status(self, text: str, tone: str = "neutral") -> None:
+        """Result of the Claude write, pinned inside the card and always visible."""
+        self.write_status_label.configure(
+            text=text, style=_STATUS_STYLE.get(tone, "CardMuted.TLabel"))
+
+    def set_write_busy(self, busy: bool) -> None:
+        """Immediate press feedback; the disabled state blocks double clicks."""
+        if busy:
+            self.apply_button.configure(text="写入中…", state=["disabled"])
+        else:
+            self.apply_button.configure(text="写入 Claude 配置", state=["!disabled"])
+
+    # ------------------------------------------------- automatic catalogue pull
+    def _schedule_fetch_check(self, event=None) -> None:
+        """Coalesce field edits into one auto-fetch attempt 400ms after typing."""
+        dialog = self.dialog
+        if (dialog.claude_panel is not self or dialog._closing
+                or dialog._rebuild_pending or dialog.window is None):
+            return
+        self.cancel_pending_fetch()
+        self._fetch_after = dialog.window.after(400, self._flush_fetch_check)
+
+    def _flush_fetch_check(self) -> None:
+        self._fetch_after = None
+        dialog = self.dialog
+        # The panel may have been replaced or the dialog closed while waiting.
+        if (dialog.claude_panel is not self or dialog._closing
+                or dialog._rebuild_pending or dialog.window is None
+                or not dialog.window.winfo_exists()):
+            return
+        self.app.try_auto_fetch_models(dialog.provider, skip_duplicate=True)
+
+    def cancel_pending_fetch(self) -> None:
+        if self._fetch_after is not None and self.dialog.window is not None:
+            try:
+                self.dialog.window.after_cancel(self._fetch_after)
+            except tk.TclError:
+                pass
+        self._fetch_after = None

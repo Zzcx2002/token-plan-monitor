@@ -1,9 +1,11 @@
 """Provider switching in the Windows settings dialog, without cloud or tray."""
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 from tkinter import ttk
 
 from gui_preview import ARTIFACTS, FakeMonitor
+from token_plan_monitor.model_catalog import CATALOG_NEEDS_KEY
 from token_plan_monitor.models import Credentials, Settings
 from token_plan_monitor.providers import get_provider
 from token_plan_monitor.storage import Storage
@@ -56,6 +58,12 @@ def main():
         storage.save_credentials(Credentials("bailian-ak", "bailian-sk"), "bailian")
         storage.save_settings(Settings(provider="volcengine", region="cn-beijing"))
         app = MonitorUI(monitor, storage)
+        # No inference key is ever provisioned in this smoke, so every auto
+        # fetch must stop at the blocked-reason gate: record the seam instead
+        # of letting a real worker thread (and network traffic) start.
+        fetch_starts = []
+        app._start_model_fetch = lambda provider, url, key: fetch_starts.append(
+            (provider, url, key))
         try:
             app._create_popup()
             app._create_desktop_widget()
@@ -108,6 +116,8 @@ def main():
             assert dialog.provider == "bailian"
             app._settings_entries["access_key"].delete(0, "end")
             app._settings_entries["access_key"].insert(0, "bailian-ak-new")
+            saved_window = app.settings_window
+            saved_panel = dialog.claude_panel
             keyring_writes = storage._keyring.writes
             button(app.settings_window, "保存设置").invoke()
             pump(app)
@@ -128,18 +138,66 @@ def main():
             volc = storage.load_credentials("volcengine")
             assert volc.access_key_id == "volc-ak" and volc.secret_access_key == "volc-sk"
 
+            # The post-save auto-fetch runs before the window hides; with no
+            # inference key vaulted it must explain the blockage on the card
+            # status label instead of silently keeping the static catalogue.
+            assert fetch_starts == []
+            assert app._catalog_status["bailian"] == (CATALOG_NEEDS_KEY, "warning")
+            assert saved_panel.status_label.cget("text") == CATALOG_NEEDS_KEY
+
             # Switching back surfaces the previous provider's pair again.
             app.open_settings()
             pump(app)
             dialog = app._settings_dialog
+            assert app.settings_window is saved_window
+            assert dialog.claude_panel is saved_panel
+
+            # Same-provider cancellation retains the rendered shell but none of
+            # the abandoned values or secrets. An external settings change is
+            # still read afresh on the next show.
+            for key, value in (
+                ("access_key", "cancel-ak"),
+                ("secret_key", "cancel-secret"),
+                ("region", "cancel-region"),
+                ("api_key", "cancel-inference"),
+                ("base_url", "https://cancel.invalid"),
+            ):
+                app._settings_entries[key].delete(0, "end")
+                app._settings_entries[key].insert(0, value)
+            button(app.settings_window, "取消").invoke()
+            pump(app)
+            assert app.settings_window is None
+            assert saved_window.winfo_exists() and not saved_window.winfo_viewable()
+            assert dialog.entries["secret_key"].get() == ""
+            assert dialog.entries["api_key"].get() == ""
+            storage.save_settings(replace(storage.load_settings(), refresh_minutes=45))
+
+            app.open_settings()
+            pump(app)
+            dialog = app._settings_dialog
+            assert app.settings_window is saved_window
+            assert dialog.claude_panel is saved_panel
+            assert dialog.entries["access_key"].get() == "bailian-ak-new"
+            assert dialog.entries["region"].get() == "cn-beijing"
+            assert dialog.entries["refresh"].get() == "45"
+            assert dialog.entries["secret_key"].get() == ""
+            assert dialog.entries["api_key"].get() == ""
+            assert dialog.entries["base_url"].get() != "https://cancel.invalid"
+            assert len(monitor.updates) == 1
+
+            # Switching back surfaces the previous provider's pair again.
             dialog.provider_var.set(get_provider("volcengine").label)
             dialog._schedule_rebuild()
             pump(app)
             assert dialog.provider == "volcengine"
             assert app._settings_entries["access_key"].get() == "volc-ak"
             assert app._settings_entries["region"].get() == "cn-beijing"
+            # No inference key ever reached the vault, so the whole run stayed
+            # on blocked-reason statuses and never spawned a catalogue fetch.
+            assert fetch_starts == []
             print("PASS: provider switch rebuild, region fallback, alert carry, "
-                  "credential isolation, cancel, save reuse, vault separation")
+                  "credential isolation, cancel, save reuse, vault separation, "
+                  "post-save blocked catalogue status without network")
         finally:
             app.shutdown()
 
