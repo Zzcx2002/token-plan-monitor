@@ -1455,9 +1455,17 @@ class MonitorUI:
         updated = ("上次成功：" if self.state.status == "stale" else "更新于：") + format_datetime(snapshot.queried_at) if snapshot else "尚无成功查询记录"
         self.card_updated.setStringValue_(updated)
         refreshing = self.state.is_refreshing
-        self.card_refresh_button.setEnabled_(not refreshing)
-        self.card_refresh_button.setAccessibilityLabel_("正在刷新" if refreshing else "立即刷新")
-        self.card_refresh_button.setToolTip_("正在刷新…" if refreshing else "立即刷新")
+        connect = self.state.status == "unconfigured"
+        command = "check-credentials" if connect else "refresh"
+        title = "连接账号" if connect else "正在刷新" if refreshing else "立即刷新"
+        if self.card_refresh_button.identifier() != command:
+            self.card_refresh_button.setIdentifier_(command)
+            symbol = "person.crop.circle.badge.plus" if connect else "arrow.clockwise"
+            self.card_refresh_button.setImage_(A.NSImage.imageWithSystemSymbolName_accessibilityDescription_(
+                symbol, title))
+        self.card_refresh_button.setEnabled_(connect or not refreshing)
+        self.card_refresh_button.setAccessibilityLabel_(title)
+        self.card_refresh_button.setToolTip_(title + "…" if refreshing and not connect else title)
         summary = text + "\n" + " · ".join(f"{WINDOW_LABELS[k]}剩余 {compact_remaining(self.state, k)}" for k in WINDOW_ORDER)
         self.card_view.setToolTip_(summary + "\n" + updated + "\n拖动移动；边缘或角落调整大小")
         self.layout_card()

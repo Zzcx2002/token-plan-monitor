@@ -497,7 +497,7 @@ def assert_card_refresh_layout(ui):
     assert ui.card_view._edges_at(corner) == frozenset({"right", "bottom"})
     for label in (ui.card_updated,):
         assert label.frame().origin.x + label.frame().size.width <= frame.origin.x
-    expected_tip = "正在刷新…" if not button.isEnabled() else "立即刷新"
+    expected_tip = "连接账号" if ui.state.status == "unconfigured" else ("正在刷新…" if not button.isEnabled() else "立即刷新")
     assert button.toolTip() == expected_tip
     assert button.view_stringForToolTip_point_userData_(
         button, 0, F.NSMakePoint(0, 0), None,
@@ -738,7 +738,17 @@ def main(argv=None):
                     assert_details_width(ui)
                     assert_card_refresh_layout(ui)
                     assert ui.card_refresh_button.isEnabled() == (name != "refreshing")
-                    assert ui.card_refresh_button.accessibilityLabel() == ("正在刷新" if name == "refreshing" else "立即刷新")
+                    card_action = ("连接账号" if state.status == "unconfigured" else
+                                   "正在刷新" if name == "refreshing" else "立即刷新")
+                    assert ui.card_refresh_button.accessibilityLabel() == card_action
+                    if name == "unconfigured":
+                        refreshes = ui.monitor.refresh_count
+                        ui.card_refresh_button.performClick_(None)
+                        assert ui.settings.isVisible()
+                        ui.settings.orderOut_(None)
+                        ui.card_refresh_button.keyDown_(SimpleNamespace(charactersIgnoringModifiers=lambda: " "))
+                        assert ui.settings.isVisible() and ui.monitor.refresh_count == refreshes
+                        ui.settings.orderOut_(None)
                     if name == "error":
                         assert ui.primary_button.title() == "检查凭据"
                     ui.details.setContentSize_(F.NSMakeSize(480, 338))
