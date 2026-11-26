@@ -503,7 +503,7 @@ def test_successful_refresh_appends_history_for_the_active_account(tmp_path):
 
 def test_history_append_failure_never_fails_the_refresh(tmp_path):
     class BrokenHistoryStorage(Storage):
-        def append_history(self, entry, provider):
+        def append_history(self, entry, provider, *, region):
             raise CacheError("disk on fire")
 
     keyring = FakeKeyring()
@@ -673,7 +673,7 @@ def test_history_rows_ride_the_state_filter_account_and_survive_failure(tmp_path
         wait_for(lambda: monitor.get_state().status == "stale")
         assert monitor.get_state().history == rows
         monitor.update_configuration(Settings(), Credentials("AKLT-b", "secret"))
-        assert monitor.get_state().history == ()
+        assert {row.account for row in monitor.get_state().history} == {other}
     finally:
         monitor.stop()
 
@@ -739,10 +739,10 @@ def test_history_read_failure_blanks_rows_but_not_the_refresh(tmp_path):
     class BrokenReadStorage(Storage):
         # The refresh's single read now happens inside append_history; the
         # fallback load_history must fail too for the rows to blank out.
-        def append_history(self, entry, provider):
+        def append_history(self, entry, provider, *, region):
             raise CacheError("disk on fire")
 
-        def load_history(self, provider, account=None, limit=2000):
+        def load_history(self, provider, account=None, limit=2000, *, region):
             raise CacheError("disk on fire")
 
     storage = BrokenReadStorage(tmp_path, FakeKeyring())
@@ -765,7 +765,7 @@ def test_history_read_failure_blanks_rows_but_not_the_refresh(tmp_path):
 
 def test_history_write_failure_still_shows_rows_via_the_read_fallback(tmp_path):
     class WriteOnlyFailureStorage(Storage):
-        def append_history(self, entry, provider):
+        def append_history(self, entry, provider, *, region):
             raise CacheError("disk full")
 
     storage = WriteOnlyFailureStorage(tmp_path, FakeKeyring())
@@ -862,3 +862,40 @@ def test_switch_during_snapshot_write_then_restart_offline(tmp_path, monkeypatch
         assert restarted.get_state().snapshot is None
     finally:
         restarted.stop()
+
+
+def test_region_switch_and_manual_legacy_assignment_are_isolated(tmp_path):
+    from dataclasses import replace
+
+    storage = configured_storage(tmp_path)
+    sample = replace(snapshot(), queried_at=datetime.now(UTC))
+    entry = entry_from_snapshot(sample, SOURCE.account)
+    legacy = tmp_path / "history" / "volcengine.jsonl"
+    legacy.parent.mkdir()
+    legacy.write_text(entry.to_line() + "\n")
+    raw = legacy.read_bytes()
+    storage.save_snapshot(sample, SOURCE)
+    storage.append_history(entry, SOURCE.provider)
+
+    class Offline:
+        def query(self):
+            raise NetworkError("offline")
+
+    monitor = UsageMonitor(storage, client_factory=lambda *_: Offline())
+    try:
+        monitor.start()
+        wait_for(lambda: monitor.get_state().status == "stale")
+        assert monitor.get_state().unassigned_history == 1
+        monitor.update_configuration(Settings(region="cn-shanghai"), Credentials("AKLT-a", "secret"))
+        wait_for(lambda: monitor.get_state().status == "error")
+        state = monitor.get_state()
+        assert state.snapshot is None and not state.history and not state.trends
+        monitor.assign_legacy_history("cn-shanghai", state.revision)
+        assert monitor.get_state().history == (entry,)
+        assert monitor.get_state().unassigned_history == 0
+        storage.assign_legacy_history(SOURCE, "cn-shanghai")
+        assert storage.load_history(SOURCE.provider, SOURCE.account, region="cn-shanghai") == [entry]
+        assert storage.unassigned_history_count(SOURCE) == 0
+        assert legacy.read_bytes() == raw
+    finally:
+        monitor.stop()

@@ -41,6 +41,7 @@ class UsageMonitor:
         self.notifier = notifier
         # Per-window alert arming, in memory only (see alerts.py).
         self._alert_armed: dict[str, bool] = {}
+        self._source_alerts: dict[QuotaSource, dict[str, bool]] = {}
 
         self._lock = threading.RLock()
         self._wake = threading.Event()
@@ -85,16 +86,10 @@ class UsageMonitor:
             # the history window immediately instead of waiting for the first
             # refresh. One bounded read, consistent with the settings/snapshot/
             # keychain reads start() already does on this thread.
-            history: tuple = ()
+            history, unassigned = (), 0
             if self._credentials is not None:
-                try:
-                    history = tuple(self.storage.load_history(
-                        provider,
-                        account_fingerprint(self._credentials.access_key_id),
-                        limit=HISTORY_MAX_ROWS,
-                    ))
-                except CacheError as exc:
-                    logger.warning("Could not seed history at startup: %s", exc.message)
+                source = QuotaSource.for_credentials(self._settings, self._credentials)
+                history, unassigned = self._source_history(source)
             self._state = MonitorViewState(
                 status=status,
                 snapshot=snapshot,
@@ -103,7 +98,8 @@ class UsageMonitor:
                 revision=0,
                 provider=provider,
                 alert_threshold_percent=self._settings.alert.threshold_percent,
-                history=history,
+                history=history, region=self._settings.region, unassigned_history=unassigned,
+                trends=trends_for_snapshot(history, snapshot, self.clock()) if snapshot else (),
             )
             self._pending = self._credentials is not None
             if self._pending:
@@ -114,6 +110,31 @@ class UsageMonitor:
                 daemon=True,
             )
             self._thread.start()
+        self._publish()
+
+    def _source_history(self, source):
+        try:
+            history = self.storage.load_history(source.provider, source.account, limit=HISTORY_MAX_ROWS,
+                                                region=source.region)
+            return tuple(history), self.storage.unassigned_history_count(source)
+        except CacheError as exc:
+            logger.warning("Could not read source history: %s", exc.message)
+            return (), 0
+
+    def assign_legacy_history(self, region: str, revision: int) -> None:
+        with self._lock:
+            if self._credentials is None or revision != self._state.revision:
+                raise ConfigurationError("当前账号已切换，请重新选择")
+            source = QuotaSource.for_credentials(self._settings, self._credentials)
+            self.storage.assign_legacy_history(source, region)
+            history, count = self._source_history(source)
+            snapshot = self._state.snapshot
+            self._state = replace(self._state, history=history, unassigned_history=count,
+                                  trends=trends_for_snapshot(history, snapshot, self.clock()) if snapshot else (),
+                                  revision=revision + 1)
+            if self._in_flight:
+                self._pending = True
+                self._wake.set()
         self._publish()
 
     def request_refresh(self) -> None:
@@ -153,11 +174,15 @@ class UsageMonitor:
                 # Region changes the endpoint the data comes from, so it
                 # invalidates in-flight results just like an account switch.
                 source_changed = account_changed or settings.region != self._settings.region
+                if source_changed and self._credentials is not None:
+                    previous_source = QuotaSource.for_credentials(self._settings, self._credentials)
+                    self._source_alerts[previous_source] = self._alert_armed
                 self._settings = settings
                 self._credentials = credentials
                 if source_changed:
                     source = QuotaSource.for_credentials(settings, credentials)
                     snapshot = self.storage.load_snapshot(source)
+                    history, count = self._source_history(source)
                     self._state = replace(
                         self._state,
                         status="ok" if snapshot is not None else "empty",
@@ -168,13 +193,13 @@ class UsageMonitor:
                         revision=self._state.revision + 1,
                         provider=settings.provider,
                         alert_threshold_percent=settings.alert.threshold_percent,
-                        trends=() if account_changed else self._state.trends,
-                        history=() if account_changed else self._state.history,
+                        region=settings.region, unassigned_history=count,
+                        trends=trends_for_snapshot(history, snapshot, self.clock()) if snapshot else (),
+                        history=history,
                     )
                     self._pending = True
                     self._next_run = None
-                    if account_changed:
-                        self._alert_armed = {}
+                    self._alert_armed = self._source_alerts.pop(source, {})
                     self._wake.set()
                 else:
                     # Only refresh interval / alert choices changed: the query
@@ -313,7 +338,7 @@ class UsageMonitor:
                         # no longer read twice back-to-back.
                         entries = self.storage.append_history(
                             entry_from_snapshot(snapshot, account),
-                            settings.provider,
+                            settings.provider, region=settings.region,
                         )
                     except CacheError as exc:
                         logger.warning("Could not append history: %s", exc.message)
@@ -322,7 +347,7 @@ class UsageMonitor:
                         # work, so history survives a write-only fault.
                         try:
                             entries = self.storage.load_history(
-                                settings.provider, account, limit=HISTORY_MAX_ROWS
+                                settings.provider, account, limit=HISTORY_MAX_ROWS, region=settings.region
                             )
                         except CacheError as exc:
                             logger.warning("Could not load history for trends: %s", exc.message)
@@ -357,7 +382,8 @@ class UsageMonitor:
                         error=cache_warning,
                         last_attempt_at=self.clock(),
                         revision=revision,
-                        provider=settings.provider,
+                        provider=settings.provider, region=settings.region,
+                        unassigned_history=self._state.unassigned_history,
                         alert_threshold_percent=current_settings.alert.threshold_percent,
                         trends=trends,
                         history=history_rows,
@@ -389,7 +415,8 @@ class UsageMonitor:
                         error_category=error.category,
                         last_attempt_at=self.clock(),
                         revision=revision,
-                        provider=settings.provider,
+                        provider=settings.provider, region=settings.region,
+                        unassigned_history=self._state.unassigned_history,
                         alert_threshold_percent=current_settings.alert.threshold_percent,
                         # Like the retained snapshot, trends and history rows
                         # survive a failed refresh instead of blanking out.

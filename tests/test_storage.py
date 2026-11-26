@@ -419,7 +419,7 @@ def test_history_append_and_load_round_trip(tmp_path):
     storage = Storage(tmp_path, FakeKeyring())
     entry = history_entry()
     storage.append_history(entry, "volcengine")
-    assert storage.history_path("volcengine") == tmp_path / "history" / "volcengine.jsonl"
+    assert storage.history_path("volcengine") == tmp_path / "history" / "volcengine.cn-beijing.jsonl"
     assert storage.load_history("volcengine") == [entry]
     assert storage.load_history("bailian") == []
     with pytest.raises(ConfigurationError):

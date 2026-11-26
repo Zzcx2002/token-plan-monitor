@@ -897,6 +897,7 @@ class MonitorUI:
                     "cancel": lambda: self.settings.orderOut_(None),
                     "close-details": lambda: self.details.orderOut_(None),
                     "history": self.show_history,
+                    "assign-history": self.assign_history_region,
                     "history-range": lambda: self.set_history_range(
                         RANGE_KEYS[self.history_range_control.selectedSegment()]),
                     "close-history": lambda: self.history.orderOut_(None),
@@ -1163,6 +1164,7 @@ class MonitorUI:
         self.history_header.addSubview_(self.history_range_control)
         self.history_refresh_button = button(
             self.history_footer, "立即刷新", 18, 12, 124, self.actions, "refresh", key="\r")
+        self.history_assign_button = button(self.history_footer, "", 150, 12, 220, self.actions, "assign-history")
         self.history_close_button = button(
             self.history_footer, "关闭", HISTORY_WIDTH - 126, 12, 108,
             self.actions, "close-history", key="\x1b")
@@ -1189,12 +1191,39 @@ class MonitorUI:
         if not hasattr(self, "history_root"):
             self.create_history_shell()
         self.history.setTitle_(f"{self.state.provider_label} · {HISTORY_WINDOW_TITLE}")
-        self.history_context.setStringValue_(history_context_line(self.state))
+        self.history_context.setStringValue_(f"{history_context_line(self.state)} · {self.state.region}")
+        count = self.state.unassigned_history
+        self.history_assign_button.setTitle_(f"为 {count} 条旧记录指定地域…")
+        self.history_assign_button.setHidden_(not count)
         self.history_refresh_button.setTitle_(
             "正在刷新…" if self.state.is_refreshing else "立即刷新")
         self.history_refresh_button.setEnabled_(not self.state.is_refreshing)
         self.layout_history()
         self.render_history_document()
+
+    def assign_history_region(self):
+        state = self.state
+        box = A.NSAlert.alloc().init()
+        box.setMessageText_("旧历史属于哪个地域？")
+        box.setInformativeText_(f"{state.provider_label}当前账号的 {state.unassigned_history} 条旧记录将一起归入所选地域。")
+        choices = PROVIDER_REGIONS[state.provider]
+        if choices:
+            field = A.NSPopUpButton.alloc().initWithFrame_pullsDown_(rect(0, 0, 240, 28), False)
+            field.addItemsWithTitles_(choices)
+            field.selectItemWithTitle_(state.region)
+        else:
+            field = A.NSTextField.alloc().initWithFrame_(rect(0, 0, 240, 24))
+            field.setStringValue_(state.region)
+        field.setAccessibilityLabel_("旧记录所属地域")
+        box.setAccessoryView_(field)
+        box.addButtonWithTitle_("取消")
+        box.addButtonWithTitle_("确认归入")
+        if box.runModal() == A.NSAlertSecondButtonReturn:
+            region = field.titleOfSelectedItem() if choices else field.stringValue()
+            try:
+                self.monitor.assign_legacy_history(str(region), state.revision)
+            except QueryError as exc:
+                alert(exc.message)
 
     def set_history_range(self, range_key):
         if range_key not in RANGE_KEYS:

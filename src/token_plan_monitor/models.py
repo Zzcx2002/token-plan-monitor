@@ -574,6 +574,8 @@ class MonitorViewState:
     #: refreshes, cleared on account/provider change. Both shells feed this
     #: into the shared history_chart geometry builder.
     history: tuple[HistoryEntry, ...] = ()
+    region: str = DEFAULT_REGION
+    unassigned_history: int = 0
 
     @property
     def provider_label(self) -> str:

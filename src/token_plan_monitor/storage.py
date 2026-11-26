@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -25,6 +26,8 @@ from .history import (
 
 from .models import (
     DEFAULT_PROVIDER,
+    DEFAULT_REGION,
+    validate_region,
     MODEL_ID_PATTERN,
     SCHEMA_VERSION,
     CacheError,
@@ -138,11 +141,45 @@ class Storage:
         except OSError as exc:
             raise CacheError("无法清除旧用量缓存") from exc
 
-    def history_path(self, provider: str) -> Path:
-        get_provider(provider)  # reject an unknown id before touching the file
-        return self.data_dir / "history" / f"{provider}.jsonl"
+    def history_path(self, provider: str, region: str = DEFAULT_REGION) -> Path:
+        get_provider(provider)
+        region = validate_region(provider, region)
+        return self.data_dir / "history" / f"{provider}.{region}.jsonl"
 
-    def append_history(self, entry: HistoryEntry, provider: str) -> list[HistoryEntry]:
+    def _legacy_rows(self, source: QuotaSource) -> list[HistoryEntry]:
+        path = self.data_dir / "history" / f"{source.provider}.jsonl"
+        try:
+            return prune(self._read_history(path, source.account), datetime.now(UTC))
+        except OSError as exc:
+            raise CacheError("无法读取旧版用量历史") from exc
+
+    def _assignment_path(self, source: QuotaSource) -> Path:
+        return self.data_dir / "history" / "assignments" / source.provider / f"{source.account}.json"
+
+    def unassigned_history_count(self, source: QuotaSource) -> int:
+        if self._read_json(self._assignment_path(source)):
+            return 0
+        return len(self._legacy_rows(source))
+
+    def assign_legacy_history(self, source: QuotaSource, region: str) -> None:
+        region = validate_region(source.provider, region)
+        path = self._assignment_path(source)
+        saved = self._read_json(path)
+        if saved is not None:
+            if saved.get("region") != region:
+                raise ConfigurationError("这批旧记录已归入其他地域")
+            return
+        if self._legacy_rows(source):
+            self._write_json(path, {"region": region})
+
+    def _include_legacy(self, entries, source):
+        assignment = self._read_json(self._assignment_path(source)) or {}
+        if assignment.get("region") != source.region:
+            return entries
+        combined = dict.fromkeys((*self._legacy_rows(source), *entries))
+        return sorted(combined, key=lambda row: row.queried_at)
+
+    def append_history(self, entry: HistoryEntry, provider: str, *, region: str = DEFAULT_REGION) -> list[HistoryEntry]:
         """Append one observation and return the retained rows (all accounts).
 
         Dedupes unchanged values and enforces BOTH retention caps on every
@@ -154,7 +191,7 @@ class Storage:
         never as a refresh failure. Switching provider or account never
         clears it.
         """
-        path = self.history_path(provider)
+        path = self.history_path(provider, region)
         try:
             entries = self._read_history(path)
             last = next(
@@ -180,23 +217,25 @@ class Storage:
             kept = prune(entries, entry.queried_at, max_rows=HISTORY_MAX_ROWS)
             if len(kept) != len(entries):
                 self._write_history(path, kept)
-            return kept
+            return self._include_legacy(kept, QuotaSource(provider, region, entry.account))
         except OSError as exc:
             raise CacheError(f"无法写入用量历史：{path.name}") from exc
 
     def load_history(
-        self, provider: str, account: str | None = None, limit: int = 2000
+        self, provider: str, account: str | None = None, limit: int = 2000, *, region: str = DEFAULT_REGION
     ) -> list[HistoryEntry]:
         """Newest observations for a provider, optionally one account only.
 
         Malformed rows are skipped, never fatal: a torn tail from a crash must
         not hide the healthy rows before it.
         """
-        path = self.history_path(provider)
+        path = self.history_path(provider, region)
         try:
             entries = self._read_history(path, account)
         except OSError as exc:
             raise CacheError(f"无法读取用量历史：{path.name}") from exc
+        if account:
+            entries = self._include_legacy(entries, QuotaSource(provider, region, account))
         return entries[-limit:] if limit > 0 else []
 
     def _read_history(self, path: Path, account: str | None = None) -> list[HistoryEntry]:
