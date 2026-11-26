@@ -16,12 +16,12 @@ def test_appearance_roundtrip_is_independent_of_account_files(tmp_path,mode):
     storage=Storage(tmp_path)
     storage.config_path.write_text("existing account settings",encoding="utf-8")
     storage.widget_path.write_text("existing widget settings",encoding="utf-8")
-    storage.snapshot_path.write_text("existing snapshot",encoding="utf-8")
+    (tmp_path / 'snapshot.json').write_text("existing snapshot",encoding="utf-8")
     storage.save_appearance(AppearancePreferences(mode))
     assert storage.load_appearance().theme==mode
     assert storage.config_path.read_text()=="existing account settings"
     assert storage.widget_path.read_text()=="existing widget settings"
-    assert storage.snapshot_path.read_text()=="existing snapshot"
+    assert (tmp_path / 'snapshot.json').read_text()=="existing snapshot"
 
 
 def test_corrupt_appearance_recovers_without_rewriting_file(tmp_path):

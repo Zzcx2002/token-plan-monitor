@@ -6,8 +6,9 @@ import math
 import os
 import sys
 import tempfile
+from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import keyring
 from .paths import data_directory
@@ -16,6 +17,7 @@ from .appearance import AppearancePreferences
 from .history import (
     HISTORY_MAX_ROWS,
     HistoryEntry,
+    QuotaSource,
     parse_line,
     prune,
     should_append,
@@ -45,7 +47,6 @@ class Storage:
     def __init__(self, data_dir: Path | None = None, keyring_backend: Any = None):
         self.data_dir = data_dir or DEFAULT_DATA_DIR
         self.config_path = self.data_dir / "config.json"
-        self.snapshot_path = self.data_dir / "snapshot.json"
         self.widget_path = self.data_dir / "widget.json"
         self.geometry_path = self.data_dir / "window_geometry.json"
         self.appearance_path = self.data_dir / "appearance.json"
@@ -112,26 +113,28 @@ class Storage:
             {"schema_version": SCHEMA_VERSION, "widget": preferences.to_dict()},
         )
 
-    def load_snapshot(self) -> UsageSnapshot | None:
-        value = self._read_json(self.snapshot_path)
+    def snapshot_path(self, source: QuotaSource) -> Path:
+        return self.data_dir / "snapshots" / source.provider / source.region / f"{source.account}.json"
+
+    def load_snapshot(self, source: QuotaSource) -> UsageSnapshot | None:
+        value = self._read_json(self.snapshot_path(source))
         if value is None:
             return None
         try:
-            if value.get("schema_version") != SCHEMA_VERSION:
+            if value.get("schema_version") != SCHEMA_VERSION or value.get("source") != asdict(source):
                 return None
             return UsageSnapshot.from_dict(value.get("snapshot"))
         except (KeyError, TypeError, ValueError):
             return None
 
-    def save_snapshot(self, snapshot: UsageSnapshot) -> None:
-        self._write_json(
-            self.snapshot_path,
-            {"schema_version": SCHEMA_VERSION, "snapshot": snapshot.to_dict()},
-        )
+    def save_snapshot(self, snapshot: UsageSnapshot, source: QuotaSource, *, commit=os.replace) -> None:
+        self._write_json(self.snapshot_path(source), {
+            "schema_version": SCHEMA_VERSION, "source": asdict(source), "snapshot": snapshot.to_dict(),
+        }, commit=commit)
 
-    def clear_snapshot(self) -> None:
+    def clear_snapshot(self, source: QuotaSource) -> None:
         try:
-            self.snapshot_path.unlink(missing_ok=True)
+            self.snapshot_path(source).unlink(missing_ok=True)
         except OSError as exc:
             raise CacheError("无法清除旧用量缓存") from exc
 
@@ -378,7 +381,8 @@ class Storage:
             return None
         return value
 
-    def _write_json(self, path: Path, value: dict[str, Any]) -> None:
+    def _write_json(self, path: Path, value: dict[str, Any], *,
+                    commit: Callable[[Path, Path], bool | None] = os.replace) -> None:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             # Unique temp name, same rationale as _write_history.
@@ -392,7 +396,8 @@ class Storage:
                     handle.write("\n")
                     handle.flush()
                     os.fsync(handle.fileno())
-                os.replace(temporary, path)
+                if commit(temporary, path) is False:
+                    temporary.unlink()
             except OSError:
                 try:
                     temporary.unlink(missing_ok=True)

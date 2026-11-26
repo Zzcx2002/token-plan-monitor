@@ -19,7 +19,11 @@ from datetime import datetime, timedelta
 
 from .models import (
     PLAN_TYPES,
+    PROVIDER_IDS,
     QuotaWindow,
+    Settings,
+    Credentials,
+    validate_region,
     UsageSnapshot,
     datetime_from_iso,
     datetime_to_iso,
@@ -40,6 +44,24 @@ _ACCOUNT_PATTERN = re.compile(r"[0-9a-f]{12}")
 def account_fingerprint(access_key_id: str) -> str:
     """One-way, stable account label for history rows (not a secret)."""
     return hashlib.sha256(access_key_id.encode("utf-8")).hexdigest()[:12]
+
+
+@dataclass(frozen=True)
+class QuotaSource:
+    provider: str
+    region: str
+    account: str
+
+    def __post_init__(self):
+        if self.provider not in PROVIDER_IDS:
+            raise ValueError("Unknown quota provider")
+        object.__setattr__(self, "region", validate_region(self.provider, self.region))
+        if not _ACCOUNT_PATTERN.fullmatch(self.account):
+            raise ValueError("Invalid account fingerprint")
+
+    @classmethod
+    def for_credentials(cls, settings: Settings, credentials: Credentials) -> QuotaSource:
+        return cls(settings.provider, settings.region, account_fingerprint(credentials.access_key_id))
 
 
 @dataclass(frozen=True)

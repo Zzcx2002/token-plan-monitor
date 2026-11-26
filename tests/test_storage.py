@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from token_plan_monitor.history import HISTORY_MAX_ROWS, HistoryEntry, account_fingerprint
+from token_plan_monitor.history import HISTORY_MAX_ROWS, HistoryEntry, QuotaSource, account_fingerprint
 from token_plan_monitor.models import (
     DEFAULT_PROVIDER,
     AlertSettings,
@@ -24,6 +24,9 @@ from token_plan_monitor.storage import KEYRING_SERVICE, Storage
 _DEFAULT_SPEC = get_provider(DEFAULT_PROVIDER)
 AK_USERNAME = _DEFAULT_SPEC.access_key_username
 SK_USERNAME = _DEFAULT_SPEC.secret_key_username
+
+
+SOURCE = QuotaSource("volcengine", "cn-beijing", account_fingerprint("AKLT-a"))
 
 
 class FakeKeyring:
@@ -58,17 +61,18 @@ def test_settings_and_snapshot_round_trip(tmp_path):
     storage = Storage(tmp_path, FakeKeyring())
     settings = Settings(region="cn-shanghai", refresh_minutes=30)
     storage.save_settings(settings)
-    storage.save_snapshot(sample_snapshot())
+    storage.save_snapshot(sample_snapshot(), SOURCE)
     assert storage.load_settings() == settings
-    assert storage.load_snapshot() == sample_snapshot()
+    assert storage.load_snapshot(SOURCE) == sample_snapshot()
 
 
 def test_corrupt_or_incompatible_json_falls_back_safely(tmp_path):
     storage = Storage(tmp_path, FakeKeyring())
     storage.config_path.write_text("not json", encoding="utf-8")
-    storage.snapshot_path.write_text("[]", encoding="utf-8")
+    storage.snapshot_path(SOURCE).parent.mkdir(parents=True)
+    storage.snapshot_path(SOURCE).write_text("[]", encoding="utf-8")
     assert storage.load_settings() == Settings()
-    assert storage.load_snapshot() is None
+    assert storage.load_snapshot(SOURCE) is None
     storage.config_path.write_text(
         json.dumps({"schema_version": 99, "settings": {}}), encoding="utf-8"
     )
@@ -78,7 +82,7 @@ def test_corrupt_or_incompatible_json_falls_back_safely(tmp_path):
         encoding="utf-8",
     )
     assert storage.load_settings() == Settings()
-    storage.snapshot_path.write_text(
+    storage.snapshot_path(SOURCE).write_text(
         json.dumps(
             {
                 "schema_version": 1,
@@ -91,7 +95,7 @@ def test_corrupt_or_incompatible_json_falls_back_safely(tmp_path):
         ),
         encoding="utf-8",
     )
-    assert storage.load_snapshot() is None
+    assert storage.load_snapshot(SOURCE) is None
 
 
 def test_legacy_config_without_alert_key_keeps_existing_settings(tmp_path):
@@ -230,14 +234,14 @@ def test_credentials_use_only_authorized_entries_and_never_enter_json(tmp_path):
     credentials = Credentials("AKLT-test", "very-secret")
     storage.save_credentials(credentials)
     storage.save_settings(Settings())
-    storage.save_snapshot(sample_snapshot())
+    storage.save_snapshot(sample_snapshot(), SOURCE)
     assert keyring.values == {
         (KEYRING_SERVICE, SK_USERNAME): "very-secret",
         (KEYRING_SERVICE, AK_USERNAME): "AKLT-test",
     }
     assert storage.load_credentials() == credentials
     serialized = storage.config_path.read_text(encoding="utf-8")
-    serialized += storage.snapshot_path.read_text(encoding="utf-8")
+    serialized += storage.snapshot_path(SOURCE).read_text(encoding="utf-8")
     assert "very-secret" not in serialized
     assert "AKLT-test" not in serialized
 
@@ -303,10 +307,10 @@ def test_corrupt_widget_preferences_fall_back_to_defaults(tmp_path):
 
 def test_clear_snapshot_is_idempotent(tmp_path):
     storage = Storage(tmp_path, FakeKeyring())
-    storage.save_snapshot(sample_snapshot())
-    storage.clear_snapshot()
-    storage.clear_snapshot()
-    assert storage.load_snapshot() is None
+    storage.save_snapshot(sample_snapshot(), SOURCE)
+    storage.clear_snapshot(SOURCE)
+    storage.clear_snapshot(SOURCE)
+    assert storage.load_snapshot(SOURCE) is None
 
 
 def test_provider_credentials_are_isolated_in_the_vault(tmp_path):
@@ -331,9 +335,9 @@ def test_provider_secrets_never_reach_the_json_files(tmp_path):
     storage = Storage(tmp_path, FakeKeyring())
     storage.save_credentials(Credentials("LTAI-bailian", "bailian-secret"), "bailian")
     storage.save_settings(Settings(provider="bailian", region="cn-beijing"))
-    storage.save_snapshot(sample_snapshot())
+    storage.save_snapshot(sample_snapshot(), SOURCE)
     serialized = storage.config_path.read_text(encoding="utf-8")
-    serialized += storage.snapshot_path.read_text(encoding="utf-8")
+    serialized += storage.snapshot_path(SOURCE).read_text(encoding="utf-8")
     assert "bailian-secret" not in serialized
     assert "LTAI-bailian" not in serialized
 
@@ -360,10 +364,10 @@ def test_inference_key_never_reaches_the_json_files(tmp_path):
     storage.save_claude_prefs(
         ClaudeProviderPrefs(model="qwen3.8-max", base_url="https://x/apps/anthropic"), "bailian")
     storage.save_settings(Settings(provider="bailian"))
-    storage.save_snapshot(sample_snapshot())
+    storage.save_snapshot(sample_snapshot(), SOURCE)
     serialized = "".join(
         path.read_text(encoding="utf-8")
-        for path in (storage.config_path, storage.snapshot_path, storage.claude_path))
+        for path in (storage.config_path, storage.snapshot_path(SOURCE), storage.claude_path))
     assert "sk-sp-secret" not in serialized
 
 

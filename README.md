@@ -290,7 +290,7 @@ powershell -NoProfile -File .\scripts\New-AppShortcuts.ps1
 ~/Library/Application Support/TokenPlanMonitor/
   config.json         服务商、Region、刷新间隔和告警设置
   claude.json         Claude Code 接入选择（模型 / Base URL，不含 Key）
-  snapshot.json       最近成功的用量缓存
+  snapshots/<服务商>/<地域>/<账号指纹>.json   对应来源最近成功的用量缓存
   history/<服务商>.jsonl   追加式用量历史（百分比/额度 + AK 指纹，90 天 / 1 万行轮转）
   widget.json         卡片位置、尺寸、可见性、置顶状态和桌面组件模式
   instance-*.lock     单实例锁；退出后保留文件，由系统释放锁
@@ -307,7 +307,7 @@ AK/SK 只存 macOS 登录钥匙串，service 为 `TokenPlanMonitor`，每个服�
 
 切换服务商不会读取或覆盖另一家的凭据，控制面 AK/SK 与推理 Key 互不复用。拒绝钥匙串访问会直接报错，**不会**降级成明文文件。
 
-彻底清除：在「钥匙串访问」里只删除上面这几条 account，删掉上面的数据目录和日志目录，并删掉接入 Claude Code 时写到 `~/.claude` 的内容——`settings.json` 里的明文 Key 以及它的每一份 `settings.json.bak.*` 备份。更换服务商或凭据时旧快照会被清除（历史记录按服务商保留，可手动删 `history/` 下对应文件），不会自动迁移 Windows 的配置。
+彻底清除：在「钥匙串访问」里只删除上面这几条 account，删掉上面的数据目录和日志目录，并删掉接入 Claude Code 时写到 `~/.claude` 的内容——`settings.json` 里的明文 Key 以及它的每一份 `settings.json.bak.*` 备份。切换服务商、地域或账号时只读取对应来源的快照（历史记录按服务商保留，可手动删 `history/` 下对应文件），不会自动迁移 Windows 的配置。
 
 ### Windows
 

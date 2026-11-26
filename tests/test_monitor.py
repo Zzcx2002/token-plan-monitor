@@ -1,9 +1,10 @@
+import json
 import threading
 import time
 import pytest
 from datetime import UTC, datetime, timedelta
 
-from token_plan_monitor.history import HistoryEntry, account_fingerprint, entry_from_snapshot
+from token_plan_monitor.history import HistoryEntry, QuotaSource, account_fingerprint, entry_from_snapshot
 from token_plan_monitor.models import (
     AlertSettings,
     CacheError,
@@ -18,6 +19,9 @@ from token_plan_monitor.models import (
 )
 from token_plan_monitor.monitor import UsageMonitor
 from token_plan_monitor.storage import Storage
+
+
+SOURCE = QuotaSource("volcengine", "cn-beijing", account_fingerprint("AKLT-a"))
 
 
 class FakeKeyring:
@@ -68,7 +72,7 @@ def test_successful_refresh_updates_and_persists_snapshot(tmp_path):
         monitor.start()
         wait_for(lambda: monitor.get_state().status == "ok")
         assert monitor.get_state().snapshot.plan_name == "Agent Plan Large"
-        assert storage.load_snapshot().plan_name == "Agent Plan Large"
+        assert storage.load_snapshot(SOURCE).plan_name == "Agent Plan Large"
     finally:
         monitor.stop()
 
@@ -202,7 +206,7 @@ def test_resaving_identical_settings_keeps_the_in_flight_result(tmp_path):
         release.set()
         wait_for(lambda: monitor.get_state().status == "ok")
         assert monitor.get_state().snapshot.plan_name == "Agent Plan Large"
-        assert storage.load_snapshot().plan_name == "Agent Plan Large"
+        assert storage.load_snapshot(SOURCE).plan_name == "Agent Plan Large"
         history = storage.load_history("volcengine", account_fingerprint("AKLT-a"))
         assert len(history) == 1
         time.sleep(0.05)
@@ -451,7 +455,7 @@ def test_provider_switch_clears_the_cached_snapshot(tmp_path):
         assert state.provider == "bailian"
         assert state.snapshot is None
         assert state.status == "empty"
-        assert storage.load_snapshot() is None
+        assert storage.load_snapshot(SOURCE) is None
         release.set()
         wait_for(lambda: len(seen) == 2)
         assert seen == ["volcengine", "bailian"]
@@ -472,7 +476,7 @@ def test_resaving_the_same_provider_keeps_the_cached_snapshot(tmp_path):
         wait_for(lambda: monitor.get_state().status == "ok")
         monitor.update_configuration(Settings(), Credentials("AKLT-a", "secret"))
         assert monitor.get_state().snapshot is not None
-        assert storage.load_snapshot() is not None
+        assert storage.load_snapshot(SOURCE) is not None
     finally:
         monitor.stop()
 
@@ -676,7 +680,7 @@ def test_history_rows_ride_the_state_filter_account_and_survive_failure(tmp_path
 
 def test_history_is_seeded_at_startup_before_the_first_refresh(tmp_path):
     storage = configured_storage(tmp_path, "AKLT-a")
-    storage.save_snapshot(snapshot())
+    storage.save_snapshot(snapshot(), SOURCE)
     account = account_fingerprint("AKLT-a")
     storage.append_history(
         HistoryEntry(
@@ -812,3 +816,49 @@ def test_alert_threshold_reaches_every_view_state(tmp_path):
         assert monitor.get_state().alert_threshold_percent == 45
     finally:
         monitor.stop()
+
+
+def test_switch_during_snapshot_write_then_restart_offline(tmp_path, monkeypatch):
+    storage = configured_storage(tmp_path)
+    staged, release = threading.Event(), threading.Event()
+    original = storage.save_snapshot
+
+    def pause(snapshot, source, *, commit):
+        def while_staged(temporary, target):
+            staged.set()
+            assert release.wait(3)
+            return commit(temporary, target)
+        original(snapshot, source, commit=while_staged)
+
+    monkeypatch.setattr(storage, "save_snapshot", pause)
+    class Client:
+        def __init__(self, settings, credentials):
+            self.provider = settings.provider
+
+        def query(self):
+            if self.provider == "volcengine":
+                return snapshot("Old account")
+            raise NetworkError("offline")
+
+    monitor = UsageMonitor(storage, client_factory=Client)
+    try:
+        monitor.start()
+        assert staged.wait(2)
+        settings, credentials = Settings(provider="bailian"), Credentials("other-ak", "other-sk")
+        storage.save_settings(settings)
+        storage.save_credentials(credentials, settings.provider)
+        monitor.update_configuration(settings, credentials)
+        release.set()
+        wait_for(lambda: monitor.get_state().status == "error")
+        assert storage.load_snapshot(SOURCE) is None
+    finally:
+        release.set()
+        monitor.stop()
+    (tmp_path / "snapshot.json").write_text(json.dumps({"schema_version": 1, "snapshot": snapshot().to_dict()}))
+    restarted = UsageMonitor(storage, client_factory=Client)
+    try:
+        restarted.start()
+        wait_for(lambda: restarted.get_state().status == "error")
+        assert restarted.get_state().snapshot is None
+    finally:
+        restarted.stop()

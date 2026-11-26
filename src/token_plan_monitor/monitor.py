@@ -5,6 +5,7 @@ import threading
 import time
 from dataclasses import replace
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any, Callable
 
 from .models import (
@@ -16,7 +17,7 @@ from .models import (
     Settings,
 )
 from .alerts import AlertEvent, evaluate
-from .history import HISTORY_MAX_ROWS, account_fingerprint, entry_from_snapshot
+from .history import HISTORY_MAX_ROWS, QuotaSource, account_fingerprint, entry_from_snapshot
 from .providers import create_client
 from .storage import Storage
 from .trends import trends_for_snapshot
@@ -67,13 +68,14 @@ class UsageMonitor:
             self._wake.clear()
             self._settings = self.storage.load_settings()
             provider = self._settings.provider
-            snapshot = self.storage.load_snapshot()
             try:
                 self._credentials = self.storage.load_credentials(provider)
                 error = None
             except ConfigurationError as exc:
                 self._credentials = None
                 error = exc.message
+            snapshot = (self.storage.load_snapshot(QuotaSource.for_credentials(self._settings, self._credentials))
+                        if self._credentials is not None else None)
             status = (
                 "unconfigured"
                 if self._credentials is None
@@ -134,7 +136,6 @@ class UsageMonitor:
     def update_configuration(
         self, settings: Settings, credentials: Credentials
     ) -> None:
-        should_clear_cache = False
         with self._lock:
             if settings == self._settings and credentials == self._credentials:
                 # Re-saving identical settings is a no-op: bumping the revision
@@ -155,10 +156,13 @@ class UsageMonitor:
                 self._settings = settings
                 self._credentials = credentials
                 if source_changed:
+                    source = QuotaSource.for_credentials(settings, credentials)
+                    snapshot = self.storage.load_snapshot(source)
                     self._state = replace(
                         self._state,
-                        status="empty" if account_changed else self._state.status,
-                        snapshot=None if account_changed else self._state.snapshot,
+                        status="ok" if snapshot is not None else "empty",
+                        snapshot=snapshot,
+                        last_attempt_at=None,
                         error=None,
                         error_category=None,
                         revision=self._state.revision + 1,
@@ -169,7 +173,6 @@ class UsageMonitor:
                     )
                     self._pending = True
                     self._next_run = None
-                    should_clear_cache = account_changed
                     if account_changed:
                         self._alert_armed = {}
                     self._wake.set()
@@ -186,11 +189,6 @@ class UsageMonitor:
         if unchanged:
             self._publish()
             return
-        if should_clear_cache:
-            try:
-                self.storage.clear_snapshot()
-            except CacheError as exc:
-                logger.warning("Could not clear old snapshot: %s", exc.message)
         self._publish()
 
     def get_state(self) -> MonitorViewState:
@@ -234,6 +232,15 @@ class UsageMonitor:
             # The loop thread owns the client; release its session on exit.
             with self._lock:
                 self._retire_client()
+
+    def _commit_snapshot(self, revision, temporary, path):
+        # Serialize only the final rename with source switches. Encoding, I/O and
+        # fsync have already finished outside the UI lock.
+        with self._lock:
+            if self._state.revision != revision:
+                return False
+            temporary.replace(path)
+            return True
 
     def _run_loop(self) -> None:
         while not self._stop.is_set():
@@ -291,7 +298,8 @@ class UsageMonitor:
                     current = revision == self._state.revision
                 if current:
                     try:
-                        self.storage.save_snapshot(snapshot)
+                        self.storage.save_snapshot(snapshot, QuotaSource.for_credentials(settings, credentials),
+                                                   commit=partial(self._commit_snapshot, revision))
                     except CacheError as exc:
                         cache_warning = exc.message
                     # History is best-effort: a failed append is logged, never

@@ -100,8 +100,10 @@ def main():
                              if canvas.type(item) == "text"]
             assert "每月剩余" in partial_texts and "—" in partial_texts
             app._render_state(state)
-            app.storage.save_snapshot(state.snapshot)
-            cache_before=app.storage.snapshot_path.read_bytes()
+            from token_plan_monitor.history import QuotaSource
+            source = QuotaSource(state.provider, "cn-beijing", "0" * 12)
+            app.storage.save_snapshot(state.snapshot, source)
+            cache_before=app.storage.snapshot_path(source).read_bytes()
             initial_card=card.window
             initial_popup=app.popup
             initial_position=(card.window.winfo_x(),card.window.winfo_y())
@@ -116,7 +118,7 @@ def main():
             assert app.popup is initial_popup and card.window is initial_card
             assert (card.window.winfo_x(),card.window.winfo_y())==initial_position
             assert app._state.snapshot is state.snapshot
-            assert app.storage.snapshot_path.read_bytes()==cache_before
+            assert app.storage.snapshot_path(source).read_bytes()==cache_before
             assert monitor.refreshes==0 and monitor.configuration_updates==0
             # Trend captions in the expanded details pane: no trend hides the
             # label, a normal rate shows the muted caption with absolute units,

@@ -293,7 +293,7 @@ Switching back and forth between providers remembers each one's model and Base U
 ~/Library/Application Support/TokenPlanMonitor/
   config.json         provider, region, refresh interval, alert settings
   claude.json         Claude Code choices (model / base URL, never the key)
-  snapshot.json       last successful usage cache
+  snapshots/<provider>/<region>/<account>.json       last successful usage cache
   history/<provider>.jsonl   append-only usage history (percentages/amounts + AK fingerprint, 90-day / 10k-row rotation)
   widget.json         card position, size, visibility, top-most state, display mode
   instance-*.lock     single-instance lock; the file survives exit, the OS releases the lock
