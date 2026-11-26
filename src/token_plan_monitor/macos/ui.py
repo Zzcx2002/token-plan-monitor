@@ -893,6 +893,7 @@ class MonitorUI:
                     "provider": self.provider_changed,
                     "apply-claude": self.apply_claude_config,
                     "refresh-models": self.refresh_models,
+                    "ark-plan": self.select_ark_plan,
                     "cancel": lambda: self.settings.orderOut_(None),
                     "close-details": lambda: self.details.orderOut_(None),
                     "history": self.show_history,
@@ -1714,6 +1715,11 @@ class MonitorUI:
             y += T.ROW_GAP
         return end_group(body, card_start, y, width)
 
+    def select_ark_plan(self):
+        index = self.ark_plan_popup.indexOfSelectedItem()
+        values = ("", *claude_code.ARK_PLAN_URLS.values())
+        self.fields["base_url"].setStringValue_(values[index])
+
     def _build_claude_group(self, body, y, field_width, width, provider, spec,
                             claude_model, claude_custom, claude_base_url,
                             claude_auto_model, claude_auto_custom,
@@ -1792,11 +1798,23 @@ class MonitorUI:
             body, "Subagent 自定义模型 ID（优先于上方选择；留空且选「默认」时沿用现有规则）",
             claude_subagent_custom, False, y, field_width)
         y += T.ROW_GAP
+        if provider == "volcengine":
+            if not claude_base_url and self.state.provider == provider and self.state.snapshot:
+                claude_base_url = spec.default_claude_base_url("", self.state.snapshot.plan_type)
+            urls = ("", *claude_code.ARK_PLAN_URLS.values())
+            index = urls.index(claude_base_url) if claude_base_url in urls else 0
+            y, self.ark_plan_popup = popup_row(
+                body, "方舟套餐地址", y, field_width, ("自定义或选择套餐…", "Agent Plan", "Coding Plan"), index)
+            self.ark_plan_popup.setTarget_(self.actions)
+            self.ark_plan_popup.setAction_("menuAction:")
+            self.ark_plan_popup.setIdentifier_("ark-plan")
+            y += T.ROW_GAP
         # A remembered key changes the label but is never echoed into the field.
         key_title = ("推理 API Key（已保存，留空保持不变）" if self.stored_inference_key(provider)
                      else f"推理 API Key（必填{spec.inference_key_hint}）")
         for key, title, value, secure in (
-            ("base_url", "Anthropic Base URL（留空使用服务商默认地址）", claude_base_url, False),
+            ("base_url", ("Anthropic Base URL" if provider == "volcengine" else
+                          "Anthropic Base URL（留空使用服务商默认地址）"), claude_base_url, False),
             ("api_key", key_title, "", True),
         ):
             y, self.fields[key], self.field_wells[key] = form_row(

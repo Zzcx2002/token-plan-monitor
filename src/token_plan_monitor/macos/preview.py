@@ -1152,7 +1152,7 @@ def main(argv=None):
                 # actually points at; blank fields read as lost input.
                 assert ui.fields["base_url"].stringValue().endswith("qianwenaiapi.com/apps/anthropic")
                 assert ui.fields["model"].stringValue() == "qwen3.8-max"
-                assert any("未经验证" in text for text in collect_texts(ui.settings.contentView()))
+                assert ui.ark_plan_popup.numberOfItems() == 3
                 before_bytes = settings_target.read_bytes()
                 # No Ark inference key is known, so the write is refused instead
                 # of shipping the Bailian key to another provider's endpoint.
@@ -1161,7 +1161,7 @@ def main(argv=None):
                 ui._confirm_override = None
                 assert "API Key" in ui.setting_error.stringValue()
                 assert settings_target.read_bytes() == before_bytes
-                # Ark has no verified default, so a cleared URL is demanded, never guessed.
+                # Clearing the URL requires a plan choice or a custom proxy.
                 ui.fields["base_url"].setStringValue_("")
                 ui.fields["api_key"].setStringValue_("ark-preview-key")
                 ui._confirm_override = True
@@ -1169,6 +1169,14 @@ def main(argv=None):
                 ui._confirm_override = None
                 assert "Anthropic" in ui.setting_error.stringValue()
                 assert settings_target.read_bytes() == before_bytes
+                for index, suffix in ((1, "/api/plan"), (2, "/api/coding")):
+                    ui.ark_plan_popup.selectItemAtIndex_(index)
+                    ui.command("ark-plan")
+                    ui._confirm_override = True
+                    ui.apply_claude_config()
+                    ui._confirm_override = None
+                    written = json.loads(settings_target.read_text())
+                    assert written["env"]["ANTHROPIC_BASE_URL"] == "https://ark.cn-beijing.volces.com" + suffix
                 capture(ui.settings, args.artifacts / "settings-ark.png")
 
                 # --- Live model catalogue, driven offline through the real path ---

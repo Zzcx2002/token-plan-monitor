@@ -524,3 +524,15 @@ def test_model_popup_restore_demotes_retired_ids_to_the_custom_field():
 
 def test_custom_marker_copy_is_shared():
     assert CUSTOM_MODEL_MARKER == "自定义模型 ID…"
+
+
+@pytest.mark.parametrize("suffix", ["plan", "coding"])
+def test_ark_claude_endpoint_round_trip(suffix, tmp_path):
+    from token_plan_monitor.claude_code import apply_request, read_document_at, ENV_BASE_URL
+
+    url = f"https://ark.cn-beijing.volces.com/api/{suffix}"
+    request = validate_claude_configuration("volcengine", "cn-beijing", "model", "", url, "example", None)
+    assert request.base_url_verified
+    path = tmp_path / "settings.json"
+    apply_request(request, path)
+    assert read_document_at(path)[0]["env"][ENV_BASE_URL] == url

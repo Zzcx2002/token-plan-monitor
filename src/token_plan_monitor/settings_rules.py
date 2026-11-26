@@ -7,7 +7,7 @@ offline test suite. The macOS package re-exports these names from
 """
 from __future__ import annotations
 
-from .claude_code import ClaudeApplyRequest, normalize_base_url
+from .claude_code import ARK_PLAN_URLS, ClaudeApplyRequest, normalize_base_url
 from .models import (
     HEAVY_ID_MARKS,
     MODEL_ID_PATTERN,
@@ -110,10 +110,10 @@ def validate_claude_configuration(provider: str, region: str, popup_model: str,
     base_url = base_url_text.strip() or spec.default_claude_base_url(region_value)
     if not base_url:
         raise FieldValidationError(
-            "base_url", f"{spec.label}没有已验证的 Anthropic 兼容地址，请自行填写"
+            "base_url", f"请选择{spec.label}套餐对应的 Anthropic 地址，或填写兼容代理地址"
         )
     try:
-        normalized, rewritten_from = normalize_base_url(base_url)
+        normalized, rewritten_from = normalize_base_url(base_url, provider)
     except ConfigurationError as exc:
         raise FieldValidationError("base_url", exc.message) from exc
 
@@ -142,7 +142,8 @@ def validate_claude_configuration(provider: str, region: str, popup_model: str,
         model=model,
         api_key=api_key,
         rewritten_from=rewritten_from,
-        base_url_verified=spec.claude_base_url_verified,
+        base_url_verified=(normalized in ARK_PLAN_URLS.values() if provider == "volcengine"
+                           else normalized == spec.default_claude_base_url(region_value)),
         auto_mode_model=auto_model,
         auto_mode_model_lightweight=(
             _looks_lightweight(auto_model, spec) if auto_model else True),

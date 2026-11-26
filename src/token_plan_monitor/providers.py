@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .bailian import BailianClient
+from .claude_code import ARK_PLAN_URLS
 from .models import (
     PROVIDER_BAILIAN,
     PROVIDER_LABELS,
@@ -61,7 +62,9 @@ class ProviderSpec:
     #: Shape hint shown next to the inference key field; "" when unverified.
     inference_key_hint: str
 
-    def default_claude_base_url(self, region: str) -> str:
+    def default_claude_base_url(self, region: str, plan_type: str = "") -> str:
+        if self.id == PROVIDER_VOLCENGINE:
+            return ARK_PLAN_URLS.get(plan_type, "")
         if not self.claude_base_url_template:
             return ""
         # The region lands inside the URL's hostname, so it must pass the same
@@ -111,13 +114,9 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
             "Region 默认 cn-beijing，请按使用区域填写。刷新间隔支持 5–1440 分钟。"
         ),
         inference_key_username="volcengine_inference_api_key",
-        # Ark publishes only the OpenAI-compatible data plane
-        # (https://ark.<region>.volces.com/api/v3); the vendor docs state the
-        # BaseUrl must come from the user. Prefilling a URL that cannot serve
-        # Anthropic Messages would be worse than leaving it blank, so the user
-        # supplies it and no model list is asserted here.
+        # Ark uses different verified endpoints for Agent Plan and Coding Plan.
         claude_base_url_template="",
-        claude_base_url_verified=False,
+        claude_base_url_verified=True,
         claude_models=(),
         claude_default_model="",
         # No authoritative description of an Ark inference key's shape, so the

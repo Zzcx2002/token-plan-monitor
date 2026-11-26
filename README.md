@@ -274,7 +274,7 @@ powershell -NoProfile -File .\scripts\New-AppShortcuts.ps1
 - 重写 `settings.json` 会丢掉 `//`、`/* */` 注释和键的顺序（值不受影响）；`~/.claude.json` 会被整体重新格式化并同样收紧权限，不存在时会被创建。
 - 官方只承诺 permissions / hooks / apiKeyHelper 一类编辑会热重载，没点名 `env` 和 `model`，所以**请重开一个 Claude Code 会话**确认生效。
 
-**Base URL 与模型**：留空时用服务商默认地址，而拼进这个地址的 Region 会先按「格式 + 该服务商支持的地域」校验，与保存凭据用的是同一条规则。带账号密码的地址（`https://user:pass@host`）一律拒绝：`@` 之前的部分不是主机名，看起来正规的域名可能被悄悄替换成别的主机，而密钥正要发往那里。百炼默认是已验证的 `https://token-plan.<region>.maas.aliyuncs.com/apps/anthropic`，粘贴 OpenAI 兼容地址（`/compatible-mode/v1`）会被自动改写，填你自己域名下的代理地址可以原样保留；百炼提供一份模型清单（默认 `auto`），自定义模型 ID 只能包含字母、数字和 `. _ : / + -`。**火山方舟没有可验证的 Anthropic 兼容端点**（官方只给 `/api/v3` 的 OpenAI 兼容地址，且说明 BaseUrl 需由使用者提供），所以该字段留空、需要你自己填，界面会标 ⚠ 未经验证，模型也只能手填 ID。
+**Base URL 与模型**：留空时用服务商默认地址，而拼进这个地址的 Region 会先按「格式 + 该服务商支持的地域」校验，与保存凭据用的是同一条规则。带账号密码的地址（`https://user:pass@host`）一律拒绝：`@` 之前的部分不是主机名，看起来正规的域名可能被悄悄替换成别的主机，而密钥正要发往那里。百炼默认是已验证的 `https://token-plan.<region>.maas.aliyuncs.com/apps/anthropic`，粘贴 OpenAI 兼容地址（`/compatible-mode/v1`）会被自动改写，填你自己域名下的代理地址可以原样保留；百炼提供一份模型清单（默认 `auto`），自定义模型 ID 只能包含字母、数字和 `. _ : / + -`。火山方舟在 macOS 设置中可选择 [Agent Plan](https://docs.volcengine.com/docs/ark/agent-plan-personal-claude-code?lang=zh) 或 [Coding Plan](https://console.volcengine.com/ark/region%3Acn-beijing/docs/coding-plan-personal-ai-other-tools)。两个官方地址分别为 `https://ark.cn-beijing.volces.com/api/plan` 和 `https://ark.cn-beijing.volces.com/api/coding`，模型 ID 可自行填写。
 
 **Auto mode 分类模型（可选）**：Claude Code 的 auto mode 用一个轻量模型（分类器）判断每条命令是否安全。设置里默认是「不设置」，此时 `CLAUDE_CODE_AUTO_MODE_MODEL` 完全不写入、也不改动（你在文件里手写的值原样保留）。选择后会随一次写入一并更新，确认清单会逐条说明。**建议选轻量模型**（如 `qwen3.6-flash`）：分类模型偏重时判断容易超时，auto mode 会因此拦下工具调用、要求重试（实测该键在 Claude Code 2.1.322 生效；更早版本可能忽略它，忽略时不影响其他配置）。
 

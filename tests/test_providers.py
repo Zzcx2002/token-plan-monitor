@@ -76,11 +76,11 @@ def test_bailian_default_base_url_falls_back_for_hostile_regions(hostile_region)
         spec.default_claude_base_url("cn-beijing"))
 
 
-def test_ark_never_prefills_an_unverified_endpoint_or_invented_models():
+def test_ark_uses_the_endpoint_for_the_selected_plan():
     spec = get_provider("volcengine")
-    # Ark has no verified Anthropic endpoint or model catalogue, so the app must
-    # leave both blank rather than write a URL known to be the wrong shape.
-    assert spec.claude_base_url_verified is False
+    assert spec.claude_base_url_verified
+    assert spec.default_claude_base_url("cn-beijing", "agent_plan").endswith("/api/plan")
+    assert spec.default_claude_base_url("cn-beijing", "coding_plan").endswith("/api/coding")
     assert spec.default_claude_base_url("cn-beijing") == ""
     assert spec.claude_models == ()
     assert spec.claude_default_model == ""

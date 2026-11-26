@@ -42,6 +42,10 @@ TIER_KEYS_BY_ALIAS = {
 ALL_TIER_KEYS = (*TIER_KEYS_BY_ALIAS.values(), ENV_SUBAGENT)
 
 ANTHROPIC_PATH = "/apps/anthropic"
+ARK_PLAN_URLS = {
+    "agent_plan": "https://ark.cn-beijing.volces.com/api/plan",
+    "coding_plan": "https://ark.cn-beijing.volces.com/api/coding",
+}
 #: Hosts whose root URL means "the Anthropic endpoint lives under /apps/anthropic".
 _REWRITABLE_HOSTS = ("dashscope", "maas.aliyuncs.com", "token-plan")
 
@@ -134,7 +138,7 @@ def url_transport_error(parsed: SplitResult) -> str | None:
     return None
 
 
-def normalize_base_url(raw: str) -> tuple[str, str | None]:
+def normalize_base_url(raw: str, provider: str = "bailian") -> tuple[str, str | None]:
     """Return (anthropic base URL, value it was rewritten from).
 
     Claude Code speaks Anthropic Messages only, so an OpenAI compatible-mode URL
@@ -154,17 +158,21 @@ def normalize_base_url(raw: str) -> tuple[str, str | None]:
     if not parsed.netloc:
         raise ConfigurationError("Base URL 缺少主机名")
 
+    if provider == "volcengine" and trimmed in ARK_PLAN_URLS.values():
+        return trimmed, None
     if ANTHROPIC_PATH in parsed.path:
         return trimmed, None
 
-    if "/compatible-mode" in parsed.path:
+    if provider == "bailian" and "/compatible-mode" in parsed.path:
         rewritten = re.sub(r"/compatible-mode(/v\d+)?", ANTHROPIC_PATH, trimmed)
         return rewritten.rstrip("/"), raw.strip()
 
-    if parsed.hostname and any(part in parsed.hostname for part in _REWRITABLE_HOSTS):
+    if provider == "bailian" and parsed.hostname and any(part in parsed.hostname for part in _REWRITABLE_HOSTS):
         if parsed.path in ("", "/"):
             return f"{trimmed}{ANTHROPIC_PATH}", raw.strip()
 
+    if provider == "volcengine":
+        raise ConfigurationError("请选择方舟套餐对应的 Anthropic 地址，或填写兼容代理地址")
     raise ConfigurationError(
         f"Claude Code 需要 Anthropic 兼容地址，收到的是 {trimmed}"
         f"；请使用以 {ANTHROPIC_PATH} 结尾的地址"
@@ -409,7 +417,7 @@ def describe_changes(
     if request.rewritten_from:
         lines.append(f"已把你填写的地址改写为 Anthropic 端点：{request.rewritten_from}")
     if not request.base_url_verified:
-        lines.append("⚠ 该服务商的 Anthropic 兼容端点未经验证，地址可能需要自行修正")
+        lines.append("⚠ 此自定义 Anthropic 地址未经验证，请核对接收推理 Key 的主机")
     if had_comments:
         lines.append("⚠ 原文件含 JSON 注释，重写后注释与键顺序将丢失（写入前会自动备份）")
     lines.append(
