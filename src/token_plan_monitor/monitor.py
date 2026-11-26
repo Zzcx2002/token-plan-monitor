@@ -177,6 +177,7 @@ class UsageMonitor:
                 if source_changed and self._credentials is not None:
                     previous_source = QuotaSource.for_credentials(self._settings, self._credentials)
                     self._source_alerts[previous_source] = self._alert_armed
+                interval_changed = settings.refresh_minutes != self._settings.refresh_minutes
                 self._settings = settings
                 self._credentials = credentials
                 if source_changed:
@@ -202,11 +203,12 @@ class UsageMonitor:
                     self._alert_armed = self._source_alerts.pop(source, {})
                     self._wake.set()
                 else:
-                    # Only refresh interval / alert choices changed: the query
-                    # source is untouched, so an in-flight result stays valid
-                    # and must not be discarded. No revision bump, no forced
-                    # re-query; the new interval takes effect at the next
-                    # completion, which reschedules from the current settings.
+                    last = self._state.last_attempt_at
+                    if interval_changed and last is not None and not self._in_flight:
+                        elapsed = max(0.0, (self.clock() - last).total_seconds())
+                        remaining = max(0.0, settings.refresh_minutes * 60 - elapsed)
+                        self._next_run = time.monotonic() + remaining
+                        self._wake.set()
                     self._state = replace(
                         self._state,
                         alert_threshold_percent=settings.alert.threshold_percent,

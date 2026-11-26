@@ -899,3 +899,30 @@ def test_region_switch_and_manual_legacy_assignment_are_isolated(tmp_path):
         assert legacy.read_bytes() == raw
     finally:
         monitor.stop()
+
+
+def test_interval_change_rearms_idle_deadline_and_refreshes_when_due(tmp_path):
+    storage = configured_storage(tmp_path)
+    storage.save_settings(Settings(refresh_minutes=1440))
+    now = [datetime.now(UTC)]
+    calls = []
+    class Client:
+        def query(self):
+            calls.append(1)
+            return snapshot()
+    monitor = UsageMonitor(storage, client_factory=lambda *_: Client(), clock=lambda: now[0])
+    creds = Credentials("AKLT-a", "secret")
+    try:
+        monitor.start()
+        wait_for(lambda: monitor.get_state().status == "ok")
+        now[0] += timedelta(minutes=2)
+        monitor.update_configuration(Settings(refresh_minutes=5), creds)
+        assert monitor._next_run - time.monotonic() == pytest.approx(180, abs=1)
+        monitor.update_configuration(Settings(refresh_minutes=20), creds)
+        assert monitor._next_run - time.monotonic() == pytest.approx(1080, abs=1)
+        assert len(calls) == 1
+        now[0] += timedelta(minutes=6)
+        monitor.update_configuration(Settings(refresh_minutes=5), creds)
+        wait_for(lambda: len(calls) == 2 and not monitor.get_state().is_refreshing)
+    finally:
+        monitor.stop()
