@@ -578,3 +578,36 @@ def test_partial_apply_retries_only_pending_steps_and_reconfirms_external_change
     MonitorUI.apply_claude_config(ui)
     assert claude_code.read_document_at(settings)[0]["external"] == 1
     assert ui.show_form_message.call_args.args[1] == "ok"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS checksum command")
+def test_dmg_and_checksum_rebuild_together(tmp_path, monkeypatch):
+    import hashlib
+    from scripts import build_macos
+
+    image = tmp_path / "test.dmg"
+    checksum = tmp_path / "test.dmg.sha256"
+    for payload in (b"first build", b"rebuilt image"):
+        monkeypatch.setattr(build_macos, "run", lambda *args: args[-1].write_bytes(payload))
+        build_macos.build_disk_image(tmp_path, image)
+        assert checksum.read_text() == f"{hashlib.sha256(payload).hexdigest()}  test.dmg\n"
+        subprocess.run(["shasum", "-a", "256", "-c", checksum.name], cwd=tmp_path, check=True)
+
+    previous = (image.read_bytes(), checksum.read_bytes())
+    def broken(*args):
+        raise OSError("image creation failed")
+    monkeypatch.setattr(build_macos, "run", broken)
+    with pytest.raises(OSError):
+        build_macos.build_disk_image(tmp_path, image)
+    assert (image.read_bytes(), checksum.read_bytes()) == previous
+
+    monkeypatch.setattr(build_macos, "run", lambda *args: args[-1].write_bytes(b"newer"))
+    original_replace = type(image).replace
+    def fail_checksum_install(path, target):
+        if target == checksum and path.name == checksum.name:
+            raise OSError("checksum rename failed")
+        return original_replace(path, target)
+    monkeypatch.setattr(type(image), "replace", fail_checksum_install)
+    with pytest.raises(OSError):
+        build_macos.build_disk_image(tmp_path, image)
+    assert (image.read_bytes(), checksum.read_bytes()) == previous

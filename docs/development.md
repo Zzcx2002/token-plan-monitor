@@ -40,7 +40,7 @@ python3.13 -m venv .venv
 
 构建脚本要求 framework Python（guard 会拒绝 uv 便携解释器）。若开发用 `.venv` 不是 framework 构建，另建 `.venv-build/`（已在 `.gitignore`）：`/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13 -m venv .venv-build`，装 `requirements-macos-build.txt` 与 `--no-deps -e .` 后用 `.venv-build/bin/python scripts/build_macos.py`。
 
-脚本替换生成的 `build/`、`dist/TokenPlanMonitor.app` 和 DMG 暂存目录，产出独立应用与 DMG。构建过程会检查所有 Mach-O 文件是 arm64、最低系统版本不高于 14、动态链接不依赖开发机路径，并验证项目及第三方许可证资源已入包、本地 ad-hoc 签名有效。Bundle ID 固定为 `com.zzcx2002.tokenplanmonitor`，应用数据不写进 `.app` 内。
+脚本替换生成的 `build/`、`dist/TokenPlanMonitor.app` 和 DMG 暂存目录，产出独立应用、DMG 和可用 `shasum -a 256 -c` 校验的同名 `.dmg.sha256`。构建过程会检查所有 Mach-O 文件是 arm64、最低系统版本不高于 14、动态链接不依赖开发机路径，并验证项目及第三方许可证资源已入包、本地 ad-hoc 签名有效。Bundle ID 固定为 `com.zzcx2002.tokenplanmonitor`，应用数据不写进 `.app` 内。
 
 发布签名只有本地 ad-hoc（`codesign -dv` 报 `flags=0x2(adhoc)`、`Signature=adhoc`、`TeamIdentifier=not set`），没有 Developer ID 签名、没有公证。
 
@@ -205,6 +205,6 @@ set TOKEN_PLAN_MONITOR_LIVE=
 
 每轮改动的验证结果与尚需实机复核的场景应在内部验收记录中留痕，该记录不随公开仓库分发。macOS 14 最低版本声明和二进制检查不能替代 macOS 14 实机运行测试。
 
-发布前请确认 Release 资产自洽：GitHub 上当前 `TokenPlanMonitor-<版本>-arm64.dmg` 与 `TokenPlanMonitor-<版本>-win64.zip` 的实际摘要，分别与同目录 `.sha256` 文件内容一致，否则使用者按 README 校验必然失败。本地 `dist/` 在重新构建后与 `.sha256` 不一致是正常现象，以 Release 为准。Windows 资产发布后应重新下载 zip 与 `.sha256` 到空目录跑一次 `sha256sum -c`，走一遍使用者的真实路径。
+发布前请确认 Release 资产自洽：GitHub 上当前 `TokenPlanMonitor-<版本>-arm64.dmg` 与 `TokenPlanMonitor-<版本>-win64.zip` 的实际摘要，分别与同目录 `.sha256` 文件内容一致，否则使用者按 README 校验必然失败。macOS 本地构建会一起更新并校验 DMG 和摘要文件。Windows 资产发布后应重新下载 zip 与 `.sha256` 到空目录跑一次 `sha256sum -c`，走一遍使用者的真实路径。
 
 镜像文件名现在由 `token_plan_monitor.__version__` 推导（`scripts/build_macos.py` 与 `scripts/build_windows.py` 同源），macOS 侧与 `CFBundleShortVersionString` 同源；发新版本改 `__init__.py`、`pyproject.toml` 与 `setup_macos.py` 三处版本号，不要在脚本里硬写文件名。

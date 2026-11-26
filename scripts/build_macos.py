@@ -1,6 +1,7 @@
 """Build a standalone arm64 app and a drag-to-Applications disk image."""
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 import platform
@@ -9,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import sysconfig
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "dist/TokenPlanMonitor.app"
@@ -126,6 +128,40 @@ def verify_resources(app):
     print("Verified project and third-party license resources")
 
 
+def build_disk_image(stage: Path, image: Path) -> None:
+    checksum = image.with_suffix(".dmg.sha256")
+    with tempfile.TemporaryDirectory(dir=image.parent, prefix=".dmg-") as directory:
+        work = Path(directory)
+        new_image = work / image.name
+        run("hdiutil", "create", "-volname", "TokenPlanMonitor", "-srcfolder", stage,
+            "-format", "UDZO", new_image)
+        with new_image.open("rb") as handle:
+            digest = hashlib.file_digest(handle, "sha256").hexdigest()
+        new_sum = work / checksum.name
+        new_sum.write_bytes(f"{digest}  {image.name}\n".encode("ascii"))
+        subprocess.run(["shasum", "-a", "256", "-c", new_sum.name], cwd=work, check=True)
+
+        # Withdraw the old checksum before changing the DMG. Preserve both old
+        # files until both verified replacements have reached their final names.
+        old_image, old_sum = work / "previous.dmg", work / "previous.sha256"
+        if image.exists():
+            os.link(image, old_image)
+        if checksum.exists():
+            checksum.replace(old_sum)
+        try:
+            new_image.replace(image)
+            new_sum.replace(checksum)
+        except OSError:
+            if old_image.exists():
+                old_image.replace(image)
+            else:
+                image.unlink(missing_ok=True)
+            if old_sum.exists():
+                old_sum.replace(checksum)
+            raise
+    print(f"Built {checksum}")
+
+
 def main():
     if sys.platform != "darwin" or platform.machine() != "arm64" or sys.version_info[:2] != (3, 13):
         raise SystemExit("Use Python 3.13 on an Apple Silicon Mac")
@@ -157,8 +193,7 @@ def main():
     # Named from the package version, so the artifact can never disagree with
     # CFBundleShortVersionString the way a hardcoded name did.
     image = ROOT / f"dist/TokenPlanMonitor-{__version__}-arm64.dmg"
-    run("hdiutil", "create", "-volname", "TokenPlanMonitor", "-srcfolder", stage,
-        "-ov", "-format", "UDZO", image)
+    build_disk_image(stage, image)
     print(f"Built {APP}")
     print(f"Built {image}")
 
