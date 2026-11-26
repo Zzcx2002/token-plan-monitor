@@ -155,7 +155,7 @@ def validate_claude_configuration(provider: str, region: str, popup_model: str,
 
 def resolve_claude_seed(spec, draft, prefs, live_base_url="", live_model="",
                         live_auto_model="", model_options=None,
-                        live_subagent_model=""):
+                        live_subagent_model="", *, restore_optional_draft=False):
     """Initial values: draft → **live config** → saved prefs → provider default.
 
     Why this order:
@@ -171,8 +171,9 @@ def resolve_claude_seed(spec, draft, prefs, live_base_url="", live_model="",
 
     `model` and `custom_model` are taken as a pair from one layer so a draft's
     popup choice is never merged with an older layer's free-form id; the auto
-    mode and subagent pairs obey the same rule and have no default -- "unset"
-    is a value.
+    mode and subagent pairs obey the same rule. With `restore_optional_draft`,
+    an empty pair in a captured form is a selected placeholder. A partial
+    draft can still fall back to live config or prefs for each missing pair.
 
     `model_options` overrides the catalogue used to decide popup-vs-custom. The
     UI passes the live-merged catalogue so a freshly fetched model lands in the
@@ -193,21 +194,24 @@ def resolve_claude_seed(spec, draft, prefs, live_base_url="", live_model="",
                        prefs.auto_mode_model or "", prefs.auto_mode_custom_model or "",
                        prefs.subagent_model or "", prefs.subagent_custom_model or ""))
 
-    model = custom = base_url = auto = auto_custom = subagent = subagent_custom = ""
+    model = custom = base_url = ""
+    auto_pair = subagent_pair = None
+    if restore_optional_draft and draft is not None:
+        auto_pair = (draft.auto_mode_model, draft.auto_mode_custom_model)
+        subagent_pair = (draft.subagent_model, draft.subagent_custom_model)
     for (layer_model, layer_custom, layer_base, layer_auto, layer_auto_custom,
             layer_subagent, layer_subagent_custom) in layers:
         if not model and not custom and (layer_model or layer_custom):
             model, custom = layer_model, layer_custom
-        if not auto and not auto_custom and (layer_auto or layer_auto_custom):
-            auto, auto_custom = layer_auto, layer_auto_custom
-        if not subagent and not subagent_custom and (layer_subagent or layer_subagent_custom):
-            subagent, subagent_custom = layer_subagent, layer_subagent_custom
+        if auto_pair is None and (layer_auto or layer_auto_custom):
+            auto_pair = (layer_auto, layer_auto_custom)
+        if subagent_pair is None and (layer_subagent or layer_subagent_custom):
+            subagent_pair = (layer_subagent, layer_subagent_custom)
         if not base_url and layer_base:
             base_url = layer_base
-        # Every pair must be resolved before stopping, or a draft that lacks one
-        # would hide a lower layer's value for it.
-        if model and base_url and auto and (subagent or subagent_custom):
-            break
+
+    auto, auto_custom = auto_pair or ("", "")
+    subagent, subagent_custom = subagent_pair or ("", "")
 
     options = model_options if model_options is not None else spec.claude_models
     known = [option.id for option in options]

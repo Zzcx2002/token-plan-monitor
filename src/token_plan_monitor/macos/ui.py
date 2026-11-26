@@ -1567,7 +1567,7 @@ class MonitorUI:
         self._maybe_auto_fetch(current.provider)
 
     def claude_seed(self, provider):
-        """Initial Claude section values for one provider: draft → prefs → live.
+        """Initial Claude section values for one provider: draft → live → prefs.
 
         The layering itself is the pure `resolve_claude_seed` (unit-tested);
         this only gathers the three sources. Falling back to the live file
@@ -1594,7 +1594,8 @@ class MonitorUI:
         return resolve_claude_seed(get_provider(provider), self._claude_drafts.get(provider),
                                    prefs, live_base_url, live_model, live_auto_model,
                                    model_options=self._effective_claude_options(provider),
-                                   live_subagent_model=live_subagent_model)
+                                   live_subagent_model=live_subagent_model,
+                                   restore_optional_draft=True)
 
     def _effective_claude_options(self, provider):
         """Static catalogue merged with any cached live models for this provider.

@@ -40,7 +40,8 @@ def _slope_per_hour(points: list[tuple[float, float]]) -> float | None:
 
 
 def _cycle_samples(
-    entries: Sequence[HistoryEntry], kind: str, reset_at: datetime | None
+    entries: Sequence[HistoryEntry], kind: str, reset_at: datetime | None,
+    *, latest_used_percent: float | None = None,
 ) -> list[tuple[datetime, float, float | None, float | None]]:
     """Newest-first walk keeping only rows from the current window cycle.
 
@@ -59,9 +60,11 @@ def _cycle_samples(
             and window.reset_at != reset_at
         ):
             break
-        if samples and window.used_percent > samples[-1][1] + RESET_JUMP_TOLERANCE_PERCENT:
+        if (latest_used_percent is not None
+                and window.used_percent > latest_used_percent + RESET_JUMP_TOLERANCE_PERCENT):
             break
         samples.append((entry.queried_at, window.used_percent, window.quota, window.used))
+        latest_used_percent = window.used_percent
     samples.reverse()
     return samples
 
@@ -69,10 +72,12 @@ def _cycle_samples(
 def compute_trend(
     entries: Sequence[HistoryEntry],
     kind: str,
-    now: datetime,
+    observed_at: datetime,
     reset_at: datetime | None,
+    *,
+    observed_used_percent: float | None = None,
 ) -> WindowTrend:
-    samples = _cycle_samples(entries, kind, reset_at)
+    samples = _cycle_samples(entries, kind, reset_at, latest_used_percent=observed_used_percent)
     if len(samples) < MIN_SAMPLES:
         return WindowTrend(kind=kind, sample_count=len(samples), span_seconds=0.0)
     span = (samples[-1][0] - samples[0][0]).total_seconds()
@@ -91,8 +96,9 @@ def compute_trend(
     exhausted_at: datetime | None = None
     resets_before: bool | None = None
     if rate > MIN_RATE_PERCENT_PER_HOUR:
-        remaining = max(0.0, 100.0 - samples[-1][1])
-        exhausted_at = now + timedelta(hours=remaining / rate)
+        used = samples[-1][1] if observed_used_percent is None else observed_used_percent
+        remaining = max(0.0, 100.0 - used)
+        exhausted_at = observed_at + timedelta(hours=remaining / rate)
         if reset_at is not None:
             resets_before = reset_at <= exhausted_at
 
@@ -116,9 +122,16 @@ def compute_trend(
 
 
 def trends_for_snapshot(
-    entries: Sequence[HistoryEntry], snapshot: UsageSnapshot, now: datetime
+    entries: Sequence[HistoryEntry], snapshot: UsageSnapshot,
 ) -> tuple[WindowTrend, ...]:
+    """Fit from history as of the snapshot and forecast from its observation.
+
+    History deduplication can omit the observation itself. Conversely, a cached
+    snapshot can predate some history rows if a later cache write failed.
+    """
+    eligible = [entry for entry in entries if entry.queried_at <= snapshot.queried_at]
     return tuple(
-        compute_trend(entries, window.kind, now, window.reset_at)
+        compute_trend(eligible, window.kind, snapshot.queried_at, window.reset_at,
+                      observed_used_percent=window.used_percent)
         for window in snapshot.windows
     )

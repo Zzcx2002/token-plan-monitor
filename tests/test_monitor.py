@@ -634,6 +634,49 @@ def test_trends_come_from_history_and_survive_a_failed_refresh(tmp_path):
         monitor.stop()
 
 
+def test_offline_restart_keeps_the_cached_forecast_until_a_fresh_query(tmp_path):
+    storage = configured_storage(tmp_path)
+    queried_at = datetime(2026, 11, 26, 17, tzinfo=UTC)
+    reset_at = queried_at + timedelta(hours=1, minutes=30)
+    expected_exhaustion = queried_at + timedelta(hours=1)
+
+    def observation(at, used_percent):
+        return UsageSnapshot(
+            "agent_plan", at, (QuotaWindow("five_hour", used_percent, reset_at),),
+        )
+
+    cached = observation(queried_at, 80)
+    storage.save_snapshot(cached, SOURCE)
+    for item in (observation(queried_at - timedelta(hours=1), 60), cached):
+        storage.append_history(entry_from_snapshot(item, SOURCE.account), SOURCE.provider)
+
+    online = threading.Event()
+
+    class Client:
+        def query(self):
+            if not online.is_set():
+                raise NetworkError("离线")
+            return observation(expected_exhaustion, 99)
+
+    monitor = UsageMonitor(storage, client_factory=lambda *_: Client(),
+                           clock=lambda: expected_exhaustion)
+    try:
+        monitor.start()
+        wait_for(lambda: monitor.get_state().status == "stale")
+        cached_trend, = monitor.get_state().trends
+        assert cached_trend.exhausted_at == expected_exhaustion
+        assert cached_trend.resets_before_exhaustion is False
+
+        online.set()
+        monitor.request_refresh()
+        wait_for(lambda: monitor.get_state().status == "ok")
+        fresh_trend, = monitor.get_state().trends
+        assert fresh_trend.percent_per_hour == pytest.approx(19.5)
+        assert fresh_trend.exhausted_at == expected_exhaustion + timedelta(hours=1 / 19.5)
+    finally:
+        monitor.stop()
+
+
 def test_history_rows_ride_the_state_filter_account_and_survive_failure(tmp_path):
     storage = configured_storage(tmp_path, "AKLT-a")
     account = account_fingerprint("AKLT-a")

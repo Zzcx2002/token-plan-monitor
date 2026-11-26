@@ -133,8 +133,40 @@ def test_trends_for_snapshot_covers_every_reported_window():
         ),
     )
     entries = linear_series() + [entry(60, 60, kind="weekly")]
-    trends = trends_for_snapshot(entries, snapshot, NOW)
+    trends = trends_for_snapshot(entries, snapshot)
     assert [trend.kind for trend in trends] == ["five_hour", "weekly"]
     assert trends[0].percent_per_hour == pytest.approx(8.0)
     # A single weekly observation cannot produce a rate.
     assert trends[1].percent_per_hour is None
+
+
+def test_forecast_uses_snapshot_time_when_history_dedupes_the_observation():
+    entries = [entry(0, 60), entry(60, 80)]
+    observed_at = NOW + timedelta(minutes=5)
+    snapshot = UsageSnapshot("agent_plan", observed_at, entries[-1].windows)
+
+    trend, = trends_for_snapshot(entries, snapshot)
+
+    assert trend.sample_count == 2
+    assert trend.exhausted_at == observed_at + timedelta(hours=1)
+
+
+def test_forecast_uses_snapshot_remaining_and_ignores_newer_history():
+    entries = [entry(0, 60), entry(30, 70), entry(80, 99)]
+    snapshot = UsageSnapshot("agent_plan", NOW, (QuotaWindow("five_hour", 80),))
+
+    trend, = trends_for_snapshot(entries, snapshot)
+
+    assert trend.sample_count == 2
+    assert trend.percent_per_hour == pytest.approx(20.0)
+    assert trend.exhausted_at == NOW + timedelta(hours=1)
+
+
+def test_unrecorded_snapshot_with_a_usage_drop_excludes_the_old_cycle():
+    entries = [entry(0, 60), entry(30, 70)]
+    snapshot = UsageSnapshot("agent_plan", NOW, (QuotaWindow("five_hour", 5),))
+
+    trend, = trends_for_snapshot(entries, snapshot)
+
+    assert trend.percent_per_hour is None
+    assert trend.exhausted_at is None

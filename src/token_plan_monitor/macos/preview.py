@@ -83,7 +83,7 @@ def states():
             )
             for index, row in enumerate(percent_rows)
         ]
-        return replace(state, trends=trends_for_snapshot(entries, state.snapshot, now))
+        return replace(state, trends=trends_for_snapshot(entries, state.snapshot))
 
     # five_hour burns 20%/h: exhaustion lands before the 4-hour reset (warning
     # line); weekly/monthly sit still ("近期无消耗").
@@ -137,7 +137,7 @@ def states():
                 state.snapshot.plan_type, tuple(windows)))
         return replace(
             state, history=tuple(entries), last_attempt_at=now,
-            trends=trends_for_snapshot(entries, state.snapshot, now))
+            trends=trends_for_snapshot(entries, state.snapshot))
 
     thin_entry = HistoryEntry(now, account, ok.snapshot.plan_type, ok.snapshot.windows)
     return {
@@ -151,7 +151,7 @@ def states():
         "history_percent_only": with_history(bailian_token, patterns={"monthly": "rise"}),
         "history_empty": replace(ok, history=()),
         "history_thin": replace(ok, history=(thin_entry,), last_attempt_at=now,
-                                trends=trends_for_snapshot((thin_entry,), ok.snapshot, now)),
+                                trends=trends_for_snapshot((thin_entry,), ok.snapshot)),
         "bailian_token": bailian_token,
         "bailian_coding": bailian_coding,
         "bailian_unconfigured": MonitorViewState(status="unconfigured", provider="bailian"),
@@ -1294,6 +1294,14 @@ def main(argv=None):
                 ui.provider_changed()
                 ui.flush_settings_rebuild()
                 assert ui.settings_provider == "bailian"
+                existing = json.loads(settings_target.read_text(encoding="utf-8"))
+                existing["env"]["CLAUDE_CODE_AUTO_MODE_MODEL"] = "qwen3.8-flash"
+                existing["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] = "qwen3.6-flash"
+                settings_target.write_text(json.dumps(existing), encoding="utf-8")
+                ui.auto_popup.selectItemAtIndex_(0)
+                ui.subagent_popup.selectItemAtIndex_(0)
+                ui.fields["auto_model"].setStringValue_("")
+                ui.fields["subagent_model"].setStringValue_("")
                 ui.fields["base_url"].setStringValue_("https://typed.example/apps/anthropic")
                 ui.fields["model"].setStringValue_("qwen-new")
                 ui.fields["api_key"].setStringValue_("sk-sp-draft")
@@ -1306,6 +1314,10 @@ def main(argv=None):
                 ui.flush_settings_rebuild()
                 assert ui.fields["base_url"].stringValue() == "https://typed.example/apps/anthropic"
                 assert ui.fields["model"].stringValue() == "qwen-new"
+                assert ui.auto_popup.indexOfSelectedItem() == 0
+                assert ui.subagent_popup.indexOfSelectedItem() == 0
+                assert ui.fields["auto_model"].stringValue() == ""
+                assert ui.fields["subagent_model"].stringValue() == ""
                 # The key is never echoed back into the field, yet it is remembered:
                 # the label says so, and an apply with a blank field still writes it.
                 assert ui.fields["api_key"].stringValue() == ""
@@ -1317,6 +1329,8 @@ def main(argv=None):
                 assert written["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-sp-draft"
                 assert written["env"]["ANTHROPIC_MODEL"] == "qwen-new"
                 assert written["env"]["ANTHROPIC_BASE_URL"] == "https://typed.example/apps/anthropic"
+                assert written["env"]["CLAUDE_CODE_AUTO_MODE_MODEL"] == "qwen3.8-flash"
+                assert written["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "qwen3.6-flash"
                 # Drafts persisted to disk must stay secret-free.
                 for path in (storage.claude_path, storage.config_path):
                     assert "sk-sp-draft" not in path.read_text(encoding="utf-8")

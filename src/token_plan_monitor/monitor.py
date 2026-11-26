@@ -99,7 +99,7 @@ class UsageMonitor:
                 provider=provider,
                 alert_threshold_percent=self._settings.alert.threshold_percent,
                 history=history, region=self._settings.region, unassigned_history=unassigned,
-                trends=trends_for_snapshot(history, snapshot, self.clock()) if snapshot else (),
+                trends=trends_for_snapshot(history, snapshot) if snapshot else (),
             )
             self._pending = self._credentials is not None
             if self._pending:
@@ -130,7 +130,7 @@ class UsageMonitor:
             history, count = self._source_history(source)
             snapshot = self._state.snapshot
             self._state = replace(self._state, history=history, unassigned_history=count,
-                                  trends=trends_for_snapshot(history, snapshot, self.clock()) if snapshot else (),
+                                  trends=trends_for_snapshot(history, snapshot) if snapshot else (),
                                   revision=revision + 1)
             if self._in_flight:
                 self._pending = True
@@ -195,7 +195,7 @@ class UsageMonitor:
                         provider=settings.provider,
                         alert_threshold_percent=settings.alert.threshold_percent,
                         region=settings.region, unassigned_history=count,
-                        trends=trends_for_snapshot(history, snapshot, self.clock()) if snapshot else (),
+                        trends=trends_for_snapshot(history, snapshot) if snapshot else (),
                         history=history,
                     )
                     self._pending = True
@@ -361,7 +361,7 @@ class UsageMonitor:
                         history = [
                             item for item in entries if item.account == account
                         ][-HISTORY_MAX_ROWS:]
-                        trends = trends_for_snapshot(history, snapshot, self.clock())
+                        trends = trends_for_snapshot(history, snapshot)
                         history_rows = tuple(history)
 
             events: list[AlertEvent] = []

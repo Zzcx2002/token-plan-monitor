@@ -454,6 +454,18 @@ def test_seed_resolves_subagent_from_a_lower_layer_when_the_draft_lacks_it():
     assert seed["claude_auto_model"] == "qwen3.6-flash"
 
 
+def test_complete_form_draft_preserves_empty_optional_choices():
+    draft = ClaudeProviderPrefs(model="auto")
+    prefs = ClaudeProviderPrefs(subagent_custom_model="saved-subagent")
+    seed = resolve_claude_seed(
+        get_provider("bailian"), draft, prefs, live_auto_model="qwen3.8-flash",
+        restore_optional_draft=True,
+    )
+
+    assert seed["claude_auto_model"] == seed["claude_auto_custom"] == ""
+    assert seed["claude_subagent_model"] == seed["claude_subagent_custom"] == ""
+
+
 def test_claude_validation_subagent_is_optional_and_field_tagged():
     request = validate_claude_configuration(
         "bailian", "cn-beijing", "auto", "", "", "", "key")
