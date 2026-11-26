@@ -416,3 +416,25 @@ def test_unofficial_hosts_are_refused():
 def test_official_hosts_are_allowed():
     _reject_unofficial_host("https://bailian-cs.console.aliyun.com/cli/api.json")
     _reject_unofficial_host("https://modelstudio.cn-beijing.aliyuncs.com/modelstudio/cli/generateAccessToken")
+
+
+@pytest.mark.parametrize("body", [{}, ValueError("not JSON")])
+def test_gateway_401_refreshes_cached_token_once(body):
+    client, session = make_client(
+        token_response("old"), gateway({"x": 1}), FakeResponse(body, 401),
+        token_response("new"), gateway({"x": 2}))
+    client._console_call("test", {})
+    client._console_call("test", {})
+    bearer = [call["headers"].get("Authorization", "") for call in session.calls]
+    assert [value for value in bearer if value.startswith("Bearer")] == ["Bearer old", "Bearer old", "Bearer new"]
+
+
+def test_repeated_401_invalidates_rejected_token_and_403_does_not_renew():
+    client, session = make_client(token_response(), FakeResponse({}, 401), token_response(), FakeResponse({}, 401))
+    with pytest.raises(AuthenticationError):
+        client._console_call("test", {})
+    assert client._token is None and len(session.calls) == 4
+    client, session = make_client(token_response(), gateway_failure("NotLogined", status=403))
+    with pytest.raises(AuthenticationError):
+        client._console_call("test", {})
+    assert len(session.calls) == 2

@@ -173,6 +173,7 @@ class BailianClient:
         try:
             return self._gateway_call(api, data, self._ensure_token())
         except _TokenExpired as exc:
+            self._token = None
             raise AuthenticationError(
                 "阿里云百炼控制台会话无效，请检查 AK/SK 及其权限"
             ) from exc
@@ -222,6 +223,8 @@ class BailianClient:
             "Authorization": f"Bearer {token}",
         }
         response = self._request("POST", url, headers, body)
+        if response.status_code == 401:
+            raise _TokenExpired("HTTP 401")
         envelope = self._decode_json(response, "阿里云百炼控制台网关")
         if not isinstance(envelope, dict):
             raise ParseError("控制台网关响应顶层必须是 JSON 对象")
@@ -229,7 +232,7 @@ class BailianClient:
         if isinstance(node, dict) and node.get("success") is False:
             code, message = _gateway_error(node)
             # The console reports an expired session as e.g. Console.NotLogined.
-            if "notlogined" in code.lower():
+            if response.status_code != 403 and "notlogined" in code.lower():
                 raise _TokenExpired(code)
             detail = safe_error(code, message)
             lowered = code.lower()
