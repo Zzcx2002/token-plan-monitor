@@ -158,26 +158,25 @@ def parse_agent_windows(result: Any) -> tuple[QuotaWindow, ...]:
     if not isinstance(result, dict):
         raise ParseError("GetAFPUsage.Result 格式无效")
     windows: list[QuotaWindow] = []
+    incomplete = False
     for key, kind in AGENT_WINDOWS:
         if key not in result:
             continue
         value = result[key]
         if not isinstance(value, dict):
-            raise ParseError(f"{key} 格式无效")
-        quota = _number(value.get("Quota", 0), f"{key}.Quota")
-        if quota <= 0:
+            incomplete = True
             continue
-        used = _number(value.get("Used", 0), f"{key}.Used")
-        reset_at = parse_reset_time(value.get("ResetTime"))
-        windows.append(
-            QuotaWindow(
-                kind=kind,
-                used_percent=used / quota * 100.0,
-                reset_at=reset_at,
-                quota=quota,
-                used=used,
-            )
-        )
+        try:
+            quota = _number(value.get("Quota"), f"{key}.Quota")
+            if quota <= 0:
+                continue
+            used = _number(value.get("Used"), f"{key}.Used")
+            reset_at = parse_reset_time(value.get("ResetTime"))
+            windows.append(QuotaWindow(kind, used / quota * 100, reset_at, quota, used))
+        except (ParseError, ValueError):
+            incomplete = True
+    if incomplete and not windows:
+        raise ParseError("Agent Plan 已返回用量窗口，但缺少有效的额度或用量")
     return tuple(windows)
 
 
@@ -197,25 +196,27 @@ def parse_coding_windows(result: Any) -> tuple[QuotaWindow, ...]:
         return ()
 
     windows: list[QuotaWindow] = []
+    incomplete = False
     for item in items:
         if not isinstance(item, dict):
-            raise ParseError("Coding Plan 用量项格式无效")
+            incomplete = True
+            continue
         label = _first(item, ("Level", "Type", "Period", "Label", "Window"))
         if not isinstance(label, str):
+            incomplete = True
             continue
         kind = WINDOW_ALIASES.get(label.lower())
         if kind is None:
             continue
-        raw_percent = _first(item, ("Percent", "UsedPercent", "UsagePercent"), 0)
-        percent = _number(raw_percent, f"{kind}.Percent")
-        reset_value = item.get("ResetTimestamp", item.get("ResetTime"))
-        windows.append(
-            QuotaWindow(
-                kind=kind,
-                used_percent=percent,
-                reset_at=parse_reset_time(reset_value),
-            )
-        )
+        raw_percent = _first(item, ("Percent", "UsedPercent", "UsagePercent"))
+        try:
+            percent = _number(raw_percent, f"{kind}.Percent")
+            reset_at = parse_reset_time(item.get("ResetTimestamp", item.get("ResetTime")))
+            windows.append(QuotaWindow(kind, percent, reset_at))
+        except (ParseError, ValueError):
+            incomplete = True
+    if incomplete and not windows:
+        raise ParseError("Coding Plan 已返回用量窗口，但缺少有效的已用百分比")
     return tuple(windows)
 
 

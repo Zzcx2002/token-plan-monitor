@@ -225,3 +225,21 @@ def test_close_releases_the_session_and_tolerates_fakes_without_close():
     session.close = lambda: closed.append(1)
     client.close()
     assert closed == [1]
+
+
+@pytest.mark.parametrize("missing", [{}, {"Used": None}])
+def test_incomplete_agent_window_keeps_only_reported_usage(missing):
+    partial = {"AFPFiveHour": {"Quota": 100, **missing}}
+    with pytest.raises(ParseError):
+        parse_agent_windows(partial)
+    partial["AFPWeekly"] = {"Quota": 100, "Used": 0}
+    assert [(w.kind, w.remaining_percent) for w in parse_agent_windows(partial)] == [("weekly", 100)]
+
+
+@pytest.mark.parametrize("missing", [{}, {"Percent": None}])
+def test_incomplete_coding_window_keeps_only_reported_usage(missing):
+    rows = [{"Level": "monthly", **missing}]
+    with pytest.raises(ParseError):
+        parse_coding_windows({"QuotaUsage": rows})
+    rows.append({"Level": "weekly", "UsedPercent": 0})
+    assert [(w.kind, w.remaining_percent) for w in parse_coding_windows({"QuotaUsage": rows})] == [("weekly", 100)]
