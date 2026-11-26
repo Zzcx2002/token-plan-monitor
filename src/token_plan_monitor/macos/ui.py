@@ -1730,6 +1730,10 @@ class MonitorUI:
         self.help_button.setButtonType_(A.NSButtonTypeOnOff)
         self.help_button.setAccessibilityLabel_("展开凭据说明")
         y += 22 + T.ROW_GAP
+        self.help_text = _stretch(text_label(body, spec.help_text, T.PAGE_INSET, y, field_width, 12,
+                                             color=SECONDARY))
+        self.help_text.setHidden_(True)
+        self._settings_help_height = 0
         self.fields = {}
         self.field_wells = {}
         ak_label = spec.access_key_label
@@ -1963,12 +1967,6 @@ class MonitorUI:
             claude_auto_model, claude_auto_custom,
             claude_subagent_model, claude_subagent_custom)
 
-        # The credential walkthrough stays at the document's end, so expanding it
-        # only grows the scrollable height -- no window resize and no buttons to
-        # shove about. Feedback moved up into the pinned header above.
-        self.help_text = _stretch(text_label(body, spec.help_text, y, field_width, 12, color=SECONDARY))
-        self._settings_help_height = self.help_text.frame().size.height + 12
-        self.help_text.setHidden_(True)
         self.settings_body.setFrameSize_(F.NSMakeSize(width, max(1, y)))
 
         self.cancel_button = _pin_right(button(self.settings_footer, "取消", width - 248, 12, 100,
@@ -2043,11 +2041,33 @@ class MonitorUI:
             max(0, footer_top - self.settings_header_height)))
         clip_width = self.settings_scroll.contentView().bounds().size.width
         self.settings_body.setFrameSize_(F.NSMakeSize(
-            max(1, clip_width), self._current_body_height()))
+            max(1, clip_width), self._settings_body_height + self._settings_help_height))
+        self._layout_credential_help()
 
-    def _current_body_height(self):
-        extra = self._settings_help_height if self.help_expanded else 0
-        return max(1, self._settings_body_height + extra)
+    def _layout_credential_help(self):
+        frame = self.help_text.frame()
+        height = 0
+        if self.help_expanded:
+            bounds = self.help_text.attributedStringValue().boundingRectWithSize_options_(
+                F.NSMakeSize(max(1, frame.size.width), 100000),
+                A.NSStringDrawingUsesLineFragmentOrigin | A.NSStringDrawingUsesFontLeading)
+            self.help_text.setFrameSize_(F.NSMakeSize(frame.size.width, bounds.size.height + 6))
+            height = self.help_text.frame().size.height + T.ROW_GAP
+        delta = height - self._settings_help_height
+        if not delta:
+            return
+        for view in self.settings_body.subviews():
+            if view == self.help_text:
+                continue
+            item = view.frame()
+            if item.origin.y >= frame.origin.y:
+                view.setFrameOrigin_(F.NSMakePoint(item.origin.x, item.origin.y + delta))
+            elif F.NSMaxY(item) > frame.origin.y:
+                # The enclosing credential card spans the insertion point.
+                view.setFrameSize_(F.NSMakeSize(item.size.width, item.size.height + delta))
+        self._settings_help_height = height
+        self.settings_body.setFrameSize_(F.NSMakeSize(
+            self.settings_body.frame().size.width, self._settings_body_height + height))
 
     def toggle_credential_help(self):
         self.help_expanded = not self.help_expanded
@@ -2055,9 +2075,9 @@ class MonitorUI:
         self.help_button.setState_(A.NSControlStateValueOn if self.help_expanded else A.NSControlStateValueOff)
         self.help_button.setImage_(A.NSImage.imageWithSystemSymbolName_accessibilityDescription_("chevron.down" if self.help_expanded else "chevron.right", None))
         self.help_button.setAccessibilityLabel_("收起凭据说明" if self.help_expanded else "展开凭据说明")
-        # The footer is pinned and the body scrolls, so expanding the help text
-        # just grows the document — no window resize, no buttons to reposition.
         self.layout_settings()
+        if self.help_expanded:
+            self.settings_body.scrollRectToVisible_(self.help_text.frame())
 
     def save_settings(self):
         try:

@@ -978,6 +978,16 @@ def main(argv=None):
                 ui.fields["alert_threshold"].setStringValue_("10")
                 ui.toggle_credential_help()
                 assert not ui.help_text.isHidden()
+                original_size = ui.settings.contentView().bounds().size
+                for help_width in (720, SETTINGS_WIDTH):
+                    ui.settings.setContentSize_(F.NSMakeSize(help_width, original_size.height))
+                    ui.layout_settings()
+                    frame = ui.help_text.frame()
+                    ui.settings_body.scrollRectToVisible_(frame)
+                    assert F.NSContainsRect(ui.settings_body.visibleRect(), frame), frame
+                    assert frame.size.width > SETTINGS_WIDTH * 0.75
+                    assert F.NSMaxY(ui.help_button.frame()) <= frame.origin.y
+                    assert F.NSMaxY(frame) <= ui.field_wells["ak"].frame().origin.y
                 capture(ui.settings, args.artifacts / "settings-help.png")
                 ui.toggle_credential_help()
                 ui.fields["sk"].setStringValue_("")
@@ -1148,9 +1158,8 @@ def main(argv=None):
                 ui.provider_changed()
                 ui.flush_settings_rebuild()
                 assert ui.settings_provider == "volcengine"
-                # A provider with nothing of its own shows what Claude Code
-                # actually points at; blank fields read as lost input.
-                assert ui.fields["base_url"].stringValue().endswith("qianwenaiapi.com/apps/anthropic")
+                # Switching back restores the previously recognized Ark plan.
+                assert ui.fields["base_url"].stringValue() == "https://ark.cn-beijing.volces.com/api/plan"
                 assert ui.fields["model"].stringValue() == "qwen3.8-max"
                 assert ui.ark_plan_popup.numberOfItems() == 3
                 before_bytes = settings_target.read_bytes()
