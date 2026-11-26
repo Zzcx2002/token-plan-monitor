@@ -24,7 +24,7 @@ from urllib.parse import urlsplit
 import requests
 
 from .claude_code import ANTHROPIC_PATH, url_transport_error
-from .models import HEAVY_ID_MARKS, MODEL_ID_PATTERN, QueryError
+from .models import HEAVY_ID_MARKS, MODEL_ID_PATTERN, PROVIDER_BAILIAN, PROVIDER_REGIONS, QueryError
 from .providers import ClaudeModelOption
 
 #: OpenAI-compatible path that lists the models a plan's inference key can call.
@@ -70,6 +70,33 @@ def models_url_for(base_url: str) -> str:
     root_path = parsed.path[:index] if index >= 0 else parsed.path
     root = f"{parsed.scheme}://{parsed.netloc}{root_path}".rstrip("/")
     return root + MODELS_PATH
+
+
+def catalog_origin(base_url: str) -> str:
+    """Return the actual origin shown before a manual catalogue request."""
+    url = urlsplit(models_url_for(base_url))
+    source = urlsplit(base_url.strip())
+    if (source.query or source.fragment or url.scheme not in ("http", "https")
+            or not source.path.rstrip("/").endswith(ANTHROPIC_PATH)):
+        raise ModelCatalogError("该 Base URL 不支持在线获取模型")
+    try:
+        port = url.port
+    except ValueError as exc:
+        raise ModelCatalogError("Base URL 端口无效") from exc
+    host = url.hostname
+    if not host:
+        raise ModelCatalogError("Base URL 缺少主机名")
+    if ":" in host:
+        host = f"[{host}]"
+    default_port = 443 if url.scheme == "https" else 80
+    return f"{url.scheme}://{host}" + (f":{port}" if port not in (None, default_port) else "")
+
+
+def official_catalog(provider: str, base_url: str, origin: str) -> bool:
+    if provider != PROVIDER_BAILIAN or urlsplit(base_url).path.rstrip("/") != ANTHROPIC_PATH:
+        return False
+    regions = PROVIDER_REGIONS[PROVIDER_BAILIAN]
+    return any(origin == f"https://token-plan.{region}.maas.aliyuncs.com" for region in regions)
 
 
 def is_chat_model(model_id: str) -> bool:

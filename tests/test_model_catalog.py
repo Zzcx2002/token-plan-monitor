@@ -264,3 +264,31 @@ def test_fetched_model_lands_in_popup_not_custom_field():
     seed_static = resolve_claude_seed(spec, None, None, "", "qwen4-max", "")
     assert seed_static["claude_model"] == ""
     assert seed_static["claude_custom"] == "qwen4-max"
+
+
+@pytest.mark.skipif(__import__("sys").platform != "darwin", reason="macOS settings actions")
+def test_open_switch_and_cancel_send_no_custom_catalog_requests():
+    from unittest.mock import Mock
+    from token_plan_monitor.macos.ui import MonitorUI
+
+    ui = Mock()
+    ui._catalog_inflight = set()
+    ui.settings_provider = "bailian"
+    ui._catalog_fetch_target.return_value = ("https://proxy.example:8443/apps/anthropic", "test-key")
+    for provider in ("bailian", "volcengine"):
+        MonitorUI._maybe_auto_fetch(ui, provider)
+    ui.confirm_catalog_origin.return_value = False
+    MonitorUI.refresh_models(ui)
+    ui.confirm_catalog_origin.assert_called_once_with("bailian", "https://proxy.example:8443")
+    ui._start_model_fetch.assert_not_called()
+    ui.confirm_catalog_origin.return_value = True
+    MonitorUI.refresh_models(ui)
+    assert ui._start_model_fetch.call_count == 1
+
+    ui._start_model_fetch.reset_mock()
+    official = get_provider("bailian").default_claude_base_url("cn-beijing")
+    ui._catalog_fetch_target.return_value = (official, "test-key")
+    MonitorUI._maybe_auto_fetch(ui, "volcengine")
+    ui._start_model_fetch.assert_not_called()
+    MonitorUI._maybe_auto_fetch(ui, "bailian")
+    ui._start_model_fetch.assert_called_once_with("bailian", official, "test-key")

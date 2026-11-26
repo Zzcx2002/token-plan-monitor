@@ -17,7 +17,7 @@ from objc import python_method, super
 from .. import claude_code
 from ..assets import make_tray_icon
 from ..claude_code import ClaudeConfigError
-from ..model_catalog import fetch_model_ids, merge_model_options
+from ..model_catalog import catalog_origin, fetch_model_ids, merge_model_options, official_catalog
 from ..models import (
     CARD_MIN_HEIGHT,
     CARD_MIN_WIDTH,
@@ -2117,9 +2117,14 @@ class MonitorUI:
         if provider in self._catalog_inflight:
             return
         base_url, key = self._catalog_fetch_target(provider)
-        if not key or claude_code.ANTHROPIC_PATH not in base_url:
+        if not key:
             return
-        self._start_model_fetch(provider, base_url, key)
+        try:
+            origin = catalog_origin(base_url)
+        except QueryError:
+            return
+        if official_catalog(provider, base_url, origin):
+            self._start_model_fetch(provider, base_url, key)
 
     def refresh_models(self):
         """Manual refresh button: force a re-pull with the current form values."""
@@ -2130,10 +2135,24 @@ class MonitorUI:
         if not key:
             self._set_catalog_status(provider, "请先填写推理 API Key", "warning")
             return
-        if claude_code.ANTHROPIC_PATH not in base_url:
-            self._set_catalog_status(provider, "该 Base URL 不支持在线获取模型", "warning")
+        try:
+            origin = catalog_origin(base_url)
+        except QueryError as exc:
+            self._set_catalog_status(provider, exc.message, "warning")
             return
+        if not official_catalog(provider, base_url, origin):
+            if not self.confirm_catalog_origin(provider, origin):
+                self._set_catalog_status(provider, "已取消在线刷新", "neutral")
+                return
         self._start_model_fetch(provider, base_url, key)
+
+    def confirm_catalog_origin(self, provider, origin):
+        box = A.NSAlert.alloc().init()
+        box.setMessageText_("向自定义地址发送推理 Key？")
+        box.setInformativeText_(f"获取在线模型会将{get_provider(provider).label}的推理 Key 发送至 {origin}。")
+        box.addButtonWithTitle_("取消")
+        box.addButtonWithTitle_("发送并刷新")
+        return box.runModal() == A.NSAlertSecondButtonReturn
 
     def _start_model_fetch(self, provider, base_url, key):
         self._catalog_inflight.add(provider)
