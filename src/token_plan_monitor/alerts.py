@@ -44,6 +44,11 @@ def evaluate(
         {window.kind: window for window in previous.windows} if previous else {}
     )
     for window in current.windows:
+        before = previous_windows.get(window.kind)
+        new_cycle = (before is not None and before.reset_at is not None
+                     and window.reset_at is not None and before.reset_at != window.reset_at)
+        if new_cycle:
+            next_armed[window.kind] = True
         if window.remaining_percent < alert.threshold_percent:
             # Missing entry means armed: the first observation already low
             # deserves a reminder too.
@@ -61,22 +66,15 @@ def evaluate(
                 next_armed[window.kind] = False
         else:
             next_armed[window.kind] = True
-        if alert.notify_on_reset:
-            before = previous_windows.get(window.kind)
-            if (
-                before is not None
-                and before.reset_at is not None
-                and window.reset_at is not None
-                and before.reset_at != window.reset_at
-            ):
-                events.append(
-                    AlertEvent(
-                        category="reset",
-                        kind=window.kind,
-                        provider=provider,
-                        remaining_percent=window.remaining_percent,
-                        threshold_percent=alert.threshold_percent,
-                        plan_name=current.plan_name,
-                    )
+        if new_cycle and alert.notify_on_reset:
+            events.append(
+                AlertEvent(
+                    category="reset",
+                    kind=window.kind,
+                    provider=provider,
+                    remaining_percent=window.remaining_percent,
+                    threshold_percent=alert.threshold_percent,
+                    plan_name=current.plan_name,
                 )
+            )
     return events, next_armed

@@ -86,3 +86,13 @@ def test_each_window_arms_independently_and_input_map_is_not_mutated():
     assert kinds(events) == [("low_quota", "five_hour")]
     assert next_armed == {"weekly": True, "five_hour": False}
     assert armed == {"weekly": True}
+
+def test_low_before_and_after_sleep_alerts_once_per_cycle():
+    old = snapshot(95, BASE_TIME + timedelta(hours=1))
+    new = snapshot(94, BASE_TIME + timedelta(hours=6))
+    for notify_reset in (False, True):
+        alert = AlertSettings(threshold_percent=10, notify_on_reset=notify_reset)
+        _, armed = evaluate(None, old, alert, {}, "volcengine")
+        events, armed = evaluate(old, new, alert, armed, "volcengine")
+        assert [e.category for e in events] == (["low_quota", "reset"] if notify_reset else ["low_quota"])
+        assert evaluate(new, new, alert, armed, "volcengine")[0] == []
