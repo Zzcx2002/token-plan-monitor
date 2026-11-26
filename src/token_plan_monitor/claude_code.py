@@ -10,6 +10,7 @@ touch a real `~/.claude`.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -104,6 +105,7 @@ class ApplyResult:
     removed_keys: tuple[str, ...]
     preserved_env_keys: int
     created: bool
+    written_digest: str
 
 
 # ----------------------------------------------------------------------
@@ -442,14 +444,21 @@ def read_document_at(path: Path) -> tuple[dict[str, Any] | None, bool]:
     content: silently replacing a hand-tuned config with `{}` would be worse
     than doing nothing.
     """
+    document, comments, _ = read_document_version(path)
+    return document, comments
+
+
+def read_document_version(path: Path) -> tuple[dict[str, Any] | None, bool, str]:
+    """Hash the exact bytes reviewed by the user, including JSONC comments."""
     try:
-        text = path.read_text(encoding="utf-8")
+        raw = path.read_bytes()
+        text = raw.decode("utf-8")
     except FileNotFoundError:
-        return None, False
+        return None, False, ""
     except (OSError, UnicodeError) as exc:
         raise ClaudeConfigError(f"无法读取 {path.name}") from exc
     had_comments = strip_jsonc(text) != text
-    return parse_settings_document(text), had_comments
+    return parse_settings_document(text), had_comments, hashlib.sha256(raw).hexdigest()
 
 
 #: Newest app-named backups to keep. Every backup after the first apply holds
@@ -536,7 +545,7 @@ def _tighten_legacy_backups(path: Path) -> None:
             pass
 
 
-def write_document_atomic(path: Path, document: Mapping[str, Any]) -> None:
+def write_document_atomic(path: Path, document: Mapping[str, Any]) -> str:
     """Write pretty JSON with owner-only permissions.
 
     The temp name is unique (mkstemp, 0600 from creation): a fixed `.tmp`
@@ -555,9 +564,9 @@ def write_document_atomic(path: Path, document: Mapping[str, Any]) -> None:
                 handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
+            os.chmod(temporary, 0o600)
             os.replace(temporary, path)
-            # Tighten a pre-existing 0644 file: it is about to hold a token.
-            os.chmod(path, 0o600)
+            return hashlib.sha256(payload).hexdigest()
         except OSError:
             # Cleanup must never replace the real cause with its own error.
             _discard(temporary)
@@ -579,17 +588,30 @@ def apply_request(
     settings_path: Path,
     *,
     clock: Callable[[], float] = time.time,
+    expected_version: str | None = None,
 ) -> ApplyResult:
     """Read → validate → patch → backup → write. Aborts with zero writes on damage."""
-    document, had_comments = read_document_at(settings_path)
+    document, had_comments, digest = read_document_version(settings_path)
+    if expected_version is not None and expected_version != digest:
+        raise ClaudeConfigError("配置已被其他程序修改，请重新查看并确认")
     if document is not None and "env" in document and not isinstance(document["env"], dict):
         # Overwriting a non-object env would discard data we cannot interpret.
         raise ClaudeConfigError("settings.json 的 env 不是 JSON 对象")
     patch = compute_env_patch(request, document)
     created = document is None
-    backup_path = backup_file(settings_path, clock())
     merged = merge_settings(document or {}, patch)
-    write_document_atomic(settings_path, merged)
+    backup_path = None
+    # A confirmed retry can recover after a restart without replacing an
+    # already-correct file or making a backup of the same key again.
+    unchanged = expected_version is not None and document == merged and not had_comments
+    if unchanged:
+        try:
+            unchanged = not (settings_path.stat().st_mode & 0o077)
+        except OSError as exc:
+            raise ClaudeConfigError(f"无法检查 {settings_path.name} 的权限") from exc
+    if not unchanged:
+        backup_path = backup_file(settings_path, clock())
+        digest = write_document_atomic(settings_path, merged)
 
     env = merged["env"]
     preserved = len([key for key in env if key not in patch.touched_env_keys])
@@ -600,7 +622,7 @@ def apply_request(
         added_keys=tuple(patch.add_if_absent),
         removed_keys=tuple(patch.remove),
         preserved_env_keys=preserved,
-        created=created,
+        created=created, written_digest=digest,
     )
 
 

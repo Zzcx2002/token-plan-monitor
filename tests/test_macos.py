@@ -539,3 +539,42 @@ def test_ark_claude_endpoint_round_trip(suffix, tmp_path):
     path = tmp_path / "settings.json"
     apply_request(request, path)
     assert read_document_at(path)[0]["env"][ENV_BASE_URL] == url
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS apply flow")
+def test_partial_apply_retries_only_pending_steps_and_reconfirms_external_changes(tmp_path):
+    from unittest.mock import Mock
+    from token_plan_monitor.macos.ui import MonitorUI
+    from token_plan_monitor import claude_code
+
+    ui = Mock()
+    ui._applying_claude = False
+    ui._pending_claude_writes, ui._claude_key_drafts, ui._claude_drafts = {}, {}, {}
+    settings, onboarding = tmp_path / "settings.json", tmp_path / "onboarding.json"
+    settings.write_text('{"other": 1}')
+    ui.resolve_claude_paths.return_value = (settings, onboarding)
+    ui.settings_provider = "bailian"
+    prefs = ClaudeProviderPrefs(model="auto")
+    ui.claude_form_values.return_value = ("auto", "", "", "test-key", prefs)
+    ui.fields = {"region": Mock(), "api_key": Mock()}
+    ui.fields["region"].stringValue.return_value = "cn-beijing"
+    ui.confirm_claude_write.return_value = True
+    ui.storage.save_inference_key.side_effect = ConfigurationError("denied")
+    MonitorUI.apply_claude_config(ui)
+    text, tone = ui.show_form_message.call_args.args
+    assert tone == "warning" and "钥匙串待保存" in text and str(settings) in text and ".bak." in text
+    assert onboarding.exists()
+    initial = settings.stat().st_ino
+    ui.storage.load_claude_prefs.return_value = ui.storage.save_claude_prefs.call_args.args[0]
+    MonitorUI.apply_claude_config(ui)
+    assert settings.stat().st_ino == initial and ui.confirm_claude_write.call_count == 1
+    ui.storage.save_claude_prefs.assert_called_once()
+    settings.write_text('{"external": 1}')
+    ui.confirm_claude_write.return_value = False
+    MonitorUI.apply_claude_config(ui)
+    assert ui.confirm_claude_write.call_count == 2 and settings.read_text() == '{"external": 1}'
+    ui.confirm_claude_write.return_value = True
+    ui.storage.save_inference_key.side_effect = None
+    MonitorUI.apply_claude_config(ui)
+    assert claude_code.read_document_at(settings)[0]["external"] == 1
+    assert ui.show_form_message.call_args.args[1] == "ok"

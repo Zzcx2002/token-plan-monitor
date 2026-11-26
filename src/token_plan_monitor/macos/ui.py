@@ -747,6 +747,7 @@ class MonitorUI:
         self.apply_claude_button = None
         self.inference_key = None
         self._applying_claude = False
+        self._pending_claude_writes = {}
         # Live model catalogue: the effective options the popups were built from,
         # a background-fetch result queue drained on the main tick, and per-provider
         # status copy. The fetch never blocks the dialog; failure keeps the static
@@ -2336,42 +2337,58 @@ class MonitorUI:
                 self.show_form_message(exc.message, "error")
                 return
             try:
-                document, had_comments = claude_code.read_document_at(settings_path)
+                document, had_comments, digest = claude_code.read_document_version(settings_path)
             except ClaudeConfigError as exc:
                 self.show_form_message(
                     f"{exc.message}；原始文件未被修改，请先修复后重试。", "error")
                 return
-            patch = claude_code.compute_env_patch(request, document)
-            changes = claude_code.describe_changes(
-                request, patch, document, settings_path, had_comments)
-            if not self.confirm_claude_write(changes):
-                self.show_form_message("已取消，未改动 Claude 配置。", "neutral")
-                return
+            pending = self._pending_claude_writes.get(provider)
+            if (pending and pending[0] == request and pending[1].settings_path == settings_path
+                    and pending[1].written_digest == digest):
+                result = pending[1]
+            else:
+                patch = claude_code.compute_env_patch(request, document)
+                changes = claude_code.describe_changes(request, patch, document, settings_path, had_comments)
+                if not self.confirm_claude_write(changes):
+                    self.show_form_message("已取消本次写入。", "neutral")
+                    return
+                try:
+                    result = claude_code.apply_request(request, settings_path, expected_version=digest)
+                except QueryError as exc:
+                    self.show_form_message(f"配置文件写入失败。{exc.message}", "error")
+                    return
+                self._pending_claude_writes[provider] = (request, result)
+
+            notes = [f"配置已就绪：{settings_path}"]
+            if result.backup_path:
+                notes.append(f"原文件备份：{result.backup_path}")
+            failures = []
             try:
-                result = claude_code.apply_request(request, settings_path)
-                # The vault now holds exactly the key that was written into the
-                # config, whether it came from the field or from a draft.
-                self.storage.save_inference_key(request.api_key, provider)
+                if self.storage.load_inference_key(provider) != request.api_key:
+                    self.storage.save_inference_key(request.api_key, provider)
                 self.inference_key = request.api_key
                 self._claude_key_drafts.pop(provider, None)
                 self.fields["api_key"].setStringValue_("")
-                applied = ClaudeProviderPrefs(model=request.model, custom_model="",
-                                              base_url=request.base_url)
-                # Drop the session draft: the file we just wrote is now reality,
-                # and reality must outrank the cache on the next open (a later
-                # hand-edit of the endpoint has to win, not be silently reverted).
+                notes.append("钥匙串已保存")
+            except QueryError as exc:
+                failures.append(f"钥匙串待保存：{exc.message}")
+            try:
+                applied = replace(prefs, base_url=request.base_url)
+                if self.storage.load_claude_prefs(provider) != applied:
+                    self.storage.save_claude_prefs(applied, provider)
+                notes.append("本地偏好已保存")
+            except QueryError as exc:
+                failures.append(f"本地偏好待保存：{exc.message}")
+            if claude_code.mark_onboarding_completed(onboarding_path):
+                notes.append("引导标记已就绪")
+            else:
+                failures.append(f"引导标记待写入：{onboarding_path}")
+            if failures:
+                self.show_form_message("\n".join(notes + failures + ["再次点击写入可重试未完成的步骤。"]), "warning")
+            else:
+                self._pending_claude_writes.pop(provider, None)
                 self._claude_drafts.pop(provider, None)
-                self.storage.save_claude_prefs(applied, provider)
-            except QueryError as exc:  # covers ClaudeConfigError, CacheError, keychain failures
-                self.show_form_message(f"{exc.message}；请检查磁盘权限后重试。", "error")
-                return
-            notes = ["已新建配置" if result.created else "已更新配置"]
-            if result.backup_path is not None:
-                notes.append(f"原文件已备份为 {result.backup_path.name}")
-            if not claude_code.mark_onboarding_completed(onboarding_path):
-                notes.append("未能合并 .claude.json 的引导标记（已跳过）")
-            notes.append("请重开 Claude Code 会话以确认生效")
-            self.show_form_message("；".join(notes), "ok")
+                self.show_form_message("\n".join(notes + ["请重开 Claude Code 会话以确认生效"]), "ok")
         finally:
             self._applying_claude = False
 
@@ -2382,6 +2399,7 @@ class MonitorUI:
         # Never leave a drafted inference key reachable past this process.
         self._claude_key_drafts.clear()
         self._claude_drafts.clear()
+        self._pending_claude_writes.clear()
         if self.timer:
             self.timer.invalidate()
         self.monitor.on_state = None
