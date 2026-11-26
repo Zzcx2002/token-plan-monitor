@@ -46,6 +46,8 @@ def validate_configuration(provider: str, ak: str, sk: str, region: str, interva
         raise FieldValidationError(
             "sk", _field_prompt("首次连接请填写", spec.secret_key_label)
         )
+    if not sk.strip() and existing is not None and ak.strip() != existing.access_key_id:
+        raise FieldValidationError("sk", _field_prompt("更换 AccessKey ID 后请填写", spec.secret_key_label))
     try:
         minutes = int(interval.strip())
     except ValueError as exc:

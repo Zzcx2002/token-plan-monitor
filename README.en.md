@@ -304,13 +304,15 @@ AK/SK go only into the macOS login keychain under service `TokenPlanMonitor`, wi
 
 | Purpose | Account |
 | --- | --- |
-| Volcengine Ark control plane | `volcengine_access_key_id` / `volcengine_secret_access_key` |
-| Model Studio control plane | `bailian_access_key_id` / `bailian_secret_access_key` |
+| Volcengine Ark control plane | `volcengine_credentials` |
+| Model Studio control plane | `bailian_credentials` |
 | Inference key for Claude Code | `volcengine_inference_api_key` / `bailian_inference_api_key` |
+
+Older pairs with the suffixes `_access_key_id` and `_secret_access_key` remain readable.
 
 Switching providers never reads or overwrites the other provider's credentials, and control-plane AK/SK are never reused as inference keys. Denying keychain access surfaces an error — it does **not** fall back to a plaintext file.
 
-To remove everything: delete exactly the accounts above in Keychain Access, delete the data and log directories above, and delete what the hookup wrote under `~/.claude` — `settings.json` with its plaintext key and every `settings.json.bak.*` copy of it. Changing provider or credentials clears the old snapshot (history is kept per provider; delete the matching file under `history/` to remove it); nothing is migrated automatically from Windows.
+To remove everything: delete exactly the accounts above in Keychain Access, delete the data and log directories above, and delete what the hookup wrote under `~/.claude` — `settings.json` with its plaintext key and every `settings.json.bak.*` copy of it. Changing provider, region or credentials selects that source’s snapshot (history is kept per provider; delete the matching file under `history/` to remove it); nothing is migrated automatically from Windows.
 
 ### Windows
 

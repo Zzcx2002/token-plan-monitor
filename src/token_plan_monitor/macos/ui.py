@@ -1735,7 +1735,7 @@ class MonitorUI:
         sk_label = spec.secret_key_label
         for key, title, value, secure in (
             ("ak", ak_label, self.existing.access_key_id if self.existing else "", False),
-            ("sk", f"{sk_label}（已保存，留空保持不变）" if self.existing else f"{sk_label}（必填）", "", True),
+            ("sk", f"{sk_label}（沿用原 AK 时可留空）" if self.existing else f"{sk_label}（必填）", "", True),
             ("region", "Region", region, False),
             ("interval", "刷新间隔（分钟，5–1440）", interval, False),
         ):

@@ -297,12 +297,12 @@ powershell -NoProfile -File .\scripts\New-AppShortcuts.ps1
 ~/Library/Logs/TokenPlanMonitor/app.log     脱敏运行日志
 ```
 
-AK/SK 只存 macOS 登录钥匙串，service 为 `TokenPlanMonitor`，每个服务商各用独立的一对 account：
+AK/SK 只存 macOS 登录钥匙串，service 为 `TokenPlanMonitor`，每个服务商的 AK/SK 合存为一条记录。升级后仍可读取旧的两个条目（后缀为 `_access_key_id` 和 `_secret_access_key`）：
 
 | 用途 | account |
 | --- | --- |
-| 火山方舟控制面 | `volcengine_access_key_id` / `volcengine_secret_access_key` |
-| 百炼控制面 | `bailian_access_key_id` / `bailian_secret_access_key` |
+| 火山方舟控制面 | `volcengine_credentials` |
+| 百炼控制面 | `bailian_credentials` |
 | 接入 Claude Code 的推理 Key | `volcengine_inference_api_key` / `bailian_inference_api_key` |
 
 切换服务商不会读取或覆盖另一家的凭据，控制面 AK/SK 与推理 Key 互不复用。拒绝钥匙串访问会直接报错，**不会**降级成明文文件。

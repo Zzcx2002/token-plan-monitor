@@ -48,8 +48,11 @@ def test_entrypoint_does_not_import_windows_ui():
 
 def test_settings_keep_secret_and_validate_limits():
     old = Credentials("old", "secret")
-    settings, credentials = validate_configuration("volcengine", "new", "", "cn-beijing", "15", old)
-    assert credentials == Credentials("new", "secret")
+    settings, credentials = validate_configuration("volcengine", "old", "", "cn-beijing", "15", old)
+    assert credentials == old
+    with pytest.raises(FieldValidationError) as failure:
+        validate_configuration("volcengine", "new", "", "cn-beijing", "15", old)
+    assert failure.value.field == "sk"
     assert settings.refresh_minutes == 15
     assert settings.provider == "volcengine"
     for interval in ("4", "1441", "1.5", "abc"):

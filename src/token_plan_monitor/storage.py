@@ -57,8 +57,8 @@ class Storage:
         self.models_path = self.data_dir / "models.json"
         # Explicitly select the OS backend: never silently use a plaintext plugin.
         if keyring_backend is None and sys.platform == "darwin":
-            from keyring.backends.macOS import Keyring
-            keyring_backend = Keyring()
+            from .macos.keychain import AtomicKeyring
+            keyring_backend = AtomicKeyring()
         self._keyring = keyring_backend if keyring_backend is not None else keyring
         self.credential_store_name = "macOS 钥匙串" if sys.platform == "darwin" else "Windows 凭据管理器"
 
@@ -283,6 +283,11 @@ class Storage:
     def load_credentials(self, provider: str = DEFAULT_PROVIDER) -> Credentials | None:
         ak_name, sk_name = self._credential_entries(provider)
         try:
+            if sys.platform == "darwin":
+                pair = self._keyring.get_password(KEYRING_SERVICE, f"{provider}_credentials")
+                if pair is not None:
+                    record = json.loads(pair)
+                    return Credentials(record["ak"], record["sk"])
             ak = self._keyring.get_password(KEYRING_SERVICE, ak_name)
             sk = self._keyring.get_password(KEYRING_SERVICE, sk_name)
         except Exception as exc:
@@ -294,9 +299,13 @@ class Storage:
     def save_credentials(
         self, credentials: Credentials, provider: str = DEFAULT_PROVIDER
     ) -> None:
-        """Save only this provider's two credential entries in the OS vault."""
+        """Commit a macOS pair as one vault item, with read-only legacy fallback."""
         ak_name, sk_name = self._credential_entries(provider)
         try:
+            if sys.platform == "darwin":
+                pair = json.dumps({"ak": credentials.access_key_id, "sk": credentials.secret_access_key})
+                self._keyring.set_password(KEYRING_SERVICE, f"{provider}_credentials", pair)
+                return
             # Secret first: a partial write then leaves the pair unusable rather
             # than pairing a new AccessKey ID with a stale secret.
             self._keyring.set_password(

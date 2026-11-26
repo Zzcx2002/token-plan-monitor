@@ -1046,7 +1046,7 @@ def main(argv=None):
                 assert storage.load_credentials("bailian") == Credentials("LTAI-preview", "bailian-secret")
                 # Saving Bailian credentials must not touch the Volcengine entries.
                 assert {name for _, name in storage._keyring.values} == {
-                    "bailian_access_key_id", "bailian_secret_access_key"}
+                    "bailian_credentials"}
                 assert "bailian-secret" not in storage.config_path.read_text(encoding="utf-8")
 
                 # --- Claude Code hookup, confined to the temp claude home ---

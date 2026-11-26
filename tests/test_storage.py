@@ -1,4 +1,5 @@
 import json
+import sys
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -235,10 +236,12 @@ def test_credentials_use_only_authorized_entries_and_never_enter_json(tmp_path):
     storage.save_credentials(credentials)
     storage.save_settings(Settings())
     storage.save_snapshot(sample_snapshot(), SOURCE)
-    assert keyring.values == {
-        (KEYRING_SERVICE, SK_USERNAME): "very-secret",
-        (KEYRING_SERVICE, AK_USERNAME): "AKLT-test",
-    }
+    if sys.platform == "darwin":
+        assert set(keyring.values) == {(KEYRING_SERVICE, "volcengine_credentials")}
+    else:
+        assert keyring.values == {
+            (KEYRING_SERVICE, SK_USERNAME): "very-secret", (KEYRING_SERVICE, AK_USERNAME): "AKLT-test",
+        }
     assert storage.load_credentials() == credentials
     serialized = storage.config_path.read_text(encoding="utf-8")
     serialized += storage.snapshot_path(SOURCE).read_text(encoding="utf-8")
@@ -326,7 +329,7 @@ def test_provider_credentials_are_isolated_in_the_vault(tmp_path):
     assert storage.load_credentials("bailian") == bailian
 
     # Losing one provider's secret never leaks into the other provider's pair.
-    keyring.values.pop((KEYRING_SERVICE, "volcengine_secret_access_key"))
+    keyring.values.pop((KEYRING_SERVICE, "volcengine_credentials" if sys.platform == "darwin" else SK_USERNAME))
     assert storage.load_credentials("volcengine") is None
     assert storage.load_credentials("bailian") == bailian
 
@@ -349,11 +352,8 @@ def test_inference_keys_are_isolated_per_provider(tmp_path):
     storage.save_credentials(Credentials("AKLT", "ak-secret"), "volcengine")
     assert storage.load_inference_key("bailian") == "sk-sp-bailian"
     assert storage.load_inference_key("volcengine") is None
-    assert {name for _, name in keyring.values} == {
-        "bailian_inference_api_key",
-        "volcengine_access_key_id",
-        "volcengine_secret_access_key",
-    }
+    expected = {"volcengine_credentials"} if sys.platform == "darwin" else {AK_USERNAME, SK_USERNAME}
+    assert {name for _, name in keyring.values} == expected | {"bailian_inference_api_key"}
     with pytest.raises(ConfigurationError):
         storage.save_inference_key("   ", "bailian")
 
@@ -565,3 +565,20 @@ def test_history_io_errors_surface_as_cache_error(tmp_path):
         storage.append_history(history_entry(), "volcengine")
     with pytest.raises(CacheError):
         storage.load_history("volcengine")
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS vault migration")
+def test_failed_mac_pair_rotation_preserves_previous_pair(tmp_path, monkeypatch):
+    ring = FakeKeyring()
+    storage = Storage(tmp_path, ring)
+    old = Credentials("old-ak", "old-sk")
+    ring.values.update({(KEYRING_SERVICE, AK_USERNAME): old.access_key_id,
+                        (KEYRING_SERVICE, SK_USERNAME): old.secret_access_key})
+    assert storage.load_credentials() == old
+    storage.save_credentials(old)
+    def deny(*args):
+        raise RuntimeError("denied")
+    monkeypatch.setattr(ring, "set_password", deny)
+    with pytest.raises(ConfigurationError):
+        storage.save_credentials(Credentials("new-ak", "new-sk"))
+    assert storage.load_credentials() == old
