@@ -82,7 +82,7 @@ def test_history_context_line_labels_data_age_not_failed_attempt():
     assert f"更新于 {format_datetime(state.snapshot.queried_at)}" in line
     # Without a snapshot there is no data age: the attempt time is all there is.
     bare = replace(state, snapshot=None)
-    assert f"更新于 {format_datetime(state.last_attempt_at)}" in history_context_line(bare)
+    assert f"上次尝试 {format_datetime(state.last_attempt_at)}" in history_context_line(bare)
 
 
 def test_missing_windows_and_empty_states_are_explicit():

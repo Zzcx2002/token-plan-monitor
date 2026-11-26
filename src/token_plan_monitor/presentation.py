@@ -237,10 +237,16 @@ def history_context_line(state: MonitorViewState) -> str:
     # "更新于" names the data's age, not the last attempt: a failed refresh
     # keeps the previous snapshot, and labelling it with the failure time
     # disagreed with the tray menu (menu_context_line) for the same state.
-    updated = (
-        state.snapshot.queried_at if state.snapshot is not None else state.last_attempt_at
-    )
-    parts.append(f"更新于 {format_datetime(updated)}" if updated else status_text(state))
+    updated = max((row.queried_at for row in state.history),
+                  default=None)
+    if state.snapshot and (updated is None or state.snapshot.queried_at > updated):
+        updated = state.snapshot.queried_at
+    if updated:
+        parts.append(f"更新于 {format_datetime(updated)}")
+    elif state.last_attempt_at:
+        parts.append(f"上次尝试 {format_datetime(state.last_attempt_at)}")
+    else:
+        parts.append(status_text(state))
     return " · ".join(parts)
 
 

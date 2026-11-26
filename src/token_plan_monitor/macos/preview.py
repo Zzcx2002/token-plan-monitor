@@ -22,7 +22,7 @@ from ..models import (
     AlertSettings, CARD_MIN_HEIGHT, Credentials, MonitorViewState, QuotaWindow,
     UsageSnapshot,
 )
-from ..presentation import card_title, history_table_time
+from ..presentation import card_title, format_datetime, history_table_time
 from ..providers import get_provider
 from ..storage import Storage
 from ..trends import trends_for_snapshot
@@ -870,6 +870,19 @@ def main(argv=None):
                 ui.history.displayIfNeeded()
                 capture(ui.history, args.artifacts / "history-percent-only.png")
                 # Empty / thin / unconfigured states stay honest.
+                offline = states()["history_agent"]
+                rows = offline.history[-3:]
+                failed_at = rows[-1].queried_at + timedelta(minutes=15)
+                ui.render(replace(offline, snapshot=None, history=rows, status="error",
+                                  error="离线", last_attempt_at=failed_at))
+                assert set(ui._history_charts) == kinds
+                assert "最近查询失败：离线" in collect_texts(ui.history_scroll.documentView())
+                assert format_datetime(rows[-1].queried_at) in ui.history_context.stringValue()
+                ui.toggle_history_table("five_hour")
+                assert history_table_view(ui, "five_hour").numberOfRows() == 3
+                capture(ui.history, args.artifacts / "history-offline.png")
+                ui.toggle_history_table("five_hour")
+
                 ui.render(states()["history_empty"])
                 assert ui._history_charts == {}
                 assert any("尚无历史记录" in t

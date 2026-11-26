@@ -1251,7 +1251,13 @@ class MonitorUI:
         self._history_charts = {}
         self._history_geometries = {}
         self._history_table_sources = []
-        if snapshot is None:
+        present = {window.kind for row in self.state.history for window in row.windows}
+        if snapshot is not None:
+            present.update(window.kind for window in snapshot.windows)
+        if self.state.error and self.state.status in ("stale", "error"):
+            y += label(content, f"最近查询失败：{self.state.error}", T.PAGE_INSET + T.GUTTER, y,
+                       width, role="body", color=T.tone("warning")) + T.ROW_GAP
+        if not present:
             start_y = y
             y += T.GUTTER
             y += label(content, history_empty_text(self.state, "no_history"),
@@ -1260,7 +1266,6 @@ class MonitorUI:
                          y - T.GUTTER - start_y, x=T.PAGE_INSET)
             y += T.GROUP_GAP
         else:
-            present = {window.kind for window in snapshot.windows}
             for kind in WINDOW_ORDER:
                 if kind not in present:
                     continue
@@ -1275,7 +1280,8 @@ class MonitorUI:
                            T.PAGE_INSET + T.GUTTER, y, width, role="kind", bold=True)
                 y += T.LABEL_GAP
                 if geometry.empty_reason == "no_history":
-                    y += label(content, history_empty_text(self.state, "no_history"),
+                    y += label(content, ("所选时段没有这个窗口的采样。" if self.state.history else
+                                         history_empty_text(self.state, "no_history")),
                                T.PAGE_INSET + T.GUTTER, y, width,
                                role="body", color=SECONDARY) + 14
                 else:
